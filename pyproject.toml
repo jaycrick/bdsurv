@@ -1,0 +1,120 @@
+[project]
+name = "bdsurv"
+version = "0.1.0"
+description = "Survival-conditioned simulation of subcritical linear birth-death processes: exact contour-process reconstruction and multilevel (RESTART) splitting."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+authors = [{ name = "Jacob Cumming" }]
+classifiers = [
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Mathematics"
+]
+dependencies = [
+  "numpy>=1.26",
+  "pandas>=2.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/jaycrick/bdsurv"
+Repository = "https://github.com/jaycrick/bdsurv"
+
+[dependency-groups]
+dev = [
+  "basedpyright>=1.22.0",
+  "pandas-stubs",
+  "pre-commit>=4.5.1",
+  "pytest-cov>=7.0.0",
+  "pytest>=9.0.2",
+  "ruff>=0.15.1",
+  "toml-sort>=0.24.3"
+]
+# Reproducibility dependencies for validation/simulator_comparison.qmd only.
+# That notebook is the paper's experiment section: it needs bdpinf's
+# theoretical age-density formulas (calculate_spine_ages_log_lik /
+# calculate_non_spine_ages_log_lik), KDE helpers, and Altair theme to plot
+# empirical draws from this package against theory. None of this is a
+# runtime dependency of bdsurv itself -- see pyproject.toml `dependencies`.
+# bdpinf is referenced as a local path checkout; once bdsurv is on PyPI and
+# bdpinf's simulation adapters depend on it, this becomes the one place the
+# dependency direction is deliberately reversed, for reproducibility only.
+paper = [
+  "altair>=6.0.0",
+  "bdpinf",
+  "joblib>=1.5.3",
+  "jupyter-cache>=1.0.1",
+  "jupyter>=1.1.1",
+  "quarto>=0.1.0",
+  "scipy>=1.17.0",
+  "vl-convert-python>=1.9.0.post1"
+]
+
+[tool.uv.sources]
+bdpinf = { path = "../bdpinf", editable = true }
+
+[tool.basedpyright]
+include = ["src"]
+pythonVersion = "3.11"
+typeCheckingMode = "strict"
+reportMissingTypeStubs = "warning"
+# numpy's overloaded stubs for isclose/where/choice/etc. resolve to a partially
+# unknown return type in strict mode; this is a stub-complexity artifact, not
+# a real type-safety gap in this package's code.
+reportUnknownMemberType = "none"
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["B", "D", "E", "F", "I", "UP", "W"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+  "D101", # test classes are self-documenting via their names
+  "D102", # test methods are self-documenting via their names
+  "E501", # test strings and fixture data are allowed to be long
+  "S101" # asserts are the mechanism of the tests
+]
+"validation/**" = [
+  "B018", # bare last-line expressions are intentional display outputs
+  "B905", # zip() strict= is impractical to require in analysis notebooks
+  "D100", # notebooks have no module-level docstring
+  "D101", # notebook TypedDict/dataclasses don't need class docstrings
+  "D103", # notebook helper functions don't need docstrings
+  "E501", # analysis cells routinely have long lines
+  "I001" # import ordering across cells is flexible by design
+]
+
+[tool.toml-sort]
+all = true
+ignore_case = true
+in_place = true
+no_sort_tables = true
+sort_inline_arrays = true
+sort_inline_tables = true
+sort_table_keys = true
+
+[tool.pytest.ini_options]
+addopts = "--cov=src --cov-report=term-missing --cov-report=xml --cov-fail-under=86"
+python_classes = ["Test*"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["src"]
+
+[tool.coverage.report]
+precision = 2
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["bdsurv*"]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"

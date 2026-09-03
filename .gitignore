@@ -1,0 +1,53 @@
+# Quarto
+*_files/
+*.html
+!README.html
+/.quarto/
+_output/
+_freeze/
+*.quarto_ipynb*
+.jupyter_cache/
+
+# Python
+__pycache__/
+*.py[codz]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Testing / coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+.cache
+
+# Type checking / linting
+.ruff_cache/
+.basedpyright_cache/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Editors
+.DS_Store
+.vscode/
+.idea/

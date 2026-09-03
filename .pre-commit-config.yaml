@@ -1,0 +1,40 @@
+repos:
+  # Built-in hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: debug-statements
+
+  # Ruff linting
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.13
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+        args: [--diff]
+
+  # basedpyright type checking (strict mode; local hook uses venv install)
+  - repo: local
+    hooks:
+      - id: basedpyright
+        name: basedpyright
+        language: system
+        entry: uv run basedpyright --project pyproject.toml src/
+        pass_filenames: false
+        types: [python]
+        files: ^src/
+
+  # toml-sort
+  - repo: https://github.com/pappasam/toml-sort
+    rev: v0.24.3
+    hooks:
+      - id: toml-sort
+        args: [--no-sort-tables, --sort-inline-arrays, --sort-inline-tables]
+        files: '\.toml$'

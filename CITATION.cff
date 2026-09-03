@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+type: software
+title: bdsurv
+abstract: >-
+  Survival-conditioned simulation of subcritical linear birth-death processes:
+  exact contour-process reconstruction and multilevel (RESTART) splitting.
+authors:
+  - family-names: "Cumming"
+    given-names: "Jacob"
+version: "0.1.0"
+license: MIT
+repository-code: "https://github.com/jaycrick/bdsurv"
+date-released: "2026-09-03"
