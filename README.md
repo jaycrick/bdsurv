@@ -10,7 +10,8 @@ of individuals conditioned on the population surviving to `T` — a rare event
 in the subcritical regime, since the unconditioned process goes extinct with
 probability 1.
 
-Two independent methods, compared head-to-head in `validation/`:
+Two independent methods, compared head-to-head in
+[`bdpinf`'s validation notebooks](https://github.com/jaycrick/bdpinf/tree/main/qmd_scripts/validation/survival_conditioned_simulation):
 
 | Method                     | Function                                             | Mechanism                                            |
 | -------------------------- | ----------------------------------------------------- | ----------------------------------------------------- |
@@ -78,9 +79,7 @@ uv run ruff format --check src tests
 uv run basedpyright src/
 ```
 
-Run the simulator comparison (speed and correctness, contour process vs.
-splitting) as a Quarto notebook:
-
-```sh
-uv run quarto render validation/simulator_comparison.qmd
-```
+The speed and correctness comparison of the two simulators lives in `bdpinf`
+(`qmd_scripts/validation/survival_conditioned_simulation/`), because it plots
+simulated draws against `bdpinf`'s theoretical age densities.
+`bdsurv` itself depends only on `numpy` and `pandas`.

@@ -65,7 +65,7 @@ This document describes the contour-process based simulator in
   — equivalently, the **last-born** individual alive at `T`.
 
   > **Note (as of this extraction):** an earlier draft of this document, and
-  > the comparison notebook in `validation/`, both described the spine as
+  > the comparison notebook in `bdpinf`, both described the spine as
   > the *earliest-created* surviving individual instead. That was never
   > true of the implementation — see `_contour_process_list_to_tree` in
   > `src/bdsurv/contour.py`, which has always marked the last-born

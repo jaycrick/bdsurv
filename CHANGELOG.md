@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The validation notebooks (`simulator_comparison`, `subcritical_splitting`) moved to
+  `bdpinf` (`qmd_scripts/validation/survival_conditioned_simulation/`), which already
+  depends on `bdsurv`; `bdsurv` no longer references `bdpinf` (removed the `paper`
+  dependency group and the `bdpinf` path source).
+
 ### Added
 
 - Initial extraction from `bdpinf`: `simulate_birth_death_process_from_contour_process`
