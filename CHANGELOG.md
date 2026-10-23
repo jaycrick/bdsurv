@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Documentation
+
+- README points to `bdpinf` for fitting (`bdpinf.inference.fit`) and for exact age sampling under
+  time-varying rates (`bdpinf.simulation.simulate_ages_from_rates`).
+
 ### Changed
 
 - The validation notebooks (`simulator_comparison`, `subcritical_splitting`) moved to

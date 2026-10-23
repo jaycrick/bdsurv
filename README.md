@@ -83,3 +83,12 @@ The speed and correctness comparison of the two simulators lives in `bdpinf`
 (`qmd_scripts/validation/survival_conditioned_simulation/`), because it plots
 simulated draws against `bdpinf`'s theoretical age densities.
 `bdsurv` itself depends only on `numpy` and `pandas`.
+
+## Related: fitting and time-varying rates
+
+`bdsurv` only simulates (constant-rate, subcritical, survival-conditioned).
+Inference lives in [`bdpinf`](https://github.com/jaycrick/bdpinf):
+`bdpinf.inference.fit` maximises the exact likelihood of observed ages for piecewise-constant
+or piecewise-linear birth and death rates, and `bdpinf.simulation.simulate_ages_from_rates`
+draws ages directly from the exact age laws for arbitrary (time-varying) rates.
+Those need `bdpinf`'s JAX age densities, so they stay there; `bdpinf` depends on `bdsurv`, not the reverse.
