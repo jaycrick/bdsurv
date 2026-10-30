@@ -32,9 +32,9 @@ The page reads `benchmarks/data/method_comparison.csv` (raw timings, one row per
 call or run), `method_comparison_units.csv` and `environment.json`.
 If `data/method_comparison.csv` is missing it runs a tiny draft grid so the page
 still renders.
-The data currently committed is a preliminary 10-replicate run on a laptop
-(`--replicates 10 --block-size 5 --unit-seconds 120`, 10 local shards).
-Replace it with the output of a cluster run before quoting numbers.
+The data currently committed is a 100-replicate run on a laptop
+(`scripts/bench_method_comparison_local.sh`, 9 shards, one host).
+A cluster run gives the same simulated trees; only the timings differ.
 
 ### Producing the data
 
@@ -49,6 +49,9 @@ uv run python scripts/bench_method_comparison.py --quick
 
 # Everything in one process, 10 replicates:
 uv run python scripts/bench_method_comparison.py --replicates 10
+
+# Everything, 100 replicates, in parallel on this machine (cores - 2 shards):
+scripts/bench_method_comparison_local.sh
 
 # By hand: shard i of N, then merge into benchmarks/data/:
 uv run python scripts/bench_method_comparison.py --shard 0/200
@@ -73,9 +76,9 @@ one CPU each) and a merge job that depends on the whole array.
 Shards go to `benchmarks/_shards/` (git-ignored), logs to `logs/`, and the merged
 files to `benchmarks/data/`.
 Edit `--account` in the script for your allocation; it is set to `punim1793`.
-A 10-replicate run on a laptop took about 21 CPU-minutes, so 100 replicates should
-take roughly 3.5 CPU-hours in total (most cells take milliseconds, the heaviest few
-take minutes) and 200 tasks should finish quickly.
+The 100-replicate laptop run took about 4.7 CPU-hours in total (most cells take
+milliseconds; the longest block took about 12 minutes), so 200 tasks should
+finish quickly.
 Raise `REPLICATES` for tighter bands.
 Timings from different nodes scatter, so the notebook lists the hosts used and
 shows percentile bands.

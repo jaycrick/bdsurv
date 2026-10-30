@@ -1,7 +1,7 @@
 {
   "lambda": 1.0,
   "max_expected_population": 100000.0,
-  "n_shards": 10,
+  "n_shards": 9,
   "hosts": [
     "UML-HF7KG662JY"
   ],
@@ -18,6 +18,6 @@
     "0.2.0"
   ],
   "git_sha": [
-    "46d5a3a"
+    "e7496e7"
   ]
 }
