@@ -1,0 +1,231 @@
+---
+title: "Simulator Speed Benchmarks"
+subtitle: "Wall-clock cost of every bdsurv simulator"
+format:
+  html:
+    toc: true
+    code-fold: true
+jupyter: python3
+---
+
+## Overview
+
+This notebook times each simulator in `bdsurv`.
+It depends only on `bdsurv`, `numpy` and `pandas`.
+Correctness of the simulated draws against the exact age laws is checked in
+[`bdpinf`'s validation notebooks](https://github.com/jaycrick/bdpinf/tree/main/qmd_scripts/validation),
+which also keep the timing of sampling directly from the age distributions.
+
+Timings are single-process wall-clock on whatever machine renders the notebook,
+so compare methods within one render rather than across renders.
+
+1. **Survival-conditioned subcritical simulation** --- the contour process
+   (exact) against multilevel splitting (approximate).
+2. **Forward simulation** --- the Gillespie simulator, the JIT-compiled
+   lifespan-at-birth simulator, and the inverse-CDF simulator for linear rates.
+3. **Era-conditioned sampling** --- the multilevel-splitting / sequential-ABC
+   sampler over several epochs.
+
+## Setup
+
+```{python}
+import time
+from collections.abc import Callable
+
+import numpy as np
+import pandas as pd
+
+from bdsurv import (
+    PiecewiseConstant,
+    PiecewiseLinear,
+    SplittingConfig,
+    sample_conditioned_survival_process,
+    select_level_times_for_band,
+    simulate_birth_death_lifespans,
+    simulate_birth_death_linear,
+    simulate_birth_death_process,
+    simulate_birth_death_process_from_contour_process,
+    simulate_subcritical_survival_splitting,
+)
+from bdsurv._extinction import pr_extinction
+from bdsurv.splitting import (
+    _calculate_extinction_probability,  # pyright: ignore[reportPrivateUsage]
+)
+
+SEED = 42
+pd.options.display.float_format = "{:.4g}".format
+
+
+def timed[T](fn: Callable[[], T]) -> tuple[T, float]:
+    """Return ``fn()`` and its wall-clock seconds."""
+    start = time.perf_counter()
+    out = fn()
+    return out, time.perf_counter() - start
+```
+
+## 1. Contour process against multilevel splitting
+
+Three subcritical regimes share $\lambda = 1$ and $T = 20$ and differ in $\mu$.
+The level grid and splitting factor $R$ are computed once per regime
+**outside** the timed region, so only simulation cost is measured.
+Contour calls are timed serially; splitting runs once per regime.
+
+```{python}
+BIRTH_RATE = 1.0
+TERMINAL_TIME = 20.0
+DEATH_RATES = [1.1, 2.0, 10.0]
+N_CONTOUR_CALLS = 50
+N_PARTICLES = 500
+
+rows = []
+for mu in DEATH_RATES:
+    grid = select_level_times_for_band(
+        birth_rate=BIRTH_RATE, death_rate=mu, terminal_time=TERMINAL_TIME
+    )
+    first_increment = float(grid[1]) - float(grid[0])
+    r = int(
+        np.ceil(
+            1.0
+            / _calculate_extinction_probability(
+                birth_rate=BIRTH_RATE, death_rate=mu, interval_time=first_increment
+            )
+        )
+    )
+
+    _, contour_s = timed(
+        lambda: [
+            simulate_birth_death_process_from_contour_process(
+                birth_rate=BIRTH_RATE,
+                death_rate=mu,
+                terminal_time=TERMINAL_TIME,
+                random_seed=SEED + i,
+            )
+            for i in range(N_CONTOUR_CALLS)
+        ]
+    )
+
+    config = SplittingConfig(
+        birth_rate=BIRTH_RATE,
+        death_rate=mu,
+        terminal_time=TERMINAL_TIME,
+        n_particles=N_PARTICLES,
+        level_times=grid.tolist(),
+        splitting_factor=r,
+        random_seed=SEED,
+    )
+    result, splitting_s = timed(lambda: simulate_subcritical_survival_splitting(config))
+
+    rows.append(
+        {
+            "mu": mu,
+            "P(survive to T)": 1.0 - pr_extinction(BIRTH_RATE, mu, TERMINAL_TIME),
+            "splitting estimate": result.survival_probability_estimate,
+            "levels": len(grid) - 1,
+            "R": r,
+            "contour s/tree": contour_s / N_CONTOUR_CALLS,
+            "splitting s (total)": splitting_s,
+            "splitting trees": len(result.conditioned_trajectories),
+        }
+    )
+
+pd.DataFrame(rows)
+```
+
+## 2. Forward simulators
+
+All three simulate the same process from a single root, so their cost can be
+compared directly.
+The JIT-compiled simulator is timed twice: the first call includes compilation,
+the later calls reuse the compiled kernel.
+The linear-rate simulator is given zero-slope rates here, which is the constant
+process; its cost per event is higher because it inverts a quadratic hazard.
+The Gillespie and linear-rate simulators draw random numbers in the same order,
+so with equal seeds they produce identical populations here.
+The JIT kernel scans fixed-size buffers of length `max_population` at every
+event, so it pays off for large populations rather than for the small ones
+used here.
+
+```{python}
+BIRTH, DEATH, T_END = 0.06, 0.02, 100.0
+N_RUNS = 200
+
+_, lifespans_cold_s = timed(
+    lambda: simulate_birth_death_lifespans(BIRTH, DEATH, T_END, random_seed=SEED)
+)
+
+linear_birth = PiecewiseLinear([BIRTH], [BIRTH], [T_END])
+linear_death = PiecewiseConstant([DEATH], [T_END])
+
+runners = {
+    "Gillespie (numpy)": lambda s: simulate_birth_death_process(
+        BIRTH, DEATH, T_END, random_seed=s
+    ),
+    "lifespan-at-birth (JAX, warm)": lambda s: simulate_birth_death_lifespans(
+        BIRTH, DEATH, T_END, random_seed=s
+    ),
+    "linear rates (numpy)": lambda s: simulate_birth_death_linear(
+        linear_birth, linear_death, random_seed=s
+    ),
+}
+
+rows = [
+    {
+        "simulator": "lifespan-at-birth (JAX, first call incl. compile)",
+        "runs": 1,
+        "s/run": lifespans_cold_s,
+        "mean survivors": np.nan,
+    }
+]
+for name, run in runners.items():
+    sizes = []
+    start = time.perf_counter()
+    for i in range(N_RUNS):
+        sizes.append(int(run(SEED + i).records["survived"].sum()))
+    elapsed = time.perf_counter() - start
+    rows.append(
+        {
+            "simulator": name,
+            "runs": N_RUNS,
+            "s/run": elapsed / N_RUNS,
+            "mean survivors": float(np.mean(sizes)),
+        }
+    )
+
+pd.DataFrame(rows)
+```
+
+## 3. Era-conditioned sampling
+
+Rates change at $t = 50$; the sampler keeps simulations whose number of
+era-0-born survivors falls in a target range, cloning those that pass.
+
+```{python}
+birth_rates = np.array([0.1, 0.03])
+death_rates = np.array([0.005, 0.005])
+epoch_ends = np.array([50.0, 200.0])
+target_ranges = np.array([[1, 50], [0, 2**31 - 1]], dtype=np.intp)
+
+_ = sample_conditioned_survival_process(  # warm up the JIT kernels
+    birth_rates, death_rates, epoch_ends, target_ranges,
+    n_samples=1, split_factor=10, n_initial=100, max_attempts=10_000,
+    random_seed=SEED, max_population=5_000,
+)
+
+result, era_s = timed(
+    lambda: sample_conditioned_survival_process(
+        birth_rates, death_rates, epoch_ends, target_ranges,
+        n_samples=3, split_factor=10, n_initial=100, max_attempts=10_000,
+        random_seed=SEED + 1, max_population=5_000,
+    )
+)
+pd.DataFrame(
+    [
+        {
+            "samples": len(result.samples),
+            "outer iterations": result.n_outer_iterations,
+            "era-0 particles": result.n_total_era0_particles,
+            "seconds (warm)": era_s,
+        }
+    ]
+)
+```
