@@ -5,27 +5,37 @@ subcritical birth-death branching-process trajectories conditioned on survival
 up to a large terminal time.
 
 Implemented methods:
-- Multilevel splitting with exact Gillespie trajectory evolution
+- Multilevel splitting with exact Gillespie trajectory evolution, an adaptive
+  level grid, per-level replicate counts and capped restarts
 
-The method exposes level diagnostics, conditioned trajectory samples, and
-particle ancestry metadata suitable for downstream analysis.
+The method keeps the particles that survive to the terminal time and exposes
+level diagnostics and particle ancestry metadata; it does not estimate the
+survival probability.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+import warnings
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from bdsurv._extinction import pr_extinction
+from bdsurv._extinction import _ATOL_CRITICAL, pr_extinction
 from bdsurv.tree import SimulatedTree
 
 MIN_LEVEL_TIMES = 2
-_BAND_LOWER: float = np.e**-2.0  # ≈ 0.135; at this pr_ext, R = ceil(e^2) = 8
-_BAND_UPPER: float = 0.5  # at this pr_ext, R = ceil(2) = 2
-_MAX_BAND_LEVELS: int = 100_000  # defensive cap on the equal-split search
+_BAND_LOWER: float = np.e**-2.0  # lowest allowed Pr(t_i) / Pr(t_{i-1})
+_BAND_UPPER: float = 0.5  # highest allowed Pr(t_i) / Pr(t_{i-1})
+_LOG_BAND_LOWER: float = -2.0
+_LOG_BAND_UPPER: float = math.log(0.5)
+_MAX_GRID_POINTS: int = 100_000  # defensive cap on the refine step
+_MIN_REPLICATES: int = 2
+_REPLICATE_TOLERANCE: float = 1e-9  # so Pr(t_1) = 1/2 gives exactly R_1 = 2
+_MAX_LOG_REPLICATES: float = 30.0  # refuse R_i beyond ~1e13
+DEFAULT_RESTART_SUCCESS_PROBABILITY: float = 0.999
 
 
 @dataclass(frozen=True)
@@ -42,31 +52,32 @@ class SplittingConfig:
         Target time horizon T for conditioning on survival.
     n_particles : int
         Cap on the ensemble size after each enrichment step.  The initial
-        ensemble size is ``ceil(1 / pr_ext)`` (the splitting factor R), which
-        may be smaller than this cap.  After R-fold duplication of survivors,
-        if the ensemble would exceed ``n_particles`` it is subsampled uniformly
-        back down to ``n_particles``.
+        ensemble size is ``R_1`` (see ``compute_level_replicates``), which may
+        be smaller than this cap.  After enrichment, if the ensemble would
+        exceed ``n_particles`` it is subsampled uniformly back down to
+        ``n_particles``.
     level_times : list[float] | None, optional
-        Explicit level boundary times (including 0 and `terminal_time`). If
-        ``None``, levels are automatically chosen so that the per-increment
-        extinction probability lies in ``[e^{-2}, 0.5]``; in that case
-        ``n_levels`` is ignored.
+        Level boundary times (including 0 and `terminal_time`).  If ``None``
+        the starting grid is ``linspace(0, terminal_time, n_levels + 1)``.
+        Unless ``replicates`` is also given, this grid is only the *starting*
+        grid and is adjusted by ``select_level_times_for_band``.
     n_levels : int, optional
-        Number of level intervals to create when ``level_times`` is not
-        provided.  Ignored when ``level_times`` is ``None`` (levels are
-        auto-selected from the band constraint).  Defaults to 10.
+        Number of intervals in the starting grid when ``level_times`` is not
+        provided.  Defaults to 10.
     random_seed : int | None, optional
         Seed for random number generation to allow reproducible runs.
     n_conditioned_trajectories : int | None, optional
         Maximum number of conditioned trajectories to return for downstream
         analysis. If ``None``, all surviving terminal trajectories are
         returned.
-    splitting_factor : int | None, optional
-        Optional manual override for the enrichment factor R. When provided
-        it is used directly instead of ``ceil(1/pr_ext)``. When both
-        ``level_times`` and ``splitting_factor`` are supplied, the band
-        validation on the first increment is bypassed, so a predetermined
-        out-of-band grid can be used without error.
+    replicates : list[int] | None, optional
+        Manual replicate counts, one per interval of ``level_times``.  Requires
+        ``level_times``.  When both are given they are used exactly as supplied,
+        with no band adjustment and no computed replicates.
+    max_restarts : int | None, optional
+        Maximum number of attempts (each one a fresh run from time 0) made
+        while no particle survives to the terminal time.  If ``None``, it is
+        computed by ``default_max_restarts``.
 
     """
 
@@ -78,7 +89,8 @@ class SplittingConfig:
     n_levels: int = 10
     random_seed: int | None = None
     n_conditioned_trajectories: int | None = None
-    splitting_factor: int | None = None
+    replicates: list[int] | None = None
+    max_restarts: int | None = None
 
 
 @dataclass(frozen=True)
@@ -93,12 +105,6 @@ class LevelDiagnostic:
         Level boundary time corresponding to this diagnostic.
     survivor_count : int
         Number of particles surviving at the level boundary.
-    conditional_survival_estimate : float
-        Empirical conditional survival probability for this level interval,
-        computed as ``survivor_count / entering_count``.
-    cumulative_survival_estimate : float
-        Cumulative product of conditional survival estimates up to this
-        level, estimating overall survival to the current time.
     mean_population : float
         Ensemble mean population size at the level boundary.
     entering_count : int | None, optional
@@ -109,8 +115,6 @@ class LevelDiagnostic:
     level_index: int
     time: float
     survivor_count: int
-    conditional_survival_estimate: float
-    cumulative_survival_estimate: float
     mean_population: float
     entering_count: int | None = None
 
@@ -149,37 +153,42 @@ class SplittingSimulationResult:
         The configuration used to run the simulation.
     level_times : np.ndarray
         Array of level boundary times including time 0 and terminal time.
-    survival_probability_estimate : float
-        Estimated probability of survival to the terminal time (product of
-        conditional estimates across levels).
     level_diagnostics : list[LevelDiagnostic]
         Per-level diagnostic objects describing survival and population
         statistics.
-    level_survival_probabilities : np.ndarray
-        Empirical conditional survival probabilities for each level
-        interval (length = len(level_times) - 1).
     level_mean_populations : np.ndarray
         Ensemble mean population at each level boundary.
     final_survivor_count : int
         Number of surviving records/lineages at the terminal time.
     conditioned_trajectories : list[ConditionedTrajectory]
-        Sampled conditioned trajectories selected from surviving particles.
+        Trajectories of the particles that survived to the terminal time.
     particle_genealogy : pd.DataFrame
-        Tabular parent-child lineage records produced during resampling.
+        Tabular parent-child lineage records produced during resampling (from
+        the last attempt).
+    replicates : np.ndarray
+        Replicate count ``R_i`` for each level interval.
+    initial_particle_count : int
+        Number of particles at the start of each attempt, ``min(R_1, cap)``.
+    n_attempts : int
+        Number of attempts made (1 + number of restarts used).
+    max_restarts : int
+        Maximum number of attempts allowed.
 
     """
 
     config: SplittingConfig
     level_times: np.ndarray
-    survival_probability_estimate: float
     level_diagnostics: list[LevelDiagnostic]
-    level_survival_probabilities: np.ndarray
     level_mean_populations: np.ndarray
     final_survivor_count: int
     conditioned_trajectories: list[ConditionedTrajectory]
     particle_genealogy: pd.DataFrame
-    splitting_factor: int = 1
+    replicates: np.ndarray = field(
+        default_factory=lambda: np.zeros(0, dtype=np.int64),
+    )
     initial_particle_count: int = 1
+    n_attempts: int = 1
+    max_restarts: int = 1
 
 
 @dataclass
@@ -289,20 +298,33 @@ def _calculate_extinction_probability(
     return float(np.clip(probability, 0.0, 1.0))
 
 
-def _adaptive_particle_count(
+def _log_survival_probability(
     *,
     birth_rate: float,
     death_rate: float,
-    interval_time: float,
-) -> int:
-    extinction_probability = _calculate_extinction_probability(
-        birth_rate=birth_rate,
-        death_rate=death_rate,
-        interval_time=interval_time,
-    )
-    if extinction_probability <= 0.0:
-        return 1
-    return int(np.ceil(1.0 / extinction_probability))
+    time: float,
+) -> float:
+    """Return ``log Pr(Z_t > 0)`` from one individual, stable for large ``t``."""
+    if time <= 0.0:
+        return 0.0
+    growth_rate = birth_rate - death_rate
+    x = growth_rate * time
+    # log of ``num`` in ``pr_extinction``; survival is 1 / (1 + num).
+    if abs(x) < _ATOL_CRITICAL:
+        log_num = math.log(death_rate) + math.log(time)
+    elif x < 0.0:
+        # kernel = expm1(|x|) / |g|, with log(expm1(y)) = y + log(1 - exp(-y))
+        log_num = (
+            math.log(death_rate)
+            + (-x)
+            + math.log(-math.expm1(x))
+            - math.log(-growth_rate)
+        )
+    else:
+        log_num = (
+            math.log(death_rate) + math.log(-math.expm1(-x)) - math.log(growth_rate)
+        )
+    return -float(np.logaddexp(0.0, log_num))
 
 
 def select_level_times_for_band(
@@ -310,74 +332,229 @@ def select_level_times_for_band(
     birth_rate: float,
     death_rate: float,
     terminal_time: float,
+    n_levels: int = 10,
+    initial_level_times: list[float] | np.ndarray | None = None,
 ) -> np.ndarray:
-    """Auto-select an equal-spaced level grid balancing enrichment against extinction.
+    """Adjust a starting level grid so each survival ratio lies in the band.
 
-    Enumerates equal-split counts ``n = 1, 2, ...``.  Each gives an increment
-    ``tau = T / n`` with single-particle extinction probability
-    ``pr = pr_ext(tau)`` (monotonically decreasing in ``n``) and splitting
-    factor ``R = ceil(1 / pr)``.  Among the splits whose ``pr`` lies in the band
-    ``[_BAND_LOWER, _BAND_UPPER]`` (equivalently ``R in [2, 8]``), it selects the
-    ``n`` minimising ``|(R * pr)^n - 1|`` — i.e. the grid whose cumulative
-    R-fold enrichment across all ``n`` levels most nearly offsets the
-    cumulative die-off. The chosen factor is constant across the whole
-    process because the grid is equal-spaced.
+    With ``Pr(t) = P(Z_t > 0)`` from a single individual, the ratio over
+    interval ``i`` is ``r_i = Pr(t_i) / Pr(t_{i-1})``.  The band is
+    ``[e^{-2}, 0.5]``.
+
+    1. **Refine.** Every interval with ``r_i < e^{-2}`` gets its midpoint added,
+       and the ratios are recomputed.  This repeats until no ratio is below the
+       band.  A new interval whose ratio is now above 0.5 is kept.
+    2. **Coarsen.** Every interval with ``r_i > 0.5`` has its right end point
+       ``t_i`` removed (for the last interval, ``t_{K-1}`` is removed), after
+       which the ratios are recomputed.  Midpoints added in step 1 and the end
+       points ``0`` and ``T`` are never removed, and two consecutive points are
+       never removed in one sweep.  If a removal would push the merged ratio
+       below ``e^{-2}`` it is undone and that point is kept.  Sweeps repeat
+       until nothing changes.
 
     Parameters
     ----------
     birth_rate : float
         Per-individual birth rate.
     death_rate : float
-        Per-individual death rate (must exceed ``birth_rate``).
+        Per-individual death rate.
     terminal_time : float
         Terminal time T.
+    n_levels : int, optional
+        Number of intervals in the starting grid
+        ``linspace(0, T, n_levels + 1)``.  Ignored if ``initial_level_times``
+        is given.
+    initial_level_times : list[float] | np.ndarray | None, optional
+        Starting grid, including ``0`` and ``terminal_time``.
 
     Returns
     -------
     np.ndarray
-        Strictly increasing level boundary array ``[0, ..., T]`` of length
-        ``n_levels + 1``, where ``n_levels >= 1`` and the per-increment
-        extinction probability lies in ``[_BAND_LOWER, _BAND_UPPER]``.
+        Strictly increasing level boundary array ``[0, ..., T]``.
 
     Raises
     ------
     ValueError
-        If no equal-split grid with per-increment ``pr_ext`` in the band can be
-        found (e.g. the process is not subcritical, or ``terminal_time`` is so
-        short that even a single-level split falls outside the band).
+        If the starting grid is invalid or the refine step exceeds
+        ``_MAX_GRID_POINTS`` points.
 
     """
-    best_score = np.inf
-    best_n = 0
-    n = 1
-    while n <= _MAX_BAND_LEVELS:
-        pr = _calculate_extinction_probability(
-            birth_rate=birth_rate,
-            death_rate=death_rate,
-            interval_time=terminal_time / n,
+    grid = _build_level_times(
+        terminal_time=terminal_time,
+        level_times=None if initial_level_times is None else list(initial_level_times),
+        n_levels=n_levels,
+    )
+    times = [float(t) for t in grid]
+    removable = [True] * len(times)  # only starting-grid points may be removed
+
+    def log_pr(t: float) -> float:
+        return _log_survival_probability(
+            birth_rate=birth_rate, death_rate=death_rate, time=t
         )
-        if pr < _BAND_LOWER:
-            # pr_ext is monotone decreasing in n; every larger n is also below the band
+
+    # --- Refine: bisect intervals whose ratio is too small ---
+    log_prs = [log_pr(t) for t in times]
+    while True:
+        new_times = [times[0]]
+        new_log_prs = [log_prs[0]]
+        new_removable = [removable[0]]
+        changed = False
+        for i in range(1, len(times)):
+            if log_prs[i] - log_prs[i - 1] < _LOG_BAND_LOWER:
+                mid = 0.5 * (times[i - 1] + times[i])
+                if times[i - 1] < mid < times[i]:
+                    new_times.append(mid)
+                    new_log_prs.append(log_pr(mid))
+                    new_removable.append(False)
+                    changed = True
+            new_times.append(times[i])
+            new_log_prs.append(log_prs[i])
+            new_removable.append(removable[i])
+        times, log_prs, removable = new_times, new_log_prs, new_removable
+        if len(times) > _MAX_GRID_POINTS:
+            msg = f"Level grid refinement exceeded {_MAX_GRID_POINTS} points."
+            raise ValueError(msg)
+        if not changed:
             break
-        if pr <= _BAND_UPPER:
-            splitting_factor = int(np.ceil(1.0 / pr))
-            score = abs((splitting_factor * pr) ** n - 1.0)
-            if score < best_score:
-                best_score = score
-                best_n = n
-        n += 1
 
-    if best_n == 0:
-        msg = (
-            "Cannot find an equal-split grid with per-increment pr_ext in the "
-            f"band [{_BAND_LOWER:.4f}, {_BAND_UPPER:.4f}] for the given "
-            "birth_rate, death_rate, and terminal_time. Check that the process "
-            "is subcritical and terminal_time is large enough that extinction "
-            "over the whole horizon is at least e^{-2}."
+    # --- Coarsen: drop points whose ratio is too large, keeping the band ---
+    changed = True
+    while changed:
+        changed = False
+        i = 1
+        just_removed = False
+        while i < len(times):
+            if log_prs[i] - log_prs[i - 1] > _LOG_BAND_UPPER:
+                j = i if i < len(times) - 1 else i - 1
+                if 1 <= j <= len(times) - 2 and removable[j] and not just_removed:
+                    if log_prs[j + 1] - log_prs[j - 1] >= _LOG_BAND_LOWER:
+                        del times[j], log_prs[j], removable[j]
+                        changed = True
+                        just_removed = True
+                        i = min(i, j) if j == i - 1 else i
+                        continue
+                    removable[j] = False
+            just_removed = False
+            i += 1
+
+    return np.asarray(times, dtype=np.float64)
+
+
+def compute_level_replicates(
+    *,
+    birth_rate: float,
+    death_rate: float,
+    level_times: list[float] | np.ndarray,
+) -> np.ndarray:
+    """Return the replicate count ``R_i`` for each level interval.
+
+    ``R_i`` is the number of copies made at ``t_{i-1}`` of each surviving line
+    (``R_1`` is the initial ensemble size).  It is the smallest integer
+    ``>= 2`` such that ``R_1 * ... * R_i * Pr(t_i) >= 1``, i.e. the expected
+    number of lines alive at ``t_i`` is at least one.
+
+    Parameters
+    ----------
+    birth_rate : float
+        Per-individual birth rate.
+    death_rate : float
+        Per-individual death rate.
+    level_times : list[float] | np.ndarray
+        Level boundary times ``0 = t_0 < ... < t_K``.
+
+    Returns
+    -------
+    np.ndarray
+        Integer array of length ``K``.
+
+    Raises
+    ------
+    ValueError
+        If some ``R_i`` would be astronomically large (a grid far outside the
+        band).
+
+    """
+    times = np.asarray(level_times, dtype=np.float64)
+    replicates = np.zeros(times.size - 1, dtype=np.int64)
+    log_cumulative = 0.0
+    for i in range(1, times.size):
+        log_pr = _log_survival_probability(
+            birth_rate=birth_rate, death_rate=death_rate, time=float(times[i])
         )
-        raise ValueError(msg)
+        needed = -(log_pr + log_cumulative)
+        if needed > _MAX_LOG_REPLICATES:
+            msg = f"Replicate count for interval {i} is too large; refine level_times."
+            raise ValueError(msg)
+        count = max(
+            _MIN_REPLICATES,
+            math.ceil(math.exp(needed) - _REPLICATE_TOLERANCE),
+        )
+        replicates[i - 1] = count
+        log_cumulative += math.log(count)
+    return replicates
 
-    return np.linspace(0.0, terminal_time, num=best_n + 1, dtype=np.float64)
+
+def default_max_restarts(
+    *,
+    birth_rate: float,
+    death_rate: float,
+    level_times: list[float] | np.ndarray,
+    replicates: list[int] | np.ndarray,
+    target_success: float = DEFAULT_RESTART_SUCCESS_PROBABILITY,
+) -> int:
+    """Return the number of attempts so that at least one succeeds w.p. ``target``.
+
+    An attempt fails if no line survives to ``T``.  Its failure probability
+    ``p_fail`` is approximated as a Galton-Watson process in which each line
+    survives interval ``i`` independently with probability ``r_i`` and every
+    survivor is replaced by ``R_i`` copies.  Working backwards with
+    ``F_{K+1} = 0``::
+
+        F_i = (1 - r_i + r_i * F_{i+1}) ** R_i,    p_fail = F_1.
+
+    The result is the smallest ``n >= 1`` with ``1 - p_fail ** n >= target``.
+    The approximation ignores the ensemble cap.
+
+    Parameters
+    ----------
+    birth_rate : float
+        Per-individual birth rate.
+    death_rate : float
+        Per-individual death rate.
+    level_times : list[float] | np.ndarray
+        Level boundary times ``0 = t_0 < ... < t_K``.
+    replicates : list[int] | np.ndarray
+        Replicate counts, one per interval.
+    target_success : float, optional
+        Required probability that at least one attempt survives.
+
+    Returns
+    -------
+    int
+        Maximum number of attempts.
+
+    """
+    if not 0.0 < target_success < 1.0:
+        msg = "target_success must lie strictly between 0 and 1"
+        raise ValueError(msg)
+    times = np.asarray(level_times, dtype=np.float64)
+    reps = np.asarray(replicates, dtype=np.int64)
+    log_prs = [
+        _log_survival_probability(
+            birth_rate=birth_rate, death_rate=death_rate, time=float(t)
+        )
+        for t in times
+    ]
+    failure = 0.0
+    for i in range(reps.size, 0, -1):
+        ratio = math.exp(log_prs[i] - log_prs[i - 1])
+        failure = (1.0 - ratio + ratio * failure) ** int(reps[i - 1])
+    if failure <= 0.0:
+        return 1
+    if failure >= 1.0:
+        msg = "Attempts cannot succeed under the Galton-Watson approximation."
+        raise ValueError(msg)
+    return max(1, math.ceil(math.log(1.0 - target_success) / math.log(failure)))
 
 
 def _initialize_particle(
@@ -598,7 +775,7 @@ def _enrich_survivors(
     particles : list[_ParticleState]
         Full particle list at the current level boundary.
     splitting_factor : int
-        R = ceil(1 / pr_ext); each survivor is cloned this many times.
+        Number of copies made of each survivor.
     n_particles_cap : int
         Maximum ensemble size; subsampled to this if R * survivors > cap.
     seed_rng : np.random.Generator
@@ -648,152 +825,35 @@ def _enrich_survivors(
     return next_particles, particle_id_counter
 
 
-def simulate_subcritical_survival_splitting(
+@dataclass
+class _AttemptOutcome:
+    """Everything one splitting attempt produces."""
+
+    particles: list[_ParticleState]
+    diagnostics: list[LevelDiagnostic]
+    mean_populations: list[float]
+    lineage_rows: list[dict[str, Any]]
+    n_initial: int
+
+
+def _run_attempt(
+    *,
     config: SplittingConfig,
-) -> SplittingSimulationResult:
-    """Run fixed-factor enrichment (RESTART) splitting to estimate subcritical survival.
-
-    Requires a strictly subcritical process (``birth_rate < death_rate``).
-
-    Algorithm
-    ---------
-    **Band constraint.** The level grid is chosen so that the single-particle
-    extinction probability over each increment satisfies
-    ``pr_ext in [e^{-2}, 0.5]``.  This keeps the splitting factor
-    ``R = ceil(1 / pr_ext)`` in the range ``[2, 8]``, balancing variance
-    reduction against computational cost.
-
-    **Initialisation.** When ``config.level_times`` is ``None``, the grid is
-    auto-selected by enumeration over equal-split counts
-    (``select_level_times_for_band``); otherwise the caller-supplied grid is
-    used and its first increment is validated against the band. The initial
-    ensemble size is ``N_0 = min(R, config.n_particles)``.
-
-    **Each level k** is processed in three steps:
-
-    1. **Evolve.** Every particle advances from ``t_{k-1}`` to ``t_k`` under
-       exact Gillespie dynamics.
-    2. **Estimate.** The empirical conditional survival fraction is
-       ``p_k = S_k / N_{k-1}``, where ``S_k`` is the survivor count and
-       ``N_{k-1}`` is the entering particle count (not the cap).
-    3. **Enrich.** Each surviving particle is duplicated R times (R-fold
-       enrichment).  If ``R * S_k > config.n_particles`` the enlarged ensemble
-       is subsampled uniformly with replacement to ``config.n_particles``; this
-       caps cost while keeping the estimator unbiased.
-
-    The final survival estimate is the product
-    ``P(survival to T) ~= p_1 * p_2 * ... * p_K``.
-
-    If all particles go extinct at any level, the algorithm stops early
-    (``survival_probability_estimate`` will be zero) and the returned
-    ``level_times`` array will be shorter than the full K+1 entries.
-
-    Parameters
-    ----------
-    config : SplittingConfig
-        Simulation parameters.  See ``SplittingConfig`` for field descriptions.
-        ``n_particles`` acts as a cap on ensemble size; ``n_levels`` is ignored
-        when ``level_times`` is ``None``.
-
-    Returns
-    -------
-    SplittingSimulationResult
-        Contains:
-
-        - ``survival_probability_estimate`` - product of the per-level
-          empirical fractions.
-        - ``level_survival_probabilities`` - the individual ``p_k`` values.
-        - ``level_mean_populations`` - mean population at each level boundary
-          (including t_0, where it equals 1).
-        - ``level_times`` - the boundary times actually used (may be truncated
-          on early extinction).
-        - ``conditioned_trajectories`` - surviving terminal particles as
-          ``ConditionedTrajectory`` objects, each carrying a full
-          ``SimulatedTree`` with ``is_spine`` flags set.
-        - ``particle_genealogy`` - DataFrame of parent-child particle lineage
-          records at each enrichment step.
-        - ``level_diagnostics`` - per-level diagnostic records including
-          ``entering_count`` (particles entering that level).
-        - ``splitting_factor`` - the R value derived from the first increment.
-        - ``initial_particle_count`` - ``N_0 = min(R, config.n_particles)``.
-
-    Raises
-    ------
-    ValueError
-        If ``birth_rate >= death_rate`` (not subcritical), ``n_particles < 1``,
-        ``terminal_time <= 0``, or if ``level_times`` is supplied without a
-        ``splitting_factor`` override but its first increment violates the band
-        constraint ``[e^{-2}, 0.5]``, or if ``splitting_factor < 1``.
-
-    """
-    _validate_common_inputs(
-        birth_rate=float(config.birth_rate),
-        death_rate=float(config.death_rate),
-        terminal_time=float(config.terminal_time),
-        n_particles=int(config.n_particles),
-    )
-
-    # --- Level selection ---
-    if config.level_times is None:
-        levels = select_level_times_for_band(
-            birth_rate=float(config.birth_rate),
-            death_rate=float(config.death_rate),
-            terminal_time=float(config.terminal_time),
-        )
-    else:
-        levels = _build_level_times(
-            terminal_time=float(config.terminal_time),
-            level_times=config.level_times,
-            n_levels=int(config.n_levels),
-        )
-        # When the caller supplies both an explicit grid and an explicit
-        # splitting_factor, they have predetermined the configuration and
-        # the band check is bypassed.  Otherwise validate that the first
-        # increment falls within [e^{-2}, 0.5] to ensure R in [2, 8].
-        if config.splitting_factor is None:
-            first_increment = float(levels[1]) - float(levels[0])
-            first_pr_ext = _calculate_extinction_probability(
-                birth_rate=float(config.birth_rate),
-                death_rate=float(config.death_rate),
-                interval_time=first_increment,
-            )
-            if not (_BAND_LOWER <= first_pr_ext <= _BAND_UPPER):
-                msg = (
-                    f"First increment extinction probability {first_pr_ext:.4f} "
-                    "is outside "
-                    f"the required band [{_BAND_LOWER:.4f}, {_BAND_UPPER:.4f}]. "
-                    "Adjust level_times, leave level_times=None for auto-selection, "
-                    "or supply splitting_factor to bypass this check."
-                )
-                raise ValueError(msg)
-
-    # --- Splitting factor from first increment (or manual override) ---
-    if config.splitting_factor is not None:
-        if int(config.splitting_factor) < 1:
-            msg = f"splitting_factor must be >= 1, got {config.splitting_factor}."
-            raise ValueError(msg)
-        splitting_factor = int(config.splitting_factor)
-    else:
-        first_increment_time = float(levels[1]) - float(levels[0])
-        splitting_factor = _adaptive_particle_count(
-            birth_rate=float(config.birth_rate),
-            death_rate=float(config.death_rate),
-            interval_time=first_increment_time,
-        )
+    levels: np.ndarray,
+    replicates: np.ndarray,
+    seed_rng: np.random.Generator,
+) -> _AttemptOutcome:
+    """Run one pass of multilevel splitting from time 0 to the terminal time."""
     n_particles_cap = int(config.n_particles)
-    n_initial = min(splitting_factor, n_particles_cap)
-
-    seed_rng = np.random.default_rng(config.random_seed)
+    n_initial = min(int(replicates[0]), n_particles_cap)
     particles = [
         _initialize_particle(particle_id=i, seed_rng=seed_rng) for i in range(n_initial)
     ]
 
     diagnostics: list[LevelDiagnostic] = []
-    level_probs: list[float] = []
     mean_populations: list[float] = [1.0]
     lineage_rows: list[dict[str, Any]] = []
     particle_id_counter = n_initial
-    cumulative = 1.0
 
     for level_index in range(1, len(levels)):
         target_time = float(levels[level_index])
@@ -813,49 +873,211 @@ def simulate_subcritical_survival_splitting(
         )
         survivors = np.flatnonzero(populations_at_level > 0)
         survivor_count = int(survivors.size)
-        # Correct denominator: entering count, not cap
-        conditional_prob = survivor_count / float(n_entering)
-        cumulative *= conditional_prob
 
         diagnostics.append(
             LevelDiagnostic(
                 level_index=level_index,
                 time=target_time,
                 survivor_count=survivor_count,
-                conditional_survival_estimate=conditional_prob,
-                cumulative_survival_estimate=cumulative,
                 mean_population=float(np.mean(populations_at_level)),
                 entering_count=n_entering,
             ),
         )
-        level_probs.append(conditional_prob)
         mean_populations.append(float(np.mean(populations_at_level)))
 
         if survivor_count == 0:
             particles = []
             break
 
-        # --- R-fold enrichment with cap ---
-        particles, particle_id_counter = _enrich_survivors(
-            survivors=survivors,
-            particles=particles,
-            splitting_factor=splitting_factor,
-            n_particles_cap=n_particles_cap,
+        # Enrich for the next interval; nothing to enrich after the last one.
+        if level_index < len(levels) - 1:
+            particles, particle_id_counter = _enrich_survivors(
+                survivors=survivors,
+                particles=particles,
+                splitting_factor=int(replicates[level_index]),
+                n_particles_cap=n_particles_cap,
+                seed_rng=seed_rng,
+                particle_id_counter=particle_id_counter,
+                level_index=level_index,
+                target_time=target_time,
+                lineage_rows=lineage_rows,
+            )
+
+    return _AttemptOutcome(
+        particles=particles,
+        diagnostics=diagnostics,
+        mean_populations=mean_populations,
+        lineage_rows=lineage_rows,
+        n_initial=n_initial,
+    )
+
+
+def _resolve_levels_and_replicates(
+    config: SplittingConfig,
+) -> tuple[np.ndarray, np.ndarray]:
+    birth_rate = float(config.birth_rate)
+    death_rate = float(config.death_rate)
+    terminal_time = float(config.terminal_time)
+
+    if config.replicates is not None:
+        if config.level_times is None:
+            msg = "replicates requires level_times"
+            raise ValueError(msg)
+        levels = _build_level_times(
+            terminal_time=terminal_time,
+            level_times=config.level_times,
+            n_levels=int(config.n_levels),
+        )
+        replicates = np.asarray(config.replicates, dtype=np.int64)
+        if replicates.shape != (levels.size - 1,):
+            msg = (
+                f"replicates must have one entry per level interval "
+                f"({levels.size - 1}), got {replicates.size}."
+            )
+            raise ValueError(msg)
+        if np.any(replicates < 1):
+            msg = "replicates must all be >= 1"
+            raise ValueError(msg)
+        return levels, replicates
+
+    levels = select_level_times_for_band(
+        birth_rate=birth_rate,
+        death_rate=death_rate,
+        terminal_time=terminal_time,
+        n_levels=int(config.n_levels),
+        initial_level_times=config.level_times,
+    )
+    replicates = compute_level_replicates(
+        birth_rate=birth_rate, death_rate=death_rate, level_times=levels
+    )
+    return levels, replicates
+
+
+def simulate_subcritical_survival_splitting(
+    config: SplittingConfig,
+) -> SplittingSimulationResult:
+    """Sample survival-conditioned trajectories by multilevel (RESTART) splitting.
+
+    Requires a strictly subcritical process (``birth_rate < death_rate``).
+
+    Algorithm
+    ---------
+    **Levels.** Starting from ``config.level_times`` (or
+    ``linspace(0, T, n_levels + 1)``), ``select_level_times_for_band`` adjusts
+    the grid so each ratio ``Pr(t_i) / Pr(t_{i-1})`` lies in ``[e^{-2}, 0.5]``.
+
+    **Replicates.** ``compute_level_replicates`` gives each interval the
+    smallest ``R_i >= 2`` keeping the expected number of live lines at
+    least one.  ``R_1`` lines are started at time 0, and at ``t_{i-1}`` every
+    survivor is copied ``R_i`` times.  If ``config.level_times`` and
+    ``config.replicates`` are both given, they are used as supplied.
+
+    **Each level k** is processed in three steps:
+
+    1. **Evolve.** Every particle advances from ``t_{k-1}`` to ``t_k`` under
+       exact Gillespie dynamics.
+    2. **Cull.** Particles with no live individual at ``t_k`` are dropped.
+    3. **Enrich.** Each survivor is copied ``R_{k+1}`` times (not after the
+       last level).  If this exceeds ``config.n_particles`` the ensemble is
+       subsampled uniformly with replacement to ``config.n_particles``.
+
+    The particles alive at ``T`` are kept as the conditioned samples; no
+    survival probability is estimated.  Clones of one survivor share their
+    history up to the level where they were split, so the kept trajectories
+    are not independent.
+
+    **Restarts.** If no particle survives to ``T`` the attempt is restarted
+    from time 0, up to ``max_restarts`` attempts in total (default from
+    ``default_max_restarts``).  The first successful attempt is returned and
+    failed attempts are discarded.  If every attempt fails a warning is issued
+    and no trajectories are returned.
+
+    Parameters
+    ----------
+    config : SplittingConfig
+        Simulation parameters.  See ``SplittingConfig`` for field descriptions.
+
+    Returns
+    -------
+    SplittingSimulationResult
+        Contains:
+
+        - ``level_mean_populations`` - mean population at each level boundary
+          of the last attempt (including t_0, where it equals 1).
+        - ``level_times`` - the boundary times used (truncated if the last
+          attempt went extinct).
+        - ``conditioned_trajectories`` - surviving terminal particles as
+          ``ConditionedTrajectory`` objects, each carrying a full
+          ``SimulatedTree`` with ``is_spine`` flags set.
+        - ``particle_genealogy`` - parent-child particle lineage records of the
+          last attempt.
+        - ``level_diagnostics`` - per-level diagnostic records of the last
+          attempt.
+        - ``replicates`` - the ``R_i`` used.
+        - ``initial_particle_count`` - ``min(R_1, config.n_particles)``.
+        - ``n_attempts`` and ``max_restarts``.
+
+    Raises
+    ------
+    ValueError
+        If ``birth_rate >= death_rate`` (not subcritical), ``n_particles < 1``,
+        ``terminal_time <= 0``, ``max_restarts < 1``, or ``replicates`` is
+        invalid or given without ``level_times``.
+
+    """
+    _validate_common_inputs(
+        birth_rate=float(config.birth_rate),
+        death_rate=float(config.death_rate),
+        terminal_time=float(config.terminal_time),
+        n_particles=int(config.n_particles),
+    )
+
+    levels, replicates = _resolve_levels_and_replicates(config)
+
+    if config.max_restarts is None:
+        max_restarts = default_max_restarts(
+            birth_rate=float(config.birth_rate),
+            death_rate=float(config.death_rate),
+            level_times=levels,
+            replicates=replicates,
+        )
+    else:
+        max_restarts = int(config.max_restarts)
+        if max_restarts < 1:
+            msg = f"max_restarts must be >= 1, got {config.max_restarts}."
+            raise ValueError(msg)
+
+    seed_rng = np.random.default_rng(config.random_seed)
+
+    n_attempts = 0
+    outcome: _AttemptOutcome
+    while True:
+        outcome = _run_attempt(
+            config=config,
+            levels=levels,
+            replicates=replicates,
             seed_rng=seed_rng,
-            particle_id_counter=particle_id_counter,
-            level_index=level_index,
-            target_time=target_time,
-            lineage_rows=lineage_rows,
+        )
+        n_attempts += 1
+        if outcome.particles or n_attempts >= max_restarts:
+            break
+
+    if not outcome.particles:
+        warnings.warn(
+            f"No particle survived to the terminal time in {n_attempts} "
+            "attempt(s); returning an empty result.",
+            RuntimeWarning,
+            stacklevel=2,
         )
 
     conditioned_trajectories = _build_conditioned_trajectories(
-        particles=particles,
+        particles=outcome.particles,
         config=config,
         seed_rng=seed_rng,
     )
 
-    final_survivor_count = int(sum(len(p.alive_ids) > 0 for p in particles))
-    particle_genealogy = pd.DataFrame(lineage_rows)
+    final_survivor_count = int(sum(len(p.alive_ids) > 0 for p in outcome.particles))
+    particle_genealogy = pd.DataFrame(outcome.lineage_rows)
     if particle_genealogy.empty:
         particle_genealogy = pd.DataFrame(
             columns=[
@@ -870,14 +1092,14 @@ def simulate_subcritical_survival_splitting(
 
     return SplittingSimulationResult(
         config=config,
-        level_times=levels[: len(level_probs) + 1],
-        survival_probability_estimate=float(cumulative),
-        level_diagnostics=diagnostics,
-        level_survival_probabilities=np.asarray(level_probs, dtype=np.float64),
-        level_mean_populations=np.asarray(mean_populations, dtype=np.float64),
+        level_times=levels[: len(outcome.diagnostics) + 1],
+        level_diagnostics=outcome.diagnostics,
+        level_mean_populations=np.asarray(outcome.mean_populations, dtype=np.float64),
         final_survivor_count=final_survivor_count,
         conditioned_trajectories=conditioned_trajectories,
         particle_genealogy=particle_genealogy,
-        splitting_factor=splitting_factor,
-        initial_particle_count=n_initial,
+        replicates=replicates,
+        initial_particle_count=outcome.n_initial,
+        n_attempts=n_attempts,
+        max_restarts=max_restarts,
     )

@@ -8,7 +8,7 @@ survival to a terminal time ``T``:
 
 - ``simulate_birth_death_process_from_contour_process`` — exact, via
   contour-process reconstruction (see ``docs/contour_process.md``).
-- ``simulate_subcritical_survival_splitting`` — approximate, via fixed-factor
+- ``simulate_subcritical_survival_splitting`` — approximate, via adaptive-grid
   (RESTART) multilevel splitting (see ``docs/splitting.md``).
 
 Both return a ``SimulatedTree``: a plain dataclass wrapping the individual-
@@ -62,6 +62,8 @@ from bdsurv.splitting import (  # noqa: E402
     LevelDiagnostic,
     SplittingConfig,
     SplittingSimulationResult,
+    compute_level_replicates,
+    default_max_restarts,
     select_level_times_for_band,
     simulate_subcritical_survival_splitting,
 )
@@ -86,6 +88,8 @@ __all__ = [
     "SplittingConfig",
     "SplittingSimulationResult",
     "build_target_ranges",
+    "compute_level_replicates",
+    "default_max_restarts",
     "sample_conditioned_survival_per_posterior",
     "sample_conditioned_survival_process",
     "select_level_times_for_band",

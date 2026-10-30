@@ -21,7 +21,7 @@ Compared head-to-head in
 | Method                     | Function                                             | Mechanism                                            |
 | -------------------------- | ----------------------------------------------------- | ----------------------------------------------------- |
 | Contour process            | `simulate_birth_death_process_from_contour_process`    | Exact — the spine excursion is constructed to reach `T` |
-| Multilevel splitting       | `simulate_subcritical_survival_splitting`               | Fixed-factor (RESTART) enrichment at level boundaries  |
+| Multilevel splitting       | `simulate_subcritical_survival_splitting`               | Adaptive-grid (RESTART) enrichment at level boundaries |
 
 Both return a `SimulatedTree`: a plain dataclass wrapping the individual-level
 records table plus the rates and terminal time used to generate it.
@@ -79,13 +79,13 @@ tree = simulate_birth_death_process_from_contour_process(
 )
 print(tree.records.head())
 
-# Approximate: a survival-probability estimate plus a batch of conditioned
-# trajectories, via multilevel splitting.
+# Approximate: a batch of trajectories that survive to the terminal time,
+# via multilevel splitting.
 config = SplittingConfig(
     birth_rate=0.9, death_rate=1.0, terminal_time=50.0, n_particles=500
 )
 result = simulate_subcritical_survival_splitting(config)
-print(result.survival_probability_estimate)
+print(len(result.conditioned_trajectories))
 ```
 
 Forward simulation with rates that change at the epoch end times:

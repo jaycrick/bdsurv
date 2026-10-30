@@ -39,6 +39,7 @@ from bdsurv import (
     PiecewiseConstant,
     PiecewiseLinear,
     SplittingConfig,
+    compute_level_replicates,
     sample_conditioned_survival_process,
     select_level_times_for_band,
     simulate_birth_death_lifespans,
@@ -48,9 +49,6 @@ from bdsurv import (
     simulate_subcritical_survival_splitting,
 )
 from bdsurv._extinction import pr_extinction
-from bdsurv.splitting import (
-    _calculate_extinction_probability,  # pyright: ignore[reportPrivateUsage]
-)
 
 SEED = 42
 pd.options.display.float_format = "{:.4g}".format
@@ -82,14 +80,8 @@ for mu in DEATH_RATES:
     grid = select_level_times_for_band(
         birth_rate=BIRTH_RATE, death_rate=mu, terminal_time=TERMINAL_TIME
     )
-    first_increment = float(grid[1]) - float(grid[0])
-    r = int(
-        np.ceil(
-            1.0
-            / _calculate_extinction_probability(
-                birth_rate=BIRTH_RATE, death_rate=mu, interval_time=first_increment
-            )
-        )
+    reps = compute_level_replicates(
+        birth_rate=BIRTH_RATE, death_rate=mu, level_times=grid
     )
 
     _, contour_s = timed(
@@ -110,7 +102,7 @@ for mu in DEATH_RATES:
         terminal_time=TERMINAL_TIME,
         n_particles=N_PARTICLES,
         level_times=grid.tolist(),
-        splitting_factor=r,
+        replicates=reps.tolist(),
         random_seed=SEED,
     )
     result, splitting_s = timed(lambda: simulate_subcritical_survival_splitting(config))
@@ -119,9 +111,8 @@ for mu in DEATH_RATES:
         {
             "mu": mu,
             "P(survive to T)": 1.0 - pr_extinction(BIRTH_RATE, mu, TERMINAL_TIME),
-            "splitting estimate": result.survival_probability_estimate,
             "levels": len(grid) - 1,
-            "R": r,
+            "R": reps.tolist(),
             "contour s/tree": contour_s / N_CONTOUR_CALLS,
             "splitting s (total)": splitting_s,
             "splitting trees": len(result.conditioned_trajectories),
