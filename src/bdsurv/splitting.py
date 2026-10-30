@@ -1,8 +1,9 @@
-"""Splitting-based rare-event simulation for subcritical birth-death processes.
+"""Splitting-based rare-event simulation for survival-conditioned birth-death trees.
 
 This module provides continuous-time simulation utilities for sampling
-subcritical birth-death branching-process trajectories conditioned on survival
-up to a large terminal time.
+birth-death branching-process trajectories conditioned on survival up to a large
+terminal time.  Any positive rates are accepted: for subcritical processes
+survival is rare, for supercritical ones it is likely but not certain.
 
 Implemented methods:
 - Multilevel splitting with exact Gillespie trajectory evolution, an adaptive
@@ -23,7 +24,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from bdsurv._extinction import _ATOL_CRITICAL, pr_extinction
 from bdsurv.tree import SimulatedTree
 
 MIN_LEVEL_TIMES = 2
@@ -31,8 +31,10 @@ _BAND_LOWER: float = np.e**-2.0  # lowest allowed Pr(t_i) / Pr(t_{i-1})
 _BAND_UPPER: float = 0.5  # highest allowed Pr(t_i) / Pr(t_{i-1})
 _LOG_BAND_LOWER: float = -2.0
 _LOG_BAND_UPPER: float = math.log(0.5)
+_TARGET_LEVEL_RATIO: float = 1.0 / 3.0  # per-level survival ratio of the start grid
 _MAX_GRID_POINTS: int = 100_000  # defensive cap on the refine step
 _MIN_REPLICATES: int = 2
+_CRITICAL_TOLERANCE: float = 1e-10  # |lambda - mu| * t below this is critical
 _REPLICATE_TOLERANCE: float = 1e-9  # so Pr(t_1) = 1/2 gives exactly R_1 = 2
 _MAX_LOG_REPLICATES: float = 30.0  # refuse R_i beyond ~1e13
 DEFAULT_RESTART_SUCCESS_PROBABILITY: float = 0.999
@@ -40,7 +42,7 @@ DEFAULT_RESTART_SUCCESS_PROBABILITY: float = 0.999
 
 @dataclass(frozen=True)
 class SplittingConfig:
-    """Configuration for multilevel splitting in a subcritical regime.
+    """Configuration for multilevel splitting.
 
     Parameters
     ----------
@@ -58,12 +60,14 @@ class SplittingConfig:
         ``n_particles``.
     level_times : list[float] | None, optional
         Level boundary times (including 0 and `terminal_time`).  If ``None``
-        the starting grid is ``linspace(0, terminal_time, n_levels + 1)``.
+        the starting grid is ``linspace(0, terminal_time, K + 1)`` with ``K`` from
+        ``n_levels``.
         Unless ``replicates`` is also given, this grid is only the *starting*
         grid and is adjusted by ``select_level_times_for_band``.
-    n_levels : int, optional
-        Number of intervals in the starting grid when ``level_times`` is not
-        provided.  Defaults to 10.
+    n_levels : int | None, optional
+        Number of intervals ``K`` in the starting grid when ``level_times`` is not
+        provided.  If ``None`` (the default), ``K`` is the integer for which
+        ``Pr(T) ** (1 / K)`` is closest to 1/3, and at least 1.
     random_seed : int | None, optional
         Seed for random number generation to allow reproducible runs.
     n_conditioned_trajectories : int | None, optional
@@ -77,7 +81,9 @@ class SplittingConfig:
     max_restarts : int | None, optional
         Maximum number of attempts (each one a fresh run from time 0) made
         while no particle survives to the terminal time.  If ``None``, it is
-        computed by ``default_max_restarts``.
+        computed by ``default_max_restarts``.  When survival to ``T`` is likely
+        (``Pr(T) > 0.5``) trees are simulated one at a time, and ``None`` means
+        keep going until one survives.
 
     """
 
@@ -86,7 +92,7 @@ class SplittingConfig:
     terminal_time: float
     n_particles: int
     level_times: list[float] | None = None
-    n_levels: int = 10
+    n_levels: int | None = None
     random_seed: int | None = None
     n_conditioned_trajectories: int | None = None
     replicates: list[int] | None = None
@@ -171,8 +177,8 @@ class SplittingSimulationResult:
         Number of particles at the start of each attempt, ``min(R_1, cap)``.
     n_attempts : int
         Number of attempts made (1 + number of restarts used).
-    max_restarts : int
-        Maximum number of attempts allowed.
+    max_restarts : int | None
+        Maximum number of attempts allowed, or ``None`` if unbounded.
 
     """
 
@@ -188,7 +194,7 @@ class SplittingSimulationResult:
     )
     initial_particle_count: int = 1
     n_attempts: int = 1
-    max_restarts: int = 1
+    max_restarts: int | None = 1
 
 
 @dataclass
@@ -237,9 +243,6 @@ def _validate_common_inputs(
     if birth_rate <= 0.0 or death_rate <= 0.0:
         msg = "birth_rate and death_rate must be positive"
         raise ValueError(msg)
-    if birth_rate >= death_rate:
-        msg = "Subcritical regime required: birth_rate must be < death_rate"
-        raise ValueError(msg)
     if terminal_time <= 0.0:
         msg = "terminal_time must be positive"
         raise ValueError(msg)
@@ -252,10 +255,10 @@ def _build_level_times(
     *,
     terminal_time: float,
     level_times: list[float] | None,
-    n_levels: int,
+    n_levels: int | None,
 ) -> np.ndarray:
     if level_times is None:
-        if n_levels <= 0:
+        if n_levels is None or n_levels <= 0:
             msg = "n_levels must be positive when level_times is not provided"
             raise ValueError(msg)
         levels = np.linspace(0.0, terminal_time, num=n_levels + 1, dtype=np.float64)
@@ -288,16 +291,6 @@ def _make_child_rng(
     return np.random.default_rng(child_seed)
 
 
-def _calculate_extinction_probability(
-    *,
-    birth_rate: float,
-    death_rate: float,
-    interval_time: float,
-) -> float:
-    probability = pr_extinction(birth_rate, death_rate, interval_time)
-    return float(np.clip(probability, 0.0, 1.0))
-
-
 def _log_survival_probability(
     *,
     birth_rate: float,
@@ -310,7 +303,7 @@ def _log_survival_probability(
     growth_rate = birth_rate - death_rate
     x = growth_rate * time
     # log of ``num`` in ``pr_extinction``; survival is 1 / (1 + num).
-    if abs(x) < _ATOL_CRITICAL:
+    if abs(x) < _CRITICAL_TOLERANCE:
         log_num = math.log(death_rate) + math.log(time)
     elif x < 0.0:
         # kernel = expm1(|x|) / |g|, with log(expm1(y)) = y + log(1 - exp(-y))
@@ -327,12 +320,17 @@ def _log_survival_probability(
     return -float(np.logaddexp(0.0, log_num))
 
 
+def _initial_level_count(log_pr_terminal: float) -> int:
+    """Return ``K`` with ``Pr(T) ** (1 / K)`` closest to 1/3, and at least 1."""
+    return max(1, round(log_pr_terminal / math.log(_TARGET_LEVEL_RATIO)))
+
+
 def select_level_times_for_band(
     *,
     birth_rate: float,
     death_rate: float,
     terminal_time: float,
-    n_levels: int = 10,
+    n_levels: int | None = None,
     initial_level_times: list[float] | np.ndarray | None = None,
 ) -> np.ndarray:
     """Adjust a starting level grid so each survival ratio lies in the band.
@@ -360,9 +358,10 @@ def select_level_times_for_band(
         Per-individual death rate.
     terminal_time : float
         Terminal time T.
-    n_levels : int, optional
-        Number of intervals in the starting grid
-        ``linspace(0, T, n_levels + 1)``.  Ignored if ``initial_level_times``
+    n_levels : int | None, optional
+        Number of intervals ``K`` in the starting grid
+        ``linspace(0, T, K + 1)``.  If ``None``, ``K`` is chosen so that
+        ``Pr(T) ** (1 / K)`` is about 1/3.  Ignored if ``initial_level_times``
         is given.
     initial_level_times : list[float] | np.ndarray | None, optional
         Starting grid, including ``0`` and ``terminal_time``.
@@ -379,6 +378,12 @@ def select_level_times_for_band(
         ``_MAX_GRID_POINTS`` points.
 
     """
+    if n_levels is None and initial_level_times is None:
+        n_levels = _initial_level_count(
+            _log_survival_probability(
+                birth_rate=birth_rate, death_rate=death_rate, time=terminal_time
+            )
+        )
     grid = _build_level_times(
         terminal_time=terminal_time,
         level_times=None if initial_level_times is None else list(initial_level_times),
@@ -513,7 +518,11 @@ def default_max_restarts(
         F_i = (1 - r_i + r_i * F_{i+1}) ** R_i,    p_fail = F_1.
 
     The result is the smallest ``n >= 1`` with ``1 - p_fail ** n >= target``.
-    The approximation ignores the ensemble cap.
+    The approximation ignores the ensemble cap.  Clones of one parent also share
+    its starting state, which makes their survival positively correlated, so the
+    real failure probability can be higher than ``p_fail`` (and sometimes
+    lower); pass ``SplittingConfig.max_restarts`` when a run must not give up
+    early.
 
     Parameters
     ----------
@@ -914,7 +923,13 @@ def _run_attempt(
 
 def _resolve_levels_and_replicates(
     config: SplittingConfig,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, bool]:
+    """Return ``(levels, replicates, direct)``.
+
+    ``direct`` is true when survival to ``T`` is likely (``Pr(T) > 0.5``): the
+    grid is just ``[0, T]`` with one replicate, so each attempt is a plain
+    forward simulation that is kept if it survives.
+    """
     birth_rate = float(config.birth_rate)
     death_rate = float(config.death_rate)
     terminal_time = float(config.terminal_time)
@@ -926,7 +941,7 @@ def _resolve_levels_and_replicates(
         levels = _build_level_times(
             terminal_time=terminal_time,
             level_times=config.level_times,
-            n_levels=int(config.n_levels),
+            n_levels=config.n_levels,
         )
         replicates = np.asarray(config.replicates, dtype=np.int64)
         if replicates.shape != (levels.size - 1,):
@@ -938,19 +953,29 @@ def _resolve_levels_and_replicates(
         if np.any(replicates < 1):
             msg = "replicates must all be >= 1"
             raise ValueError(msg)
-        return levels, replicates
+        return levels, replicates, False
+
+    log_pr_terminal = _log_survival_probability(
+        birth_rate=birth_rate, death_rate=death_rate, time=terminal_time
+    )
+    if log_pr_terminal > _LOG_BAND_UPPER:
+        return (
+            np.array([0.0, terminal_time], dtype=np.float64),
+            np.ones(1, dtype=np.int64),
+            True,
+        )
 
     levels = select_level_times_for_band(
         birth_rate=birth_rate,
         death_rate=death_rate,
         terminal_time=terminal_time,
-        n_levels=int(config.n_levels),
+        n_levels=config.n_levels,
         initial_level_times=config.level_times,
     )
     replicates = compute_level_replicates(
         birth_rate=birth_rate, death_rate=death_rate, level_times=levels
     )
-    return levels, replicates
+    return levels, replicates, False
 
 
 def simulate_subcritical_survival_splitting(
@@ -958,13 +983,21 @@ def simulate_subcritical_survival_splitting(
 ) -> SplittingSimulationResult:
     """Sample survival-conditioned trajectories by multilevel (RESTART) splitting.
 
-    Requires a strictly subcritical process (``birth_rate < death_rate``).
+    Accepts any positive rates.  The name is historical: the method was
+    written for the subcritical case, where survival is rare, but supercritical
+    and critical processes work too (survival is then likely but not certain).
 
     Algorithm
     ---------
-    **Levels.** Starting from ``config.level_times`` (or
-    ``linspace(0, T, n_levels + 1)``), ``select_level_times_for_band`` adjusts
-    the grid so each ratio ``Pr(t_i) / Pr(t_{i-1})`` lies in ``[e^{-2}, 0.5]``.
+    **Levels.** Starting from ``config.level_times`` (or an equally spaced grid
+    of ``K`` intervals with ``Pr(T) ** (1 / K)`` about 1/3),
+    ``select_level_times_for_band`` adjusts the grid so each ratio
+    ``Pr(t_i) / Pr(t_{i-1})`` lies in ``[e^{-2}, 0.5]``.
+
+    **Direct case.** If ``Pr(T) > 0.5`` (always so when ``death_rate /
+    birth_rate < 0.5``) there is nothing to split.  Trees are simulated one at
+    a time, with grid ``[0, T]`` and one replicate, until one survives; unless
+    ``config.max_restarts`` is given the number of attempts is unbounded.
 
     **Replicates.** ``compute_level_replicates`` gives each interval the
     smallest ``R_i >= 2`` keeping the expected number of live lines at
@@ -1015,14 +1048,14 @@ def simulate_subcritical_survival_splitting(
           attempt.
         - ``replicates`` - the ``R_i`` used.
         - ``initial_particle_count`` - ``min(R_1, config.n_particles)``.
-        - ``n_attempts`` and ``max_restarts``.
+        - ``n_attempts`` and ``max_restarts`` (``None`` if unbounded).
 
     Raises
     ------
     ValueError
-        If ``birth_rate >= death_rate`` (not subcritical), ``n_particles < 1``,
-        ``terminal_time <= 0``, ``max_restarts < 1``, or ``replicates`` is
-        invalid or given without ``level_times``.
+        If a rate is not positive, ``n_particles < 1``, ``terminal_time <= 0``,
+        ``max_restarts < 1``, or ``replicates`` is invalid or given without
+        ``level_times``.
 
     """
     _validate_common_inputs(
@@ -1032,14 +1065,19 @@ def simulate_subcritical_survival_splitting(
         n_particles=int(config.n_particles),
     )
 
-    levels, replicates = _resolve_levels_and_replicates(config)
+    levels, replicates, direct = _resolve_levels_and_replicates(config)
 
+    max_restarts: int | None
     if config.max_restarts is None:
-        max_restarts = default_max_restarts(
-            birth_rate=float(config.birth_rate),
-            death_rate=float(config.death_rate),
-            level_times=levels,
-            replicates=replicates,
+        max_restarts = (
+            None
+            if direct
+            else default_max_restarts(
+                birth_rate=float(config.birth_rate),
+                death_rate=float(config.death_rate),
+                level_times=levels,
+                replicates=replicates,
+            )
         )
     else:
         max_restarts = int(config.max_restarts)
@@ -1059,7 +1097,9 @@ def simulate_subcritical_survival_splitting(
             seed_rng=seed_rng,
         )
         n_attempts += 1
-        if outcome.particles or n_attempts >= max_restarts:
+        if outcome.particles or (
+            max_restarts is not None and n_attempts >= max_restarts
+        ):
             break
 
     if not outcome.particles:

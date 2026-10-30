@@ -7,6 +7,7 @@ from bdsurv._extinction import pr_extinction
 from bdsurv.splitting import (
     _BAND_LOWER,
     SplittingConfig,
+    _initial_level_count,
     _log_survival_probability,
     compute_level_replicates,
     default_max_restarts,
@@ -366,4 +367,96 @@ class TestOverrides:
             replicates=[2],
         )
         with pytest.raises(ValueError, match="requires level_times"):
+            simulate_subcritical_survival_splitting(config)
+
+
+class TestInitialLevelCount:
+    """Starting number of levels from the terminal survival probability."""
+
+    @pytest.mark.parametrize(
+        ("pr_terminal", "expected"),
+        [(1e-9, 19), (0.2, 1), (0.5, 1), (1.0, 1), (3.0**-7, 7)],
+    )
+    def test_count_matches_one_third_rule(
+        self, pr_terminal: float, expected: int
+    ) -> None:
+        assert _initial_level_count(float(np.log(pr_terminal))) == expected
+
+    def test_default_equals_explicit_rule_value(self) -> None:
+        k = _initial_level_count(
+            _log_survival_probability(birth_rate=1.0, death_rate=2.0, time=20.0)
+        )
+        default = select_level_times_for_band(
+            birth_rate=1.0, death_rate=2.0, terminal_time=20.0
+        )
+        explicit = select_level_times_for_band(
+            birth_rate=1.0, death_rate=2.0, terminal_time=20.0, n_levels=k
+        )
+        np.testing.assert_array_equal(default, explicit)
+
+
+class TestAnyRates:
+    """Supercritical, critical and easy (direct-simulation) cases."""
+
+    def test_supercritical_splits_with_few_replicates(self) -> None:
+        config = SplittingConfig(
+            birth_rate=1.0,
+            death_rate=0.8,
+            terminal_time=10.0,
+            n_particles=200,
+            random_seed=3,
+        )
+        result = simulate_subcritical_survival_splitting(config)
+        assert result.replicates[0] >= 2
+        assert result.max_restarts is not None
+        assert len(result.conditioned_trajectories) > 0
+        for trajectory in result.conditioned_trajectories:
+            assert trajectory.populations[-1] > 0
+
+    def test_critical_runs(self) -> None:
+        config = SplittingConfig(
+            birth_rate=1.0,
+            death_rate=1.0,
+            terminal_time=10.0,
+            n_particles=200,
+            random_seed=4,
+        )
+        result = simulate_subcritical_survival_splitting(config)
+        assert len(result.conditioned_trajectories) > 0
+
+    def test_easy_case_is_simulated_directly(self) -> None:
+        # death / birth < 0.5 so Pr(T) > 0.5 for every T.
+        config = SplittingConfig(
+            birth_rate=1.0,
+            death_rate=0.4,
+            terminal_time=15.0,
+            n_particles=200,
+            random_seed=5,
+        )
+        result = simulate_subcritical_survival_splitting(config)
+        assert result.replicates.tolist() == [1]
+        assert result.level_times.tolist() == [0.0, 15.0]
+        assert result.initial_particle_count == 1
+        assert result.max_restarts is None
+        assert len(result.conditioned_trajectories) == 1
+        assert result.conditioned_trajectories[0].populations[-1] > 0
+
+    def test_direct_case_respects_explicit_max_restarts(self) -> None:
+        config = SplittingConfig(
+            birth_rate=1.0,
+            death_rate=0.4,
+            terminal_time=15.0,
+            n_particles=50,
+            random_seed=6,
+            max_restarts=1000,
+        )
+        result = simulate_subcritical_survival_splitting(config)
+        assert result.max_restarts == 1000
+        assert result.n_attempts <= 1000
+
+    def test_nonpositive_rates_still_rejected(self) -> None:
+        config = SplittingConfig(
+            birth_rate=0.0, death_rate=1.0, terminal_time=5.0, n_particles=10
+        )
+        with pytest.raises(ValueError, match="positive"):
             simulate_subcritical_survival_splitting(config)

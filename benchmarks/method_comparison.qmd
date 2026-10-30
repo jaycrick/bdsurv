@@ -1,661 +1,589 @@
 ---
-title: "Sampling survival-conditioned birth-death trees"
-subtitle: "Contour process (exact) against multilevel splitting (approximate)"
-format:
-  revealjs:
-    theme: simple
-    slide-number: true
-    width: 1280
-    height: 720
-    embed-resources: true
-    code-fold: false
-  html:
-    toc: true
-    embed-resources: true
-    code-fold: true
-jupyter: python3
+title: "Contour process against multilevel splitting"
+subtitle: "Cost of sampling survival-conditioned birth-death trees, by death rate and horizon"
 execute:
   echo: false
-  warning: false
+  cache: false
+  freeze: false
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    page-layout: full
 ---
 
 ```{python}
 #| label: setup
-import os
-import platform
-import time
-import warnings
+import importlib.util
+import json
+import sys
+import tempfile
+from pathlib import Path
 
 import altair as alt
-import jax
 import numpy as np
 import pandas as pd
+from IPython.display import Markdown, display
 
-from bdsurv import (
-    SplittingConfig,
-    simulate_birth_death_lifespans_arrays,
-    simulate_birth_death_process_from_contour_process,
-    simulate_subcritical_survival_splitting,
+
+def find_root() -> Path:
+    here = Path.cwd().resolve()
+    for candidate in (here, *here.parents):
+        if (candidate / "_quarto.yml").exists():
+            return candidate
+    msg = "Run from inside the bdsurv project (no _quarto.yml found)."
+    raise FileNotFoundError(msg)
+
+
+ROOT = find_root()
+_spec = importlib.util.spec_from_file_location(
+    "bench_method_comparison", ROOT / "scripts" / "bench_method_comparison.py"
 )
-from bdsurv.splitting import (
-    _log_survival_probability,  # pyright: ignore[reportPrivateUsage]
-)
+bench = importlib.util.module_from_spec(_spec)
+sys.modules["bench_method_comparison"] = bench
+_spec.loader.exec_module(bench)
 
-SEED = 2026
-LAMBDA = 1.0  # birth rate, fixed throughout
+LAMBDA = bench.LAMBDA
+DATA = ROOT / "benchmarks" / "data"
+DRAFT = not (DATA / bench.ROWS_FILE).exists()
+if DRAFT:
+    # No committed results yet: run the tiny draft grid so the page still renders.
+    _tmp = Path(tempfile.mkdtemp())
+    bench.main(
+        ["--quick", "--shards-dir", str(_tmp / "shards"), "--data-dir", str(_tmp / "data")]
+    )
+    DATA = _tmp / "data"
 
-# --- Experiment sizes: lower these for a quick draft render ---
-N_CONTOUR = 100  # contour calls timed per setting
-N_SPLIT_RUNS = 5  # splitting runs timed per setting
-N_JAX_ATTEMPTS = 200  # JAX attempts timed per setting
-N_AGREEMENT = 1500  # trees per method in the distribution check
-MAX_POPULATION = 8192  # JAX buffer size
+rows = pd.read_csv(DATA / bench.ROWS_FILE)
+units = pd.read_csv(DATA / bench.UNITS_FILE)
+env = json.loads((DATA / bench.ENV_FILE).read_text())
 
-METHODS = {
-    "contour": "Contour process (numpy, exact)",
-    "split_kept": "Splitting (numpy), per kept tree",
-    "split_run": "Splitting (numpy), per independent tree",
-    "reject": "Simulate and keep survivors (JAX)",
-}
-PALETTE = {
-    METHODS["contour"]: "#0072B2",
-    METHODS["split_kept"]: "#D55E00",
-    METHODS["split_run"]: "#E69F00",
-    METHODS["reject"]: "#009E73",
-}
+LABEL_CONTOUR = "Contour process (exact)"
+LABEL_RUN = "Splitting, per independent tree (one run)"
+LABEL_KEPT = "Splitting, per kept tree"
+PALETTE = {LABEL_CONTOUR: "#0072B2", LABEL_RUN: "#E69F00", LABEL_KEPT: "#D55E00"}
 COLOR = alt.Color(
     "method:N",
     scale=alt.Scale(domain=list(PALETTE), range=list(PALETTE.values())),
-    legend=alt.Legend(title=None, orient="bottom", labelFontSize=15, columns=2),
+    legend=alt.Legend(title=None, orient="bottom", labelFontSize=14),
+)
+MUS = sorted(rows["mu"].unique())
+TS = sorted(rows["T"].unique())
+
+@alt.theme.register("bdsurv", enable=True)
+def _bdsurv_theme() -> alt.theme.ThemeConfig:
+    return alt.theme.ThemeConfig(
+        {
+            "config": {
+                "view": {"stroke": "transparent"},
+                "axis": {
+                    "labelFontSize": 14,
+                    "titleFontSize": 16,
+                    "gridColor": "#e6e6e6",
+                },
+                "title": {"fontSize": 18, "anchor": "start"},
+            }
+        }
+    )
+```
+
+```{python}
+#| label: draft-banner
+if DRAFT:
+    display(
+        Markdown(
+            "::: {.callout-warning}\n"
+            "## Draft data\n"
+            "`benchmarks/data/method_comparison.csv` does not exist, so this page "
+            "shows a tiny draft run. Produce real data with "
+            "`scripts/bench_method_comparison.slurm submit` (see "
+            "`benchmarks/README.md`).\n"
+            ":::"
+        )
+    )
+```
+
+## What is compared
+
+Both methods sample a birth-death tree that **survives to time $T$**.
+The birth rate is fixed at $\lambda = 1$ and the death rate $\mu$ runs from
+$0.6$ (supercritical) through $1$ (critical) to $10$ (highly subcritical).
+
+- **Contour process** builds one tree that survives by construction.
+  It is exact and works for any rates.
+- **Multilevel splitting** evolves a swarm of particles and clones the ones still
+  alive at each level.
+  A run returns several trees, but clones of one survivor share their history, so
+  the kept trees are **not independent**.
+  It accepts any positive rates.
+  When $\Pr(\text{survive to } T) > 0.5$ (always so for $\mu/\lambda < 0.5$) there
+  is nothing to split, and it simulates trees one at a time until one survives.
+
+Splitting is charged two ways.
+*Per independent tree* bills a whole run for a single tree, which is the fair
+price when independence matters.
+*Per kept tree* divides the run by the number of trees it kept, which is the
+optimistic view.
+
+Each point is the **median** over independent replicates, and the shaded band is the
+10th to 90th percentile.
+The x-axis (terminal time $T$) is logarithmic and the y-axis is linear.
+
+::: {.callout-note}
+A cell $(\mu, T)$ is skipped when the expected tree size given survival,
+$e^{(\lambda-\mu)T} / \Pr(T)$, exceeds
+`{python} f"{bench.MAX_EXPECTED_POPULATION:.0e}"` individuals.
+Supercritical trees grow exponentially, so this only trims the longest horizons
+for $\mu < 1$.
+:::
+
+```{python}
+#| label: curves
+rows["per_kept"] = np.where(rows["n_trees"] > 0, rows["seconds"] / rows["n_trees"], np.nan)
+
+
+def band(frame: pd.DataFrame, column: str, label: str) -> pd.DataFrame:
+    grouped = frame.groupby(["mu", "T"])[column]
+    out = pd.DataFrame(
+        {
+            "median": grouped.median(),
+            "lo": grouped.quantile(0.1),
+            "hi": grouped.quantile(0.9),
+            "replicates": grouped.count(),
+        }
+    ).reset_index()
+    out["method"] = label
+    return out.dropna(subset=["median"])
+
+
+contour_rows = rows[rows["method"] == "contour"]
+split_rows = rows[rows["method"] == "splitting"]
+curves = pd.concat(
+    [
+        band(contour_rows, "seconds", LABEL_CONTOUR),
+        band(split_rows, "seconds", LABEL_RUN),
+        band(split_rows, "per_kept", LABEL_KEPT),
+    ],
+    ignore_index=True,
 )
 
 
-def _theme():
-    return {
-        "config": {
-            "view": {"stroke": "transparent"},
-            "axis": {"labelFontSize": 15, "titleFontSize": 17, "grid": True,
-                     "gridColor": "#e6e6e6"},
-            "title": {"fontSize": 20, "anchor": "start"},
-        }
-    }
+def regime(mu: float) -> str:
+    if mu < LAMBDA:
+        return (
+            f"supercritical: a tree survives forever with probability "
+            f"{1 - mu / LAMBDA:.2f}"
+        )
+    if mu == LAMBDA:
+        return "critical"
+    return "subcritical: survival to large $T$ is rare"
 
 
-alt.themes.register("deck", _theme)
-alt.themes.enable("deck")
+def cost_chart(mu: float) -> alt.Chart:
+    data = curves[curves["mu"] == mu]
+    x = alt.X(
+        "T:Q",
+        scale=alt.Scale(type="log"),
+        title="terminal time T (log scale)",
+        axis=alt.Axis(values=[float(t) for t in TS], format="g", labelOverlap=True),
+    )
+    y = alt.Y(
+        "median:Q",
+        scale=alt.Scale(zero=True),
+        title="seconds per tree",
+    )
+    tooltip = [
+        "method",
+        alt.Tooltip("T:Q", format="g"),
+        alt.Tooltip("median:Q", format=".3g", title="median s"),
+        alt.Tooltip("lo:Q", format=".3g", title="10th pct"),
+        alt.Tooltip("hi:Q", format=".3g", title="90th pct"),
+        "replicates",
+    ]
+    base = alt.Chart(data).encode(x=x, color=COLOR)
+    area = base.mark_area(opacity=0.15).encode(
+        y=alt.Y("lo:Q", title="seconds per tree"), y2="hi:Q"
+    )
+    line = base.mark_line(strokeWidth=3).encode(y=y)
+    points = base.mark_point(size=70, filled=True).encode(y=y, tooltip=tooltip)
+    return (area + line + points).properties(width=900, height=380)
 
 
-def timed(fn):
-    """Return ``fn()`` and its wall-clock seconds."""
-    start = time.perf_counter()
-    out = fn()
-    return out, time.perf_counter() - start
+diagnostics = (
+    split_rows.groupby(["mu", "T"])
+    .agg(
+        trees=("n_trees", "median"),
+        attempts=("n_attempts", "median"),
+        levels=("levels", "median"),
+    )
+    .reset_index()
+)
 
 
-def survival_probability(mu, terminal_time):
-    """P(survive to T), computed in log space so rare events do not round to 0."""
-    return float(
-        np.exp(
-            _log_survival_probability(
-                birth_rate=LAMBDA, death_rate=mu, time=terminal_time
+def diagnostic_chart(mu: float) -> alt.Chart:
+    data = diagnostics[diagnostics["mu"] == mu]
+    panels = []
+    for column, title in [
+        ("trees", "trees kept per run"),
+        ("attempts", "attempts per run"),
+        ("levels", "levels"),
+    ]:
+        panels.append(
+            alt.Chart(data)
+            .mark_line(strokeWidth=3, point=alt.OverlayMarkDef(size=60, filled=True))
+            .encode(
+                x=alt.X(
+                    "T:Q",
+                    scale=alt.Scale(type="log"),
+                    title="terminal time T (log scale)",
+                    axis=alt.Axis(format="g", values=[1, 10, 100]),
+                ),
+                y=alt.Y(f"{column}:Q", scale=alt.Scale(zero=True), title=title),
+                tooltip=[alt.Tooltip("T:Q", format="g"), f"{column}:Q"],
+                color=alt.value(PALETTE[LABEL_KEPT]),
             )
+            .properties(width=270, height=220, title=title)
+        )
+    return alt.hconcat(*panels)
+
+
+def show_mu(mu: float) -> None:
+    if mu not in set(curves["mu"]):
+        display(Markdown(f"No data for $\\mu = {mu:g}$ in this results file."))
+        return
+    top_t = max(curves.loc[curves["mu"] == mu, "T"])
+    display(
+        Markdown(
+            f"$\\lambda = 1$, $\\mu = {mu:g}$: {regime(mu)}. "
+            f"Benchmarked up to $T = {top_t:g}$."
         )
     )
-
-
-def population_at_T(tree):
-    return int(tree.records["survived"].sum())
+    display(cost_chart(mu))
+    display(Markdown("**How splitting behaved**"))
+    display(diagnostic_chart(mu))
 ```
 
-## Question
+## Cost per tree over time, by death rate
 
-> Given a subcritical birth-death process, how do we **sample trees that
-> survive to time $T$**, when survival is a rare event?
+Click through the tabs to step $\mu$ from supercritical to highly subcritical.
 
-- **Contour process** — builds one tree that survives *by construction*.
-  Exact, no rejection.
-- **Multilevel splitting** — evolves a swarm of particles and clones the ones
-  that are still alive at each level. Approximate.
-- **JAX baseline** — plain forward simulation with the JIT lifespans engine,
-  keeping only the runs that survive.
+::: {.panel-tabset}
 
-Birth rate $\lambda = 1$ throughout. Death rate $\mu$ runs from $0.6$
-(supercritical) up to $\mu = 10$ (highly subcritical).
-
-## What each method needs
+### μ = 0.6
 
 ```{python}
-pd.DataFrame(
-    [
-        {
-            "": "Contour process",
-            "Backend": "numpy",
-            "Output": "1 tree per call",
-            "Needs": "any positive rates",
-            "Exact?": "yes",
-        },
-        {
-            "": "Multilevel splitting",
-            "Backend": "numpy",
-            "Output": "several correlated trees per run",
-            "Needs": "death rate > birth rate",
-            "Exact?": "approximate",
-        },
-        {
-            "": "Simulate and keep survivors",
-            "Backend": "JAX (JIT)",
-            "Output": "1 tree per success",
-            "Needs": "any rates",
-            "Exact?": "yes, but cost = 1 / P(survive)",
-        },
-    ]
-).style.hide(axis="index")
+show_mu(0.6)
 ```
 
-::: {.callout-note}
-Neither conditioned method has a JAX implementation in `bdsurv`. The JAX
-column is therefore the naive baseline built on the JIT lifespans engine, not
-a JAX port of either method.
+### μ = 0.8
+
+```{python}
+show_mu(0.8)
+```
+
+### μ = 1.0
+
+```{python}
+show_mu(1.0)
+```
+
+### μ = 1.2
+
+```{python}
+show_mu(1.2)
+```
+
+### μ = 1.5
+
+```{python}
+show_mu(1.5)
+```
+
+### μ = 2
+
+```{python}
+show_mu(2.0)
+```
+
+### μ = 3
+
+```{python}
+show_mu(3.0)
+```
+
+### μ = 5
+
+```{python}
+show_mu(5.0)
+```
+
+### μ = 10
+
+```{python}
+show_mu(10.0)
+```
+
 :::
 
-## Setup
+## Where does each method win?
+
+The ratio of splitting (per independent tree) to the contour process, for every
+cell that was benchmarked.
+Above 1 the contour process is cheaper.
 
 ```{python}
-devices = ", ".join(str(d) for d in jax.devices())
+#| label: ratio
+wide = curves.pivot_table(index=["mu", "T"], columns="method", values="median").reset_index()
+wide["ratio"] = wide[LABEL_RUN] / wide[LABEL_CONTOUR]
+heat = wide.dropna(subset=["ratio"]).copy()
+heat["T_label"] = heat["T"].map(lambda t: f"{t:g}")
+(
+    alt.Chart(heat)
+    .mark_rect()
+    .encode(
+        x=alt.X(
+            "T_label:O",
+            sort=[f"{t:g}" for t in TS],
+            title="terminal time T",
+            axis=alt.Axis(labelAngle=0),
+        ),
+        y=alt.Y("mu:O", sort="descending", title="death rate μ"),
+        color=alt.Color(
+            "ratio:Q",
+            scale=alt.Scale(type="log", scheme="viridis"),
+            legend=alt.Legend(title="splitting / contour", format="~g"),
+        ),
+        tooltip=[
+            "mu:O",
+            alt.Tooltip("T:Q", format="g"),
+            alt.Tooltip("ratio:Q", format=".3g"),
+        ],
+    )
+    .properties(width=900, height=330)
+)
+```
+
+## Are the trees right?
+
+For a linear birth-death process from one individual, the number alive at $T$ given
+survival is **geometric** on $\{1, 2, \dots\}$ with mean
+$e^{(\lambda-\mu)T} / \Pr(\text{survive to } T)$.
+Each replicate records the population of one tree, so the two methods can be
+checked against this exact law with a one-sample Kolmogorov–Smirnov (KS)
+distance.
+For splitting only one randomly chosen tree per run is used, so the draws are
+independent.
+
+```{python}
+#| label: agreement
+
+
+def exact_mean(mu: float, terminal_time: float) -> float:
+    return bench.expected_population(mu, terminal_time)
+
+
+def ks_distance(sample: np.ndarray, mean: float) -> float:
+    support = np.arange(1, int(sample.max()) + 1)
+    empirical = np.searchsorted(np.sort(sample), support, side="right") / len(sample)
+    exact = 1.0 - (1.0 - 1.0 / mean) ** support
+    return float(np.max(np.abs(empirical - exact)))
+
+
+LABEL_SPLIT_AGREE = "Splitting (one tree per run)"
+records = []
+for (method, mu, t), frame in rows.dropna(subset=["pop_at_T"]).groupby(
+    ["method", "mu", "T"]
+):
+    sample = frame["pop_at_T"].to_numpy(dtype=int)
+    records.append(
+        {
+            "method": LABEL_CONTOUR if method == "contour" else LABEL_SPLIT_AGREE,
+            "mu": mu,
+            "T": t,
+            "n": len(sample),
+            "ks": ks_distance(sample, exact_mean(mu, t)),
+            "critical": 1.36 / np.sqrt(len(sample)),
+        }
+    )
+agreement = pd.DataFrame(records)
+agreement["flagged"] = agreement["ks"] > agreement["critical"]
+
+agree_color = alt.Color(
+    "method:N",
+    scale=alt.Scale(
+        domain=[LABEL_CONTOUR, LABEL_SPLIT_AGREE],
+        range=[PALETTE[LABEL_CONTOUR], PALETTE[LABEL_RUN]],
+    ),
+    legend=alt.Legend(title=None, orient="bottom", labelFontSize=14),
+)
+x_axis = alt.X(
+    "T:Q",
+    scale=alt.Scale(type="log"),
+    title="terminal time T (log scale)",
+    axis=alt.Axis(format="g", values=[1, 10, 100]),
+)
+lines = (
+    alt.Chart()
+    .mark_line(strokeWidth=2.5, point=alt.OverlayMarkDef(size=45, filled=True))
+    .encode(
+        x=x_axis,
+        y=alt.Y("ks:Q", scale=alt.Scale(zero=True), title="KS distance"),
+        color=agree_color,
+        tooltip=[
+            "method",
+            "mu:Q",
+            alt.Tooltip("T:Q", format="g"),
+            alt.Tooltip("ks:Q", format=".4f"),
+            "n",
+        ],
+    )
+)
+threshold = (
+    alt.Chart()
+    .transform_filter(alt.datum.method == LABEL_CONTOUR)
+    .mark_line(color="#888888", strokeDash=[5, 4])
+    .encode(x=x_axis, y="critical:Q")
+)
+(
+    alt.layer(lines, threshold, data=agreement)
+    .properties(width=260, height=190)
+    .facet(
+        facet=alt.Facet("mu:O", title="death rate μ", header=alt.Header(labelFontSize=14)),
+        columns=3,
+    )
+)
+```
+
+The dashed line is the 5% critical value $1.36/\sqrt{n}$ for a continuous law;
+it is conservative for this discrete one.
+With many cells, a few exceedances are expected by chance even for a correct
+sampler.
+
+```{python}
+#| label: agreement-table
+summary = (
+    agreement.groupby("method")
+    .agg(
+        cells=("ks", "size"),
+        flagged=("flagged", "sum"),
+        median_ks=("ks", "median"),
+        max_ks=("ks", "max"),
+    )
+    .reset_index()
+)
+summary["share flagged"] = summary["flagged"] / summary["cells"]
+summary.rename(
+    columns={
+        "cells": "cells checked",
+        "flagged": "cells above 5% line",
+        "median_ks": "median KS",
+        "max_ks": "max KS",
+    }
+).style.hide(axis="index").format(
+    {"median KS": "{:.4f}", "max KS": "{:.4f}", "share flagged": "{:.1%}"}
+)
+```
+
+## Coverage and environment
+
+```{python}
+#| label: coverage
+coverage = (
+    rows.groupby(["method", "mu"])
+    .agg(max_T=("T", "max"), replicates=("replicate", "size"))
+    .reset_index()
+    .pivot_table(index="mu", columns="method", values=["max_T", "replicates"])
+)
+coverage.columns = [f"{a} ({b})" for a, b in coverage.columns]
+coverage.index.name = "μ"
+coverage.style.format("{:g}")
+```
+
+```{python}
+#| label: budget
+cut_short = units[units["status"] != "ok"]
+if cut_short.empty:
+    display(Markdown("Every block of replicates ran to completion."))
+else:
+    display(
+        Markdown(
+            f"**{len(cut_short)} of {len(units)} blocks were cut short** by the "
+            "per-block time budget, so those cells have fewer replicates than "
+            "requested."
+        )
+    )
+```
+
+```{python}
+#| label: environment
 pd.DataFrame(
     {
-        "item": ["machine", "python", "numpy", "jax", "jax devices", "cores"],
+        "item": [
+            "array tasks (shards)",
+            "hosts",
+            "processors",
+            "python",
+            "numpy",
+            "bdsurv",
+            "git commit",
+        ],
         "value": [
-            platform.platform(),
-            platform.python_version(),
-            np.__version__,
-            jax.__version__,
-            devices,
-            str(os.cpu_count()),
+            str(env["n_shards"]),
+            f"{len(env['hosts'])} distinct",
+            ", ".join(env["processors"]),
+            ", ".join(env["python"]),
+            ", ".join(env["numpy"]),
+            ", ".join(env["bdsurv"]),
+            ", ".join(env["git_sha"]),
         ],
     }
 ).style.hide(axis="index")
 ```
 
-Timings are single-process wall-clock. Compare methods within this render,
-not across machines.
-
-```{python}
-#| label: jax-warmup
-# JAX compile cost is reported separately from steady-state cost.
-_, jax_compile_s = timed(
-    lambda: simulate_birth_death_lifespans_arrays(
-        LAMBDA, 2.0, 5.0, random_seed=SEED, max_population=MAX_POPULATION
-    ).survived.block_until_ready()
-)
-_, jax_warm_s = timed(
-    lambda: simulate_birth_death_lifespans_arrays(
-        LAMBDA, 2.0, 5.0, random_seed=SEED + 1, max_population=MAX_POPULATION
-    ).survived.block_until_ready()
-)
-```
-
-```{python}
-#| label: helpers
-
-
-def jax_attempt_seconds(mu, terminal_time, n_attempts=N_JAX_ATTEMPTS):
-    """Mean warm seconds for one unconditioned JAX run (survivor or not)."""
-    survived = 0
-    start = time.perf_counter()
-    for i in range(n_attempts):
-        try:
-            out = simulate_birth_death_lifespans_arrays(
-                LAMBDA, mu, terminal_time, random_seed=SEED + i,
-                max_population=MAX_POPULATION,
-            )
-            survived += bool(out.survived.any())
-        except RuntimeError:  # population overflow: clearly survived
-            survived += 1
-    return (time.perf_counter() - start) / n_attempts, survived / n_attempts
-
-
-def time_contour(mu, terminal_time, n=N_CONTOUR):
-    _, elapsed = timed(
-        lambda: [
-            simulate_birth_death_process_from_contour_process(
-                birth_rate=LAMBDA, death_rate=mu, terminal_time=terminal_time,
-                random_seed=SEED + i,
-            )
-            for i in range(n)
-        ]
-    )
-    return elapsed / n
-
-
-def time_splitting(mu, terminal_time, n_runs=N_SPLIT_RUNS):
-    """Return (seconds per run, seconds per kept tree, kept per run, attempts)."""
-    elapsed, kept, attempts = 0.0, 0, []
-    for i in range(n_runs):
-        config = SplittingConfig(
-            birth_rate=LAMBDA, death_rate=mu, terminal_time=terminal_time,
-            n_particles=500, random_seed=SEED + i,
-        )
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            result, seconds = timed(
-                lambda: simulate_subcritical_survival_splitting(config)
-            )
-        elapsed += seconds
-        kept += len(result.conditioned_trajectories)
-        attempts.append(result.n_attempts)
-    return (
-        elapsed / n_runs,
-        elapsed / kept if kept else np.nan,
-        kept / n_runs,
-        float(np.mean(attempts)),
-    )
-
-
-def measure(mu, terminal_time):
-    """All four cost curves for one (mu, T) setting."""
-    s = survival_probability(mu, terminal_time)
-    rows = [
-        dict(method=METHODS["contour"], mu=mu, T=terminal_time,
-             seconds=time_contour(mu, terminal_time), kind="measured")
-    ]
-    if mu > LAMBDA:  # splitting needs a strictly subcritical process
-        run_s, kept_s, kept_per_run, attempts = time_splitting(mu, terminal_time)
-        rows += [
-            dict(method=METHODS["split_run"], mu=mu, T=terminal_time,
-                 seconds=run_s, kind="measured", kept_per_run=kept_per_run,
-                 attempts=attempts),
-            dict(method=METHODS["split_kept"], mu=mu, T=terminal_time,
-                 seconds=kept_s, kind="measured", kept_per_run=kept_per_run,
-                 attempts=attempts),
-        ]
-    attempt_s, observed_s = jax_attempt_seconds(mu, terminal_time)
-    rows.append(
-        dict(method=METHODS["reject"], mu=mu, T=terminal_time,
-             seconds=attempt_s / s, kind="expected: attempt cost / P(survive)",
-             p_survive=s, observed_p=observed_s)
-    )
-    return rows
-```
-
-## Cost per tree as the death rate grows
-
-```{python}
-#| label: exp-mu
-T_MU = 10.0
-MUS = [0.6, 0.8, 1.2, 1.5, 2.0, 3.0, 5.0, 10.0]
-mu_df = pd.DataFrame([row for mu in MUS for row in measure(mu, T_MU)])
-mu_df["p_survive"] = [survival_probability(m, T_MU) for m in mu_df["mu"]]
-
-
-def cost_chart(df, x, x_title, title, subtitle=None):
-    base = alt.Chart(df).encode(
-        x=alt.X(f"{x}:Q", scale=alt.Scale(type="log"), title=x_title),
-        y=alt.Y("seconds:Q", scale=alt.Scale(type="log"),
-                title="seconds per tree (log scale)"),
-        color=COLOR,
-        strokeDash=alt.StrokeDash(
-            "kind:N",
-            legend=None,
-            scale=alt.Scale(
-                domain=["measured", "expected: attempt cost / P(survive)"],
-                range=[[1, 0], [6, 4]],
-            ),
-        ),
-        tooltip=["method", x, "seconds", "kind"],
-    )
-    return (base.mark_line(strokeWidth=3) + base.mark_point(size=90, filled=True)
-            ).properties(
-        width=1000, height=420,
-        title=alt.TitleParams(title, subtitle=subtitle, subtitleFontSize=15),
-    )
-
-
-critical = (
-    alt.Chart(pd.DataFrame({"mu": [LAMBDA]}))
-    .mark_rule(color="#888", strokeDash=[4, 4])
-    .encode(x="mu:Q")
-)
-(cost_chart(
-    mu_df, "mu", "death rate μ (birth rate λ = 1)",
-    f"Time to draw one conditioned tree, T = {T_MU:g}",
-    "Dashed line: measured cost of one JAX attempt divided by P(survive). "
-    "Splitting needs μ > λ.",
-) + critical)
-```
-
-## The same data, as a table
-
-```{python}
-wide = (
-    mu_df.pivot_table(index="mu", columns="method", values="seconds")
-    .reindex(columns=[m for m in METHODS.values() if m in set(mu_df["method"])])
-)
-wide.insert(0, "P(survive to T)", [survival_probability(m, T_MU) for m in wide.index])
-wide.index.name = "μ"
-wide.style.format("{:.3g}", na_rep="n/a")
-```
-
-Splitting is `n/a` for $\mu \le \lambda$ because it requires a strictly
-subcritical process. The JAX column is the expected seconds per surviving tree.
-
-## How many trees does a splitting run give?
-
-```{python}
-split_info = (
-    mu_df[mu_df["method"] == METHODS["split_kept"]][
-        ["mu", "kept_per_run", "attempts"]
-    ].rename(columns={"mu": "μ", "kept_per_run": "trees kept per run",
-                      "attempts": "mean attempts (restarts + 1)"})
-)
-split_info.style.hide(axis="index").format(
-    {"μ": "{:g}", "trees kept per run": "{:.1f}",
-     "mean attempts (restarts + 1)": "{:.2f}"}
-)
-```
-
-Clones of one survivor share their history up to the level where they were
-split, so the kept trees from one run are **not independent**. The
-"per independent tree" curve charges a whole run for a single tree; the
-"per kept tree" curve is the optimistic view.
-
-## Cost per tree as the horizon $T$ grows
-
-```{python}
-#| label: exp-T
-MU_T = 2.0
-TS = [2.0, 5.0, 10.0, 20.0, 40.0, 80.0]
-t_df = pd.DataFrame([row for T in TS for row in measure(MU_T, T)])
-cost_chart(
-    t_df, "T", "terminal time T",
-    f"Scaling with the horizon, μ = {MU_T:g}, λ = 1",
-    "Survival becomes exponentially rare as T grows; rejection cost follows it.",
-)
-```
-
-## Throughput when drawing many trees
-
-```{python}
-#| label: exp-throughput
-MU_B, T_B = 1.5, 5.0
-S_B = survival_probability(MU_B, T_B)
-BATCHES = [1, 5, 20, 100]
-
-
-def contour_batch(n):
-    return [
-        simulate_birth_death_process_from_contour_process(
-            birth_rate=LAMBDA, death_rate=MU_B, terminal_time=T_B,
-            random_seed=SEED + 1000 + i,
-        )
-        for i in range(n)
-    ]
-
-
-def splitting_batch(n):
-    kept, seed = 0, SEED + 2000
-    while kept < n:
-        config = SplittingConfig(
-            birth_rate=LAMBDA, death_rate=MU_B, terminal_time=T_B,
-            n_particles=500, random_seed=seed,
-        )
-        kept += len(simulate_subcritical_survival_splitting(config)
-                    .conditioned_trajectories)
-        seed += 1
-    return kept
-
-
-def reject_batch(n):
-    found, seed = 0, SEED + 3000
-    while found < n:
-        try:
-            out = simulate_birth_death_lifespans_arrays(
-                LAMBDA, MU_B, T_B, random_seed=seed, max_population=MAX_POPULATION
-            )
-            found += bool(out.survived.any())
-        except RuntimeError:
-            found += 1
-        seed += 1
-    return found
-
-
-rows = []
-for n in BATCHES:
-    for name, fn in [
-        (METHODS["contour"], contour_batch),
-        (METHODS["split_kept"], splitting_batch),
-        (METHODS["reject"], reject_batch),
-    ]:
-        _, seconds = timed(lambda: fn(n))
-        rows.append(dict(method=name, trees=n, seconds=seconds,
-                         trees_per_second=n / seconds))
-batch_df = pd.DataFrame(rows)
-
-(
-    alt.Chart(batch_df)
-    .mark_line(strokeWidth=3, point=alt.OverlayMarkDef(size=90, filled=True))
-    .encode(
-        x=alt.X("trees:Q", scale=alt.Scale(type="log"),
-                title="trees requested", axis=alt.Axis(values=BATCHES)),
-        y=alt.Y("trees_per_second:Q", scale=alt.Scale(type="log"),
-                title="trees per second (log scale)"),
-        color=COLOR,
-        tooltip=["method", "trees", "seconds", "trees_per_second"],
-    )
-    .properties(
-        width=1000, height=420,
-        title=alt.TitleParams(
-            f"Batch throughput, μ = {MU_B:g}, T = {T_B:g} "
-            f"(P(survive) = {S_B:.3f})",
-            subtitle="JAX uses one jitted call per attempt; there is no "
-                     "batched (vmap) path in bdsurv.",
-            subtitleFontSize=15,
-        ),
-    )
-)
-```
-
-## JAX compile cost
-
-```{python}
-pd.DataFrame(
-    {
-        "": ["First call (includes JIT compile)", "Warm call"],
-        "seconds": [jax_compile_s, jax_warm_s],
-    }
-).style.hide(axis="index").format({"seconds": "{:.4g}"})
-```
-
-Compilation is paid once per buffer size (`max_population`) and is excluded
-from every JAX figure above. The contour process and splitting are plain numpy
-and have no warm-up cost.
-
-## Is the speed bought with wrong output?
-
-For a linear birth-death process started from one individual, the population
-at $T$ given survival is **geometric** on $\{1, 2, \dots\}$. Its mean is
-$e^{(\lambda-\mu)T} / s$, because $E[Z_T] = e^{(\lambda-\mu)T}$ and
-$Z_T = 0$ with probability $1 - s$, where $s = P(\text{survive to } T)$.
-That gives an exact reference.
-
-```{python}
-#| label: exp-agreement
-n = N_AGREEMENT
-contour_pop = np.array(
-    [population_at_T(t) for t in contour_batch(n)]
-)
-
-split_pop = []
-seed = SEED + 4000
-while len(split_pop) < n:
-    config = SplittingConfig(
-        birth_rate=LAMBDA, death_rate=MU_B, terminal_time=T_B,
-        n_particles=500, random_seed=seed,
-    )
-    result = simulate_subcritical_survival_splitting(config)
-    seed += 1
-    if result.conditioned_trajectories:
-        # one tree per run so the samples are independent
-        split_pop.append(population_at_T(result.conditioned_trajectories[0].process))
-split_pop = np.array(split_pop)
-
-reject_pop = []
-seed = SEED + 5000
-while len(reject_pop) < n:
-    try:
-        out = simulate_birth_death_lifespans_arrays(
-            LAMBDA, MU_B, T_B, random_seed=seed, max_population=MAX_POPULATION
-        )
-        if bool(out.survived.any()):
-            reject_pop.append(int(out.survived.sum()))
-    except RuntimeError:
-        pass
-    seed += 1
-reject_pop = np.array(reject_pop)
-
-samples = {
-    METHODS["contour"]: contour_pop,
-    METHODS["split_run"].replace("per independent tree", "one tree per run"): split_pop,
-    METHODS["reject"]: reject_pop,
-}
-
-
-EXACT_MEAN = float(np.exp((LAMBDA - MU_B) * T_B) / S_B)
-
-
-def exact_cdf(k):
-    return 1.0 - (1.0 - 1.0 / EXACT_MEAN) ** k
-
-
-def ks_distance(x):
-    support = np.arange(1, int(x.max()) + 1)
-    empirical = np.searchsorted(np.sort(x), support, side="right") / len(x)
-    return float(np.max(np.abs(empirical - exact_cdf(support))))
-
-
-K_MAX = 150
-grid = np.arange(1, K_MAX + 1)
-cdf_rows = [dict(method="Exact (geometric)", k=int(k), cdf=float(exact_cdf(k)))
-            for k in grid]
-for name, x in samples.items():
-    xs = np.sort(x)
-    for k in grid:
-        cdf_rows.append(dict(method=name, k=int(k),
-                             cdf=float(np.searchsorted(xs, k, side="right") / len(xs))))
-cdf_df = pd.DataFrame(cdf_rows)
-
-agree_palette = {**PALETTE,
-                 "Splitting (numpy), one tree per run": PALETTE[METHODS["split_kept"]],
-                 "Exact (geometric)": "#222222"}
-domain = ["Exact (geometric)"] + list(samples)
-(
-    alt.Chart(cdf_df)
-    .mark_line(interpolate="step-after", strokeWidth=3)
-    .encode(
-        x=alt.X("k:Q", title="individuals alive at T"),
-        y=alt.Y("cdf:Q", title="cumulative probability"),
-        color=alt.Color(
-            "method:N",
-            scale=alt.Scale(domain=domain,
-                            range=[agree_palette[d] for d in domain]),
-            legend=alt.Legend(title=None, orient="bottom", labelFontSize=15),
-        ),
-        strokeDash=alt.condition(
-            alt.datum.method == "Exact (geometric)", alt.value([6, 4]), alt.value([1, 0])
-        ),
-    )
-    .properties(
-        width=1000, height=420,
-        title=alt.TitleParams(
-            f"Population at T given survival, μ = {MU_B:g}, T = {T_B:g}",
-            subtitle=f"{n} trees per method; exact law is geometric with mean {EXACT_MEAN:.2f}",
-            subtitleFontSize=15,
-        ),
-    )
-)
-```
-
-## Agreement with the exact law
-
-```{python}
-critical_ks = 1.36 / np.sqrt(n)
-agreement = pd.DataFrame(
-    [
-        {
-            "method": name,
-            "trees": len(x),
-            "mean population": x.mean(),
-            "standard error": x.std(ddof=1) / np.sqrt(len(x)),
-            "KS distance": ks_distance(x),
-        }
-        for name, x in samples.items()
-    ]
-    + [
-        {
-            "method": "Exact (geometric)",
-            "trees": np.nan,
-            "mean population": EXACT_MEAN,
-            "standard error": np.nan,
-            "KS distance": np.nan,
-        }
-    ]
-)
-agreement.style.hide(axis="index").format(
-    {"trees": "{:.0f}", "mean population": "{:.2f}", "standard error": "{:.2f}",
-     "KS distance": "{:.4f}"},
-    na_rep="",
-)
-```
-
-A KS distance below about `{python} f"{critical_ks:.4f}"` is consistent with
-the exact law at the 5% level (one-sample, $n$ = `{python} n`).
-
-## Summary
-
-```{python}
-summary = []
-for method in METHODS.values():
-    sub = mu_df[mu_df["method"] == method].dropna(subset=["seconds"])
-    if sub.empty:
-        continue
-    summary.append(
-        {
-            "method": method,
-            "μ range with data": f"{sub['mu'].min():g} – {sub['mu'].max():g}",
-            "fastest (s/tree)": sub["seconds"].min(),
-            "slowest (s/tree)": sub["seconds"].max(),
-        }
-    )
-pd.DataFrame(summary).style.hide(axis="index").format(
-    {"fastest (s/tree)": "{:.3g}", "slowest (s/tree)": "{:.3g}"}
-)
-```
+Timings are single-threaded wall-clock.
+Runs spread over a cluster land on different nodes, so expect some scatter between
+replicates; the shaded bands show it.
 
 ## Takeaways
 
-*Figures are from the render on the machine in the Setup slide; re-render
-before quoting numbers.*
+```{python}
+#| label: takeaways
+c = curves[curves["method"] == LABEL_CONTOUR]
+k = curves[curves["method"] == LABEL_KEPT]
 
-- **Contour process** costs about 0.5 ms per tree at $T = 2$ and about 5 ms at
-  $T = 80$ ($\mu = 2$), and stays near 1 ms per tree from $\mu = 2$ up to
-  $\mu = 10$. It draws one exact tree per call.
-- **Splitting** is competitive only if you count every kept tree. Those trees
-  share ancestry, so the fair price is a whole run per independent tree. By
-  that measure it is roughly 90 times slower than the contour process at
-  $T = 80$ and several hundred times slower at $\mu = 10$. It also needs
-  $\mu > \lambda$.
-- **Simulate and keep survivors** matches the others only for short horizons
-  and mild death rates. Its expected cost per tree grows like
-  $1 / P(\text{survive})$: seconds at $T = 10$, days at $T = 20$ ($\mu = 2$).
-- **Throughput** when drawing many trees favours the contour process
-  (over 1000 trees/s here), with splitting under 1000 and the JAX baseline in
-  the tens to low hundreds.
-- **Accuracy:** all three methods match the exact law of the population at
-  $T$ (KS distances well under the 5% threshold), so the speed differences are
-  not bought with wrong output at this setting.
-
-::: {.callout-note}
-This compares the contour process and splitting only in numpy. Neither has a
-JAX implementation in `bdsurv`; the JAX column is the naive baseline on the
-lifespans engine.
-:::
+lines_out = []
+fastest, slowest = c.loc[c["median"].idxmin()], c.loc[c["median"].idxmax()]
+lines_out.append(
+    f"- **Contour process:** median cost per tree runs from "
+    f"{fastest['median'] * 1e3:.2g} ms (μ = {fastest['mu']:g}, T = {fastest['T']:g}) "
+    f"to {slowest['median']:.2g} s (μ = {slowest['mu']:g}, T = {slowest['T']:g})."
+)
+if not heat.empty:
+    lo, hi = heat.loc[heat["ratio"].idxmin()], heat.loc[heat["ratio"].idxmax()]
+    share = float((heat["ratio"] > 1).mean())
+    lines_out.append(
+        f"- **Splitting, per independent tree** costs between {lo['ratio']:.2g}× "
+        f"(μ = {lo['mu']:g}, T = {lo['T']:g}) and {hi['ratio']:.2g}× "
+        f"(μ = {hi['mu']:g}, T = {hi['T']:g}) the contour process; the contour "
+        f"process is cheaper in {share:.0%} of the {len(heat)} cells."
+    )
+    merged = pd.merge(
+        k[["mu", "T", "median"]],
+        c[["mu", "T", "median"]],
+        on=["mu", "T"],
+        suffixes=("_kept", "_contour"),
+    )
+    cheaper = float((merged["median_kept"] < merged["median_contour"]).mean())
+    lines_out.append(
+        f"- **Splitting, per kept tree** is cheaper than the contour process in "
+        f"{cheaper:.0%} of cells, but those trees are correlated."
+    )
+flag = agreement.groupby("method")["flagged"].mean()
+lines_out.append(
+    "- **Accuracy:** share of cells where the KS distance exceeds the 5% line: "
+    + "; ".join(f"{name}, {share:.0%}" for name, share in flag.items())
+    + "."
+)
+display(Markdown("\n".join(lines_out)))
+```

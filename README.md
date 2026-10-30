@@ -4,12 +4,14 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Simulation of linear birth-death processes, with a focus on survival-conditioned
-subcritical processes.
+processes.
 
 In the subcritical regime (`lambda < mu`, per-individual birth rate `lambda`,
 death rate `mu`) the unconditioned process goes extinct with probability 1, so
 surviving to a terminal time `T` is a rare event.
 Two independent simulators produce a tree conditioned on that event.
+Both accept any positive rates; splitting also covers supercritical processes,
+which still go extinct with probability `mu / lambda`.
 Alongside them are forward simulators for processes whose rates change over
 time, in any regime.
 

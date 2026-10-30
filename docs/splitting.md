@@ -3,8 +3,8 @@
 ## Overview
 
 This document describes the multilevel-splitting simulator in
-`src/bdsurv/splitting.py`, which samples trajectories of a strictly subcritical
-process (`birth_rate < death_rate`) that survive to time `T`. It keeps the
+`src/bdsurv/splitting.py`, which samples trajectories of a birth-death process
+(any positive rates) that survive to time `T`. It keeps the
 particles alive at `T` and does not estimate the survival probability.
 
 Unlike the contour-process method, this is an **approximate**, simulation-based
@@ -20,6 +20,13 @@ probability 1, and `P(survival to T)` can be extremely small — naive Monte
 Carlo (simulate many independent runs, keep only the survivors) wastes almost
 all its samples on trajectories that die out early. Splitting concentrates
 computational effort on the surviving branch of the ensemble instead.
+
+The supercritical regime (`birth_rate > death_rate`) also needs it, since the
+process still goes extinct with probability `death_rate / birth_rate`. There
+`Pr(t)` levels off at `1 - death_rate / birth_rate`, so the grid collapses
+towards a single level and the first replicate count is small (for
+`birth_rate = 1`, `death_rate = 0.8` it is about 5, and a run starts with only a
+handful of particles).
 
 ## Algorithm: multilevel splitting (RESTART)
 
@@ -48,7 +55,11 @@ restarted (see below).
 
 ## Level-grid selection
 
-Starting from `linspace(0, T, n_levels + 1)` (or the caller's `level_times`):
+The starting grid is the caller's `level_times`, or `linspace(0, T, K + 1)`. With
+`n_levels=None` (the default) `K` is the integer for which `Pr(T)^(1/K)` is
+closest to 1/3 (at least 1), so each starting interval keeps about a third of
+the lines; for example `Pr(T) = 1e-9` gives `K = 19`. The grid is then adjusted
+as follows:
 
 - **Refine.** Each interval with `r_i < e^{-2}` gets its midpoint added and the
   ratios are recomputed, until none is below the band. A new interval that is
@@ -73,9 +84,20 @@ time 0, up to `max_restarts` attempts in total. By default
 `default_max_restarts` chooses the smallest `n` with `1 - p_fail^n >= 0.999`,
 where `p_fail = F_1` comes from the backward recursion
 `F_{K+1} = 0`, `F_i = (1 - r_i + r_i F_{i+1})^{R_i}` (each line survives interval
-`i` independently with probability `r_i`; the cap is ignored). Pass
-`max_restarts` in `SplittingConfig` to override it. If every attempt fails a
-`RuntimeWarning` is issued and no trajectories are returned.
+`i` independently with probability `r_i`; the cap is ignored). Clones of one
+parent share its starting state, so their survival is positively correlated and
+the true failure probability can be higher (or sometimes lower) than `p_fail`.
+Pass `max_restarts` in `SplittingConfig` to override it. If every attempt fails
+a `RuntimeWarning` is issued and no trajectories are returned.
+
+## The easy case
+
+If `Pr(T) > 0.5` there is nothing to split. This always holds when
+`death_rate / birth_rate < 0.5`, because `Pr(T) >= 1 - death_rate / birth_rate`,
+and also for short horizons at other rates. The simulator then uses the grid
+`[0, T]` with one replicate and simulates trees one at a time until one
+survives. With `max_restarts=None` the number of attempts is unbounded (at most
+two are needed on average); an explicit `max_restarts` still caps it.
 
 The first successful attempt is returned; failed attempts are discarded.
 Diagnostics, trajectories and genealogy come from the last attempt.
