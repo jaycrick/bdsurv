@@ -6,6 +6,7 @@ import pytest
 from bdsurv._extinction import pr_extinction
 from bdsurv.splitting import (
     _BAND_LOWER,
+    _BAND_UPPER,
     SplittingConfig,
     _initial_level_count,
     _log_survival_probability,
@@ -132,6 +133,45 @@ def _ratios(birth_rate: float, death_rate: float, levels: np.ndarray) -> np.ndar
     return np.exp(np.diff(log_prs))
 
 
+def _reference_grid(
+    birth_rate: float, death_rate: float, terminal_time: float, n_levels: int
+) -> np.ndarray:
+    """Plain restatement of the refine-then-coarsen rule, with no protected times."""
+
+    def log_pr(t: float) -> float:
+        return _log_survival_probability(
+            birth_rate=birth_rate, death_rate=death_rate, time=t
+        )
+
+    times = list(np.linspace(0.0, terminal_time, n_levels + 1))
+    # Refine: add midpoints until every ratio is at least e^-2.
+    while True:
+        out = [times[0]]
+        added = False
+        for left, right in zip(times, times[1:], strict=False):
+            if log_pr(right) - log_pr(left) < -2.0:
+                out.append(0.5 * (left + right))
+                added = True
+            out.append(right)
+        times = out
+        if not added:
+            break
+    # Coarsen: try dropping t_i when its ratio exceeds 1/2, sequentially, until stable.
+    changed = True
+    while changed:
+        changed = False
+        i = 1
+        while i < len(times) - 1:
+            too_large = log_pr(times[i]) - log_pr(times[i - 1]) > np.log(0.5)
+            merged_ok = log_pr(times[i + 1]) - log_pr(times[i - 1]) >= -2.0
+            if too_large and merged_ok:
+                del times[i]
+                changed = True
+            else:
+                i += 1
+    return np.asarray(times)
+
+
 class TestLevelGrid:
     """Adaptive level-grid selection."""
 
@@ -176,6 +216,27 @@ class TestLevelGrid:
         ratios = _ratios(birth_rate, death_rate, levels)
         # Nothing may fall below the band unless the whole horizon is that short.
         assert np.all(ratios >= _BAND_LOWER - 1e-12) or len(levels) == 2
+        # Coarsening is stable: removing an interior point whose ratio is above
+        # 1/2 would push the merged ratio below the band.
+        for j in range(len(ratios) - 1):
+            if ratios[j] > _BAND_UPPER + 1e-12:
+                assert ratios[j] * ratios[j + 1] < _BAND_LOWER + 1e-12
+
+    def test_matches_reference_implementation(self) -> None:
+        rng = np.random.default_rng(0)
+        for _ in range(60):
+            birth_rate = float(rng.uniform(0.3, 3.0))
+            death_rate = float(rng.uniform(0.3, 6.0))
+            terminal_time = float(rng.uniform(0.5, 60.0))
+            n_levels = int(rng.integers(1, 40))
+            got = select_level_times_for_band(
+                birth_rate=birth_rate,
+                death_rate=death_rate,
+                terminal_time=terminal_time,
+                n_levels=n_levels,
+            )
+            expected = _reference_grid(birth_rate, death_rate, terminal_time, n_levels)
+            np.testing.assert_allclose(got, expected, rtol=1e-12, atol=1e-12)
 
     def test_coarse_start_is_refined(self) -> None:
         levels = select_level_times_for_band(

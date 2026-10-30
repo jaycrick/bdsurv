@@ -64,11 +64,15 @@ as follows:
 - **Refine.** Each interval with `r_i < e^{-2}` gets its midpoint added and the
   ratios are recomputed, until none is below the band. A new interval that is
   then above `0.5` is kept.
-- **Coarsen.** Each interval with `r_i > 0.5` has its right end point removed
-  (the last interval removes `t_{K-1}`) and the ratios are recomputed. If the
-  merged ratio would fall below `e^{-2}` the removal is undone and the point
-  kept. Midpoints from the refine step, `t_0` and `T` are never removed, nor
-  are two consecutive points in one sweep. Sweeps repeat until nothing changes.
+- **Coarsen.** Sweep left to right. For each interval with `r_i > 0.5`, try
+  removing its right end point `t_i`; the merged interval `(t_{i-1}, t_{i+1})`
+  has ratio `Pr(t_{i+1}) / Pr(t_{i-1})`, and the removal is kept if that is at
+  least `e^{-2}`. After a removal the new interval at the same position is
+  examined next. Sweeps repeat until a sweep removes nothing.
+
+No time is protected in either step, so a point added while refining can be
+removed when coarsening. Only `t_0` and `T` stay, so a last interval whose ratio
+exceeds `0.5` is left as it is.
 
 ## Replicates
 

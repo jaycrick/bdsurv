@@ -30,6 +30,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   then `None`.
 - The default number of starting levels is chosen so `Pr(T)^(1/K)` is about 1/3;
   `n_levels` now defaults to `None`.
+- The coarsening step of `select_level_times_for_band` tries removing each
+  `t_i` whose ratio exceeds 1/2 in a left-to-right sweep (repeated until stable),
+  keeping the removal if the merged ratio stays at least `e^-2`; no time is
+  protected, so refined midpoints can be removed again.
 - **Breaking:** `select_level_times_for_band` now refines/coarsens a starting grid
   (`n_levels` or `initial_level_times`) so each ratio `Pr(t_i)/Pr(t_{i-1})` lies in
   `[e^-2, 0.5]`, instead of searching over equal splits.

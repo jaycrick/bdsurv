@@ -342,13 +342,16 @@ def select_level_times_for_band(
     1. **Refine.** Every interval with ``r_i < e^{-2}`` gets its midpoint added,
        and the ratios are recomputed.  This repeats until no ratio is below the
        band.  A new interval whose ratio is now above 0.5 is kept.
-    2. **Coarsen.** Every interval with ``r_i > 0.5`` has its right end point
-       ``t_i`` removed (for the last interval, ``t_{K-1}`` is removed), after
-       which the ratios are recomputed.  Midpoints added in step 1 and the end
-       points ``0`` and ``T`` are never removed, and two consecutive points are
-       never removed in one sweep.  If a removal would push the merged ratio
-       below ``e^{-2}`` it is undone and that point is kept.  Sweeps repeat
-       until nothing changes.
+    2. **Coarsen.** Sweep left to right.  For each interval with ``r_i > 0.5``
+       try removing its right end point ``t_i``; the merged interval
+       ``(t_{i-1}, t_{i+1})`` has ratio ``Pr(t_{i+1}) / Pr(t_{i-1})``, and the
+       removal is kept if that is at least ``e^{-2}``.  After a removal the new
+       interval at the same position is examined next.  Sweeps repeat until a
+       sweep removes nothing.
+
+    No time is protected in either step, so points added while refining may
+    be removed when coarsening.  Only ``0`` and ``T`` stay, so a last interval
+    whose ratio exceeds 0.5 is left as it is.
 
     Parameters
     ----------
@@ -390,7 +393,6 @@ def select_level_times_for_band(
         n_levels=n_levels,
     )
     times = [float(t) for t in grid]
-    removable = [True] * len(times)  # only starting-grid points may be removed
 
     def log_pr(t: float) -> float:
         return _log_survival_probability(
@@ -402,7 +404,6 @@ def select_level_times_for_band(
     while True:
         new_times = [times[0]]
         new_log_prs = [log_prs[0]]
-        new_removable = [removable[0]]
         changed = False
         for i in range(1, len(times)):
             if log_prs[i] - log_prs[i - 1] < _LOG_BAND_LOWER:
@@ -410,12 +411,10 @@ def select_level_times_for_band(
                 if times[i - 1] < mid < times[i]:
                     new_times.append(mid)
                     new_log_prs.append(log_pr(mid))
-                    new_removable.append(False)
                     changed = True
             new_times.append(times[i])
             new_log_prs.append(log_prs[i])
-            new_removable.append(removable[i])
-        times, log_prs, removable = new_times, new_log_prs, new_removable
+        times, log_prs = new_times, new_log_prs
         if len(times) > _MAX_GRID_POINTS:
             msg = f"Level grid refinement exceeded {_MAX_GRID_POINTS} points."
             raise ValueError(msg)
@@ -427,20 +426,14 @@ def select_level_times_for_band(
     while changed:
         changed = False
         i = 1
-        just_removed = False
-        while i < len(times):
-            if log_prs[i] - log_prs[i - 1] > _LOG_BAND_UPPER:
-                j = i if i < len(times) - 1 else i - 1
-                if 1 <= j <= len(times) - 2 and removable[j] and not just_removed:
-                    if log_prs[j + 1] - log_prs[j - 1] >= _LOG_BAND_LOWER:
-                        del times[j], log_prs[j], removable[j]
-                        changed = True
-                        just_removed = True
-                        i = min(i, j) if j == i - 1 else i
-                        continue
-                    removable[j] = False
-            just_removed = False
-            i += 1
+        while i < len(times) - 1:  # interior points only: 0 and T stay
+            too_large = log_prs[i] - log_prs[i - 1] > _LOG_BAND_UPPER
+            merged_in_band = log_prs[i + 1] - log_prs[i - 1] >= _LOG_BAND_LOWER
+            if too_large and merged_in_band:
+                del times[i], log_prs[i]
+                changed = True  # re-examine the new interval at position i
+            else:
+                i += 1
 
     return np.asarray(times, dtype=np.float64)
 

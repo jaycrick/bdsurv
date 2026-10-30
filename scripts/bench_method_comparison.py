@@ -315,7 +315,7 @@ def run_shard(
         )
     pd.DataFrame(rows).to_csv(out_dir / f"rows_{shard}.csv", index=False)
     pd.DataFrame(summaries).to_csv(out_dir / f"units_{shard}.csv", index=False)
-    (out_dir / f"env_{shard}.json").write_text(json.dumps(env, indent=2))
+    (out_dir / f"env_{shard}.json").write_text(json.dumps(env, indent=2) + "\n")
 
 
 def merge_shards(shards_dir: Path, data_dir: Path) -> pd.DataFrame:
@@ -345,7 +345,7 @@ def merge_shards(shards_dir: Path, data_dir: Path) -> pd.DataFrame:
         "bdsurv": sorted({e["bdsurv"] for e in envs}),
         "git_sha": sorted({e["git_sha"] for e in envs}),
     }
-    (data_dir / ENV_FILE).write_text(json.dumps(summary, indent=2))
+    (data_dir / ENV_FILE).write_text(json.dumps(summary, indent=2) + "\n")
     return rows
 
 
