@@ -1,7 +1,7 @@
 [project]
 name = "bdsurv"
-version = "0.1.0"
-description = "Survival-conditioned simulation of subcritical linear birth-death processes: exact contour-process reconstruction and multilevel (RESTART) splitting."
+version = "0.2.0"
+description = "Simulation of birth-death processes, focused on survival-conditioned subcritical processes: exact contour-process reconstruction, multilevel (RESTART) splitting, and forward simulators for time-varying rates."
 readme = "README.md"
 requires-python = ">=3.13"
 license = "MIT"
@@ -12,6 +12,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Mathematics"
 ]
 dependencies = [
+  "jax>=0.4.38",
   "numpy>=1.26",
   "pandas>=2.0"
 ]
@@ -27,6 +28,7 @@ dev = [
   "pre-commit>=4.5.1",
   "pytest-cov>=7.0.0",
   "pytest>=9.0.2",
+  "scipy>=1.11",
   "ruff>=0.15.1",
   "toml-sort>=0.24.3"
 ]
@@ -68,6 +70,7 @@ sort_inline_tables = true
 sort_table_keys = true
 
 [tool.pytest.ini_options]
+markers = ["slow: long-running statistical tests"]
 addopts = "--cov=src --cov-report=term-missing --cov-report=xml --cov-fail-under=86"
 python_classes = ["Test*"]
 python_files = ["test_*.py"]
