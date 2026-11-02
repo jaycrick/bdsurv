@@ -185,16 +185,26 @@ def regime(mu: float) -> str:
     return "subcritical: survival to large $T$ is rare"
 
 
-def cost_chart(mu: float) -> alt.Chart:
-    data = curves[curves["mu"] == mu]
-    x = alt.X(
-        "T:Q",
-        scale=alt.Scale(type="log"),
-        title="terminal time T (log scale)",
-        axis=alt.Axis(values=[float(t) for t in TS], format="g", labelOverlap=True),
-    )
-    y_scale = alt.Scale(type="log")
-    y_title = "seconds per tree (log scale)"
+X_BY_T = alt.X(
+    "T:Q",
+    scale=alt.Scale(type="log"),
+    title="terminal time T (log scale)",
+    axis=alt.Axis(values=[float(t) for t in TS], format="g", labelOverlap=True),
+)
+X_BY_MU = alt.X(
+    "mu:Q",
+    # Tight to the data, so there is no empty stretch before the first mu.
+    scale=alt.Scale(type="log", nice=False, padding=12),
+    title="death rate μ (log scale)",
+    axis=alt.Axis(values=[float(m) for m in MUS], format="g", labelOverlap=True),
+)
+
+
+def cost_chart(
+    data: pd.DataFrame, x: alt.X, *, log_y: bool = True, mark_critical: bool = False
+) -> alt.Chart:
+    y_scale = alt.Scale(type="log") if log_y else alt.Scale(zero=True)
+    y_title = "seconds per tree (log scale)" if log_y else "seconds per tree"
     y = alt.Y("median:Q", scale=y_scale, title=y_title)
     # Clicking a legend entry shows that method and fades the rest;
     # shift-click adds more, double-click resets.
@@ -205,7 +215,7 @@ def cost_chart(mu: float) -> alt.Chart:
 
     tooltip = [
         "method",
-        alt.Tooltip("T:Q", format="g"),
+        alt.Tooltip(x.shorthand, format="g"),
         alt.Tooltip("median:Q", format=".3g", title="median s"),
         alt.Tooltip("lo:Q", format=".3g", title="10th pct"),
         alt.Tooltip("hi:Q", format=".3g", title="90th pct"),
@@ -221,8 +231,17 @@ def cost_chart(mu: float) -> alt.Chart:
     points = base.mark_point(size=70, filled=True).encode(
         y=y, tooltip=tooltip, opacity=fade(1.0, 0.08)
     )
+    layers = [area, line, points]
+    if mark_critical:
+        # Splits the supercritical (mu < lambda) and subcritical regimes.
+        critical = (
+            alt.Chart(pd.DataFrame({"mu": [LAMBDA], "label": ["critical"]}))
+            .mark_rule(strokeDash=[6, 4], color="#888888")
+            .encode(x="mu:Q", tooltip=["label"])
+        )
+        layers.append(critical)
     return (
-        alt.layer(area, line, points)
+        alt.layer(*layers)
         .add_params(selection)
         .properties(width=900, height=380)
     )
@@ -277,9 +296,23 @@ def show_mu(mu: float) -> None:
             f"Benchmarked up to $T = {top_t:.3g}$."
         )
     )
-    display(cost_chart(mu))
+    display(cost_chart(curves[curves["mu"] == mu], X_BY_T))
     display(Markdown("**How splitting behaved**"))
     display(diagnostic_chart(mu))
+
+
+def show_t(t: float) -> None:
+    data = curves[np.isclose(curves["T"], t)]
+    if data.empty:
+        display(Markdown(f"No data for $T = {t:g}$ in this results file."))
+        return
+    display(
+        Markdown(
+            f"$\\lambda = 1$, $T = {t:g}$. "
+            f"Benchmarked $\\mu$ from {data['mu'].min():g} to {data['mu'].max():g}."
+        )
+    )
+    display(cost_chart(data, X_BY_MU, mark_critical=True))
 ```
 
 ## Cost per tree over time, by death rate
@@ -343,6 +376,97 @@ show_mu(5.0)
 
 ```{python}
 show_mu(10.0)
+```
+
+:::
+
+## Cost per tree over death rate, by time
+
+Click through the tabs to step the horizon $T$ from 1 to 100.
+The x axis is now the death rate $\mu$ (on a log scale, as is the cost axis), so each chart shows how cost changes
+from supercritical to highly subcritical at a fixed horizon.
+The dashed line marks the critical rate $\mu = \lambda$.
+At long horizons the supercritical cells are skipped (see the note above),
+so those tabs start at a higher $\mu$.
+
+::: {.panel-tabset}
+
+### T = 1
+
+```{python}
+show_t(1.0)
+```
+
+### T = 1.47
+
+```{python}
+show_t(1.468)
+```
+
+### T = 2.15
+
+```{python}
+show_t(2.154)
+```
+
+### T = 3.16
+
+```{python}
+show_t(3.162)
+```
+
+### T = 4.64
+
+```{python}
+show_t(4.642)
+```
+
+### T = 6.81
+
+```{python}
+show_t(6.813)
+```
+
+### T = 10
+
+```{python}
+show_t(10.0)
+```
+
+### T = 14.7
+
+```{python}
+show_t(14.678)
+```
+
+### T = 21.5
+
+```{python}
+show_t(21.544)
+```
+
+### T = 31.6
+
+```{python}
+show_t(31.623)
+```
+
+### T = 46.4
+
+```{python}
+show_t(46.416)
+```
+
+### T = 68.1
+
+```{python}
+show_t(68.129)
+```
+
+### T = 100
+
+```{python}
+show_t(100.0)
 ```
 
 :::
