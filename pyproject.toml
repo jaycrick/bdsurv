@@ -22,6 +22,13 @@ Homepage = "https://github.com/jaycrick/bdsurv"
 Repository = "https://github.com/jaycrick/bdsurv"
 
 [dependency-groups]
+bench = [
+  "altair>=6.0.0",
+  "jupyter-cache>=1.0.1",
+  "jupyter>=1.1.1",
+  "pyyaml>=6.0",
+  "quarto>=0.1.0"
+]
 dev = [
   "basedpyright>=1.22.0",
   "pandas-stubs",
@@ -53,6 +60,9 @@ select = ["B", "D", "E", "F", "I", "UP", "W"]
 convention = "numpy"
 
 [tool.ruff.lint.per-file-ignores]
+"scripts/*" = [
+  "E402" # thread-pool and JAX environment variables are set before importing
+]
 "tests/*" = [
   "D101", # test classes are self-documenting via their names
   "D102", # test methods are self-documenting via their names

@@ -1,0 +1,52 @@
+project:
+  type: website
+  output-dir: _output
+  render:
+    - benchmarks/method_comparison.qmd
+    - benchmarks/simulator_speed.qmd
+    - docs/*.md
+
+website:
+  title: "bdsurv: survival-conditioned birth-death simulation"
+  repo-url: https://github.com/jaycrick/bdsurv
+  repo-actions: [edit, issue]
+  bread-crumbs: true
+  page-navigation: true
+  navbar:
+    left:
+      - text: "Benchmarks"
+        menu:
+          - text: "Contour process against splitting"
+            file: benchmarks/method_comparison.qmd
+          - text: "Simulator speed"
+            file: benchmarks/simulator_speed.qmd
+      - text: "Methods"
+        menu:
+          - text: "Contour process"
+            file: docs/contour_process.md
+          - text: "Multilevel splitting"
+            file: docs/splitting.md
+          - text: "Lifespan-at-birth engine"
+            file: docs/lifespans.md
+          - text: "Era conditioning"
+            file: docs/era_conditioning.md
+
+format:
+  html:
+    respect-user-color-scheme: true
+    code-overflow: wrap
+    theme: flatly
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    code-tools: true
+    embed-resources: false
+    html-math-method: mathjax
+    fig-width: 10
+    fig-height: 6
+
+execute:
+  warning: true
+  message: true
+  cache: true
+  freeze: auto  # re-render only when source changes

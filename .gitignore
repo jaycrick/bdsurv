@@ -51,3 +51,10 @@ ENV/
 .DS_Store
 .vscode/
 .idea/
+
+# Benchmark shards and SLURM logs
+benchmarks/_shards/
+logs/*
+!logs/.gitkeep
+
+**/*.quarto_ipynb

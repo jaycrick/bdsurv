@@ -39,6 +39,7 @@ from bdsurv import (
     PiecewiseConstant,
     PiecewiseLinear,
     SplittingConfig,
+    compute_level_replicates,
     sample_conditioned_survival_process,
     select_level_times_for_band,
     simulate_birth_death_lifespans,
@@ -47,9 +48,8 @@ from bdsurv import (
     simulate_birth_death_process_from_contour_process,
     simulate_subcritical_survival_splitting,
 )
-from bdsurv._extinction import pr_extinction
 from bdsurv.splitting import (
-    _calculate_extinction_probability,  # pyright: ignore[reportPrivateUsage]
+    _log_survival_probability,  # pyright: ignore[reportPrivateUsage]
 )
 
 SEED = 42
@@ -66,8 +66,9 @@ def timed[T](fn: Callable[[], T]) -> tuple[T, float]:
 ## 1. Contour process against multilevel splitting
 
 Three subcritical regimes share $\lambda = 1$ and $T = 20$ and differ in $\mu$.
-The level grid and splitting factor $R$ are computed once per regime
+The level grid and the per-level replicate counts are computed once per regime
 **outside** the timed region, so only simulation cost is measured.
+The table shows the first level's replicate count and the mean over levels.
 Contour calls are timed serially; splitting runs once per regime.
 
 ```{python}
@@ -82,14 +83,8 @@ for mu in DEATH_RATES:
     grid = select_level_times_for_band(
         birth_rate=BIRTH_RATE, death_rate=mu, terminal_time=TERMINAL_TIME
     )
-    first_increment = float(grid[1]) - float(grid[0])
-    r = int(
-        np.ceil(
-            1.0
-            / _calculate_extinction_probability(
-                birth_rate=BIRTH_RATE, death_rate=mu, interval_time=first_increment
-            )
-        )
+    reps = compute_level_replicates(
+        birth_rate=BIRTH_RATE, death_rate=mu, level_times=grid
     )
 
     _, contour_s = timed(
@@ -110,7 +105,7 @@ for mu in DEATH_RATES:
         terminal_time=TERMINAL_TIME,
         n_particles=N_PARTICLES,
         level_times=grid.tolist(),
-        splitting_factor=r,
+        replicates=reps.tolist(),
         random_seed=SEED,
     )
     result, splitting_s = timed(lambda: simulate_subcritical_survival_splitting(config))
@@ -118,10 +113,17 @@ for mu in DEATH_RATES:
     rows.append(
         {
             "mu": mu,
-            "P(survive to T)": 1.0 - pr_extinction(BIRTH_RATE, mu, TERMINAL_TIME),
-            "splitting estimate": result.survival_probability_estimate,
+            # log space, so rare survival does not round to 0
+            "P(survive to T)": float(
+                np.exp(
+                    _log_survival_probability(
+                        birth_rate=BIRTH_RATE, death_rate=mu, time=TERMINAL_TIME
+                    )
+                )
+            ),
             "levels": len(grid) - 1,
-            "R": r,
+            "first R": int(reps[0]),
+            "mean R": float(np.mean(reps)),
             "contour s/tree": contour_s / N_CONTOUR_CALLS,
             "splitting s (total)": splitting_s,
             "splitting trees": len(result.conditioned_trajectories),

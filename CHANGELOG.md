@@ -6,6 +6,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `compute_level_replicates`: per-level replicate counts `R_i`, the smallest
+  integer `>= 2` keeping the expected number of live lines at least one.
+- `default_max_restarts`: number of attempts so at least one survives with
+  probability 0.999, from a Galton-Watson approximation.
+- `SplittingConfig.max_restarts` and `SplittingSimulationResult.n_attempts` /
+  `max_restarts`: a failed run (no survivor at `T`) restarts from time 0.
+
+- `scripts/bench_method_comparison.py` and `.slurm`: parallel (SLURM array)
+  benchmark of the contour process against splitting over a (mu, T) grid, whose
+  merged results `benchmarks/method_comparison.qmd` reads.
+- `_quarto.yml`: the repository is now a Quarto website project (render with
+  `uv run quarto render`); new `bench` dependency group.
+
+### Changed
+
+- Splitting accepts any positive rates (supercritical and critical as well as
+  subcritical). When `Pr(T) > 0.5` (always for `death_rate / birth_rate < 0.5`)
+  it simulates trees one at a time until one survives, with unbounded restarts
+  unless `max_restarts` is given; `SplittingSimulationResult.max_restarts` is
+  then `None`.
+- The default number of starting levels is chosen so `Pr(T)^(1/K)` is about 1/3;
+  `n_levels` now defaults to `None`.
+- The coarsening step of `select_level_times_for_band` tries removing each
+  `t_i` whose ratio exceeds 1/2 in a left-to-right sweep (repeated until stable),
+  keeping the removal if the merged ratio stays at least `e^-2`; no time is
+  protected, so refined midpoints can be removed again.
+- **Breaking:** `select_level_times_for_band` now refines/coarsens a starting grid
+  (`n_levels` or `initial_level_times`) so each ratio `Pr(t_i)/Pr(t_{i-1})` lies in
+  `[e^-2, 0.5]`, instead of searching over equal splits.
+- **Breaking:** `SplittingConfig.splitting_factor` is replaced by
+  `replicates` (one count per interval, requires `level_times`), and
+  `SplittingSimulationResult.splitting_factor` by `replicates`.
+- **Breaking:** the splitting simulator no longer estimates the survival
+  probability. `survival_probability_estimate`, `level_survival_probabilities`
+  and the per-level survival estimates on `LevelDiagnostic` are removed; the
+  result keeps the particles that survive to `T`.
+- A user-supplied `level_times` is now a starting grid unless `replicates` is also
+  given. Survivors are no longer enriched after the final level.
+
 ## [0.2.0]
 
 ### Added
