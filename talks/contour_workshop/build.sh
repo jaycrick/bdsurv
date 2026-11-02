@@ -6,8 +6,8 @@
 #   talks/contour_workshop/build.sh --figures-only
 #   talks/contour_workshop/build.sh --render-only
 #
-# Needs pdflatex (with tikz and standalone) and pdftocairo for the figures,
-# and uv and quarto for the slides.
+# Needs lualatex (with tikz, standalone, libertinus-otf and unicode-math) and pdftocairo for
+# the figures, TeX Live's Libertinus and STIX Two fonts, and uv and quarto for the slides.
 set -euo pipefail
 
 # figure name : number of stages (stage k is compiled with \def\stage{k})
@@ -25,8 +25,20 @@ case "${1:-}" in
   *) echo "unknown option: $1" >&2; exit 2 ;;
 esac
 
+# The slides load Libertinus Serif and STIX Two Math from fonts/, copied from TeX Live.
+copy_fonts() {
+  mkdir -p "$here/fonts"
+  for font in LibertinusSerif-Regular LibertinusSerif-Italic LibertinusSerif-Bold \
+      LibertinusSerif-BoldItalic STIXTwoMath-Regular; do
+    local path
+    path="$(kpsewhich "$font.otf")"
+    [ -n "$path" ] || { echo "missing font $font.otf" >&2; exit 1; }
+    cp "$path" "$here/fonts/"
+  done
+}
+
 build_figures() {
-  for tool in pdflatex pdftocairo; do
+  for tool in lualatex pdftocairo; do
     command -v "$tool" >/dev/null || { echo "missing $tool" >&2; exit 1; }
   done
   local work
@@ -36,7 +48,7 @@ build_figures() {
     local name="${entry%%:*}" stages="${entry##*:}"
     for k in $(seq 1 "$stages"); do
       echo "figure $name stage $k"
-      (cd "$here/figures" && pdflatex -interaction=nonstopmode -halt-on-error \
+      (cd "$here/figures" && lualatex -interaction=nonstopmode -halt-on-error \
         -output-directory "$work" -jobname "${name}_${k}" \
         "\\def\\stage{$k}\\input{$name.tex}" >"$work/${name}_${k}.out" 2>&1) \
         || { tail -30 "$work/${name}_${k}.out" >&2; exit 1; }
@@ -51,5 +63,5 @@ render_slides() {
 }
 
 ((do_figures)) && build_figures
-((do_render)) && render_slides
+((do_render)) && { copy_fonts; render_slides; }
 exit 0

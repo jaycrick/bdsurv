@@ -1,0 +1,29 @@
+/* The OTFs in fonts/ are copied from TeX Live by build.sh. */
+@font-face {
+  font-family: "Libertinus Serif";
+  font-style: normal;
+  font-weight: 400;
+  src: url("fonts/LibertinusSerif-Regular.otf") format("opentype");
+}
+@font-face {
+  font-family: "Libertinus Serif";
+  font-style: italic;
+  font-weight: 400;
+  src: url("fonts/LibertinusSerif-Italic.otf") format("opentype");
+}
+@font-face {
+  font-family: "Libertinus Serif";
+  font-style: normal;
+  font-weight: 700;
+  src: url("fonts/LibertinusSerif-Bold.otf") format("opentype");
+}
+@font-face {
+  font-family: "Libertinus Serif";
+  font-style: italic;
+  font-weight: 700;
+  src: url("fonts/LibertinusSerif-BoldItalic.otf") format("opentype");
+}
+@font-face {
+  font-family: "STIX Two Math";
+  src: url("fonts/STIXTwoMath-Regular.otf") format("opentype");
+}

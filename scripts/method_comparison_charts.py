@@ -13,11 +13,19 @@ LABEL_CONTOUR = "Contour process (exact)"
 LABEL_RUN = "Splitting, per independent tree (one run)"
 LABEL_KEPT = "Splitting, per kept tree"
 PALETTE = {LABEL_CONTOUR: "#0072B2", LABEL_RUN: "#E69F00", LABEL_KEPT: "#D55E00"}
-COLOR = alt.Color(
-    "method:N",
-    scale=alt.Scale(domain=list(PALETTE), range=list(PALETTE.values())),
-    legend=alt.Legend(title=None, orient="bottom", labelFontSize=14, labelLimit=0),
-)
+
+
+def color_encoding(legend_font_size: int = 14) -> alt.Color:
+    return alt.Color(
+        "method:N",
+        scale=alt.Scale(domain=list(PALETTE), range=list(PALETTE.values())),
+        legend=alt.Legend(
+            title=None, orient="bottom", labelFontSize=legend_font_size, labelLimit=0
+        ),
+    )
+
+
+COLOR = color_encoding()
 
 
 @alt.theme.register("bdsurv", enable=True)
@@ -94,6 +102,7 @@ def cost_chart(
     lam: float,
     log_y: bool = True,
     mark_critical: bool = False,
+    legend_font_size: int = 14,
     width: int = 900,
     height: int = 380,
 ) -> alt.Chart:
@@ -115,7 +124,7 @@ def cost_chart(
         alt.Tooltip("hi:Q", format=".3g", title="90th pct"),
         "replicates",
     ]
-    base = alt.Chart(data).encode(x=x, color=COLOR)
+    base = alt.Chart(data).encode(x=x, color=color_encoding(legend_font_size))
     area = base.mark_area().encode(
         y=alt.Y("lo:Q", scale=y_scale, title=y_title),
         y2="hi:Q",

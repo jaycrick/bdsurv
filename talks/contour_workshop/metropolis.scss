@@ -1,0 +1,98 @@
+/*-- scss:defaults --*/
+
+// Colours of the (light) Metropolis beamer theme.
+$mDarkTeal: #23373b;
+$mLightBrown: #eb811b;
+$mPaper: #fafafa;
+
+$body-bg: $mPaper;
+$body-color: $mDarkTeal;
+$link-color: $mLightBrown;
+$selection-bg: $mLightBrown;
+
+$font-family-sans-serif: "Libertinus Serif", Georgia, serif;
+$presentation-heading-font: "Libertinus Serif", Georgia, serif;
+$presentation-heading-color: $mDarkTeal;
+$presentation-heading-font-weight: 400;
+$presentation-font-size-root: 39px;
+$presentation-title-slide-text-align: left;
+
+/*-- scss:rules --*/
+
+// The @font-face rules are in fonts.css (url()s in a theme are resolved against Quarto's
+// own theme folder, not this directory).
+
+// MathML output uses the math font.
+.reveal math {
+  font-family: "STIX Two Math", "Libertinus Serif", serif;
+  font-size: 1.05em;
+}
+
+// Frame titles: left aligned, with a thin orange rule underneath.
+.reveal h2 {
+  text-align: left;
+  text-transform: none;
+  margin-bottom: 0.5em;
+  &::after {
+    content: "";
+    display: block;
+    width: 100%;
+    margin-top: 0.15em;
+    border-bottom: 2px solid $mLightBrown;
+  }
+}
+
+// Title slide.
+.reveal #title-slide {
+  text-align: left;
+  h1.title {
+    font-size: 1.9em;
+    text-transform: none;
+  }
+  .subtitle {
+    font-style: italic;
+    color: lighten($mDarkTeal, 20%);
+  }
+  .author, .institute {
+    margin: 0.15em 0;
+  }
+  .subtitle::after {
+    content: "";
+    display: block;
+    width: 100%;
+    margin: 0.4em 0 0.6em;
+    border-bottom: 2px solid $mLightBrown;
+  }
+}
+
+// Circle bullets with an orange marker.
+.reveal ul {
+  margin-left: 0;
+  padding-left: 1.1em;
+  list-style: disc;
+  li::marker {
+    color: $mLightBrown;
+  }
+}
+
+// Orange progress bar and muted footer.
+.reveal .progress {
+  height: 3px;
+  color: $mLightBrown;
+}
+.reveal .slide-number {
+  background: transparent;
+  color: lighten($mDarkTeal, 25%);
+  font-size: 0.5em;
+}
+.reveal .footer {
+  color: lighten($mDarkTeal, 25%);
+  font-size: 0.5em;
+  text-align: left !important;
+  left: 3em !important;
+  right: auto !important;
+  width: auto !important;
+  p {
+    text-align: left !important;
+  }
+}
