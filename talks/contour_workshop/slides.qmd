@@ -18,7 +18,7 @@ execute:
   echo: false
 ---
 
-## Declining populations are hard to simulate
+## Simulation is important for understanding population models
 
 :::: {.columns}
 ::: {.column width="50%"}
@@ -26,12 +26,10 @@ execute:
 :::
 
 ::: {.column width="50%"}
-::: {.incremental}
-- Many species are in **decline**: understanding it informs conservation.
-- Decline is modelled as a **subcritical** birth-and-death process.
-- We only see populations that **survived** to today.
-- **Simulation** lets us test and calibrate inference methods.
-:::
+- Models help us understand the behaviour of populations over time.
+- **Simulation** lets us test, validate, and calibrate inference methods.
+- Of particular interest are **declining populations**, such as threatened species,
+which have survived to the present.
 :::
 ::::
 
@@ -48,37 +46,22 @@ We also show that the more subcritical the process is, the greater the algorithm
 advantage over standard simulation.
 :::
 
-## We must condition the process on survival
+## Subcritical birth-and-death processes can model declining populations
 
 :::: {.columns}
 ::: {.column width="52%"}
-::: {.r-stack}
-![](figures/bdp_tree_1.svg){width="720"}
-
-![](figures/bdp_tree_2.svg){.fragment fragment-index=3 width="720"}
-:::
+![](figures/bdp_tree_2.svg){width="720"}
 :::
 
 ::: {.column width="48%"}
-::: {.fragment fragment-index=1}
-- Each individual **gives birth** at rate $\lambda$ and **dies** at rate $\mu$.
-:::
-
-::: {.fragment fragment-index=2}
-- Start from one ancestor and run to time $T$.
-:::
-
-::: {.fragment fragment-index=3}
-- We observe only the individuals **alive at $T$**.
-:::
-
-::: {.fragment fragment-index=4}
-- So we must **condition on survival**.
-:::
+- Birth-and-death process: per individual **birth-rate** $\lambda$, **death-rate** $\mu$.
+- **Subcritical** if $\mu > \lambda$.
+- We are generally motivated to observe **non-extinct** processes at $T$.
+- How do we **simulate** such a process **conditioned on survival**?
 :::
 ::::
 
-## Naive simulation fails as the process declines
+## Naive simulation becomes increasingly costly for longer times and more subcritical processes
 
 :::: {.columns}
 ::: {.column width="54%"}
@@ -94,28 +77,36 @@ advantage over standard simulation.
 :::
 
 ::: {.column width="46%"}
-::: {.incremental}
-- For $\mu > \lambda$: $\Pr(T) \approx \big(1 - \tfrac{\lambda}{\mu}\big)\, e^{-(\mu - \lambda)T}$
-- Runs needed per survivor: $1 / \Pr(T)$
+- For $\mu > \lambda$: $$\Pr(Z_T > 0) \approx \Bigl(1 - \tfrac{\lambda}{\mu}\Bigr)\, e^{-(\mu - \lambda)T}$$
+- Runs needed per survivor: $1 / \Pr(Z_T > 0)$
 - $\lambda = 1$, $\mu = 2$, $T = 10$: about **44,000** runs
-:::
 :::
 ::::
 
-## Multilevel splitting yields correlated trees
+## Multilevel splitting is more efficient at simulating subcritical processes, but yields correlated trees
 
 :::: {.columns}
-::: {.column width="50%"}
-![](images/mls_placeholder.svg){width="100%"}
+::: {.column width="56%"}
+::: {.algo}
+**Modified multilevel splitting**
+
+Given levels $0=\tau_0 < \tau_1 < \dots < \tau_J = T$, cloning rates $r_j$ and size $N_0$.
+
+1. Start $N_0$ processes from the initial distribution
+2. **for** $j = 1, \dots, J$:
+    - run each process using Gillespie to level $\tau_j$
+    - discard those that did not reach $\tau_j$
+    - clone each survivor $r_j$ times
+3. **return** trees that survived to $T$ (if any)
+:::
 :::
 
-::: {.column width="50%"}
-::: {.incremental}
-- An **unbiased** estimator of rare-event probabilities:
-  $$\hat p = \frac{N_K}{\prod_{k=1}^{K} R_k}, \qquad \mathbb{E}\,\hat p = \Pr(T)$$
-  [($N_K$ lines alive at $T$, $R_k$ clones at level $k$)]{.small}
-- Clones share ancestry, so the kept trees are **highly correlated**.
-:::
+::: {.column width="44%"}
+- Multilevel splitting made for **unbiased estimators** of rare-event probabilities:
+$$\hat{p} = \frac{\text{\# surviving trees}}{N_0 \prod_{j=1}^{J} r_j},$$
+and
+$$\mathbb{E}\bigl(\hat p\bigr) = \Pr(Z_T > 0)$$
+- Clones share ancestry, so kept trees **highly correlated**.
 :::
 ::::
 
