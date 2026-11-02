@@ -70,6 +70,8 @@ COLOR = alt.Color(
 )
 MUS = sorted(rows["mu"].unique())
 TS = sorted(rows["T"].unique())
+N_REPS = int(rows.groupby(["method", "mu", "T"]).size().min())
+N_CELLS = rows.groupby(["mu", "T"]).ngroups
 
 @alt.theme.register("bdsurv", enable=True)
 def _bdsurv_theme() -> alt.theme.ThemeConfig:
@@ -126,14 +128,15 @@ price when independence matters.
 *Per kept tree* divides the run by the number of trees it kept, which is the
 optimistic view.
 
-Each point is the **median** over independent replicates, and the shaded band is the
-10th to 90th percentile.
+Each point is the **median** over independent replicates (at least
+`{python} N_REPS` per method and cell, across `{python} N_CELLS` cells), and the
+shaded band is the 10th to 90th percentile.
 The x-axis (terminal time $T$) is logarithmic and the y-axis is linear.
 
 ::: {.callout-note}
 A cell $(\mu, T)$ is skipped when the expected tree size given survival,
 $e^{(\lambda-\mu)T} / \Pr(T)$, exceeds
-`{python} f"{bench.MAX_EXPECTED_POPULATION:.0e}"` individuals.
+`{python} f"{bench.MAX_EXPECTED_POPULATION:,.0f}"` individuals.
 Supercritical trees grow exponentially, so this only trims the longest horizons
 for $\mu < 1$.
 :::
@@ -256,7 +259,7 @@ def show_mu(mu: float) -> None:
     display(
         Markdown(
             f"$\\lambda = 1$, $\\mu = {mu:g}$: {regime(mu)}. "
-            f"Benchmarked up to $T = {top_t:g}$."
+            f"Benchmarked up to $T = {top_t:.3g}$."
         )
     )
     display(cost_chart(mu))
@@ -267,6 +270,9 @@ def show_mu(mu: float) -> None:
 ## Cost per tree over time, by death rate
 
 Click through the tabs to step $\mu$ from supercritical to highly subcritical.
+Under each cost chart, the three small panels show how splitting behaved: the
+trees kept per run, the attempts per run (above 1 means some attempts died out
+and were restarted), and the number of levels (1 means nothing was split).
 
 ::: {.panel-tabset}
 
@@ -485,6 +491,39 @@ summary.rename(
 )
 ```
 
+### Cells above the line
+
+```{python}
+#| label: flagged-cells
+flagged = agreement[agreement["flagged"]].copy()
+if flagged.empty:
+    display(Markdown("No cell exceeds the 5% line."))
+else:
+    flagged["exact mean"] = [exact_mean(m, t) for m, t in zip(flagged["mu"], flagged["T"])]
+    flagged["sample mean"] = [
+        float(
+            rows[
+                (rows["mu"] == m)
+                & (rows["T"] == t)
+                & (rows["method"] == ("contour" if lab == LABEL_CONTOUR else "splitting"))
+            ]["pop_at_T"].mean()
+        )
+        for lab, m, t in zip(flagged["method"], flagged["mu"], flagged["T"])
+    ]
+    display(
+        flagged[["method", "mu", "T", "n", "ks", "critical", "sample mean", "exact mean"]]
+        .rename(columns={"mu": "μ", "ks": "KS", "critical": "5% line"})
+        .style.hide(axis="index")
+        .format(
+            {"μ": "{:g}", "T": "{:.3g}", "KS": "{:.3f}", "5% line": "{:.3f}",
+             "sample mean": "{:.2f}", "exact mean": "{:.2f}"}
+        )
+    )
+```
+
+With `{python} N_REPS` replicates per cell the test has little power, so a flagged
+cell is a prompt to rerun it with more replicates, not evidence of a bias.
+
 ## Coverage and environment
 
 ```{python}
@@ -496,6 +535,7 @@ coverage = (
     .pivot_table(index="mu", columns="method", values=["max_T", "replicates"])
 )
 coverage.columns = [f"{a} ({b})" for a, b in coverage.columns]
+coverage.index = [f"{m:g}" for m in coverage.index]
 coverage.index.name = "μ"
 coverage.style.format("{:g}")
 ```

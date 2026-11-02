@@ -48,7 +48,9 @@ from bdsurv import (
     simulate_birth_death_process_from_contour_process,
     simulate_subcritical_survival_splitting,
 )
-from bdsurv._extinction import pr_extinction
+from bdsurv.splitting import (
+    _log_survival_probability,  # pyright: ignore[reportPrivateUsage]
+)
 
 SEED = 42
 pd.options.display.float_format = "{:.4g}".format
@@ -64,8 +66,9 @@ def timed[T](fn: Callable[[], T]) -> tuple[T, float]:
 ## 1. Contour process against multilevel splitting
 
 Three subcritical regimes share $\lambda = 1$ and $T = 20$ and differ in $\mu$.
-The level grid and splitting factor $R$ are computed once per regime
+The level grid and the per-level replicate counts are computed once per regime
 **outside** the timed region, so only simulation cost is measured.
+The table shows the first level's replicate count and the mean over levels.
 Contour calls are timed serially; splitting runs once per regime.
 
 ```{python}
@@ -110,9 +113,17 @@ for mu in DEATH_RATES:
     rows.append(
         {
             "mu": mu,
-            "P(survive to T)": 1.0 - pr_extinction(BIRTH_RATE, mu, TERMINAL_TIME),
+            # log space, so rare survival does not round to 0
+            "P(survive to T)": float(
+                np.exp(
+                    _log_survival_probability(
+                        birth_rate=BIRTH_RATE, death_rate=mu, time=TERMINAL_TIME
+                    )
+                )
+            ),
             "levels": len(grid) - 1,
-            "R": reps.tolist(),
+            "first R": int(reps[0]),
+            "mean R": float(np.mean(reps)),
             "contour s/tree": contour_s / N_CONTOUR_CALLS,
             "splitting s (total)": splitting_s,
             "splitting trees": len(result.conditioned_trajectories),
