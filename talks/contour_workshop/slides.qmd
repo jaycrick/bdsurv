@@ -1,6 +1,5 @@
 ---
-title: "Simulating survival-conditioned birth-death trees"
-subtitle: "Contour processes and a time-reversal trick"
+title: "Simulating declining populations backwards in time"
 author: "Jacob Cumming"
 institute: "University of Melbourne"
 format:
@@ -13,76 +12,196 @@ format:
     theme: [default, metropolis.scss]
     css: fonts.css
     html-math-method: mathml
-    footer: "Contour processes for survival-conditioned birth-death trees"
+    footer: "Simulating declining populations backwards in time"
     embed-resources: true
 execute:
   echo: false
 ---
 
-## Why simulate long, non-extinct subcritical trees?
-
-- *Placeholder: motivation goes here.*
--
--
-
-## Trees and contours
+## Declining populations are hard to simulate
 
 :::: {.columns}
+::: {.column width="50%"}
+![](images/species_placeholder.svg){width="100%"}
+:::
 
-::: {.column width="64%"}
+::: {.column width="50%"}
+::: {.incremental}
+- Many species are in **decline**: understanding it informs conservation.
+- Decline is modelled as a **subcritical** birth-and-death process.
+- We only see populations that **survived** to today.
+- **Simulation** lets us test and calibrate inference methods.
+:::
+:::
+::::
+
+::: notes
+Declining populations, such as threatened species, are often modelled by subcritical
+birth-and-death processes, in which individuals die at a higher rate than they reproduce.
+Such populations eventually go extinct, so to study those that are still alive today we
+must condition on survival to the present.
+Simulating this directly is costly, because most simulated populations die out before
+reaching the present and have to be discarded.
+We present a new, efficient algorithm that avoids this waste by starting from the
+population as observed today and building its family tree backwards in time to the origin.
+We also show that the more subcritical the process is, the greater the algorithm's
+advantage over standard simulation.
+:::
+
+## We must condition the process on survival
+
+:::: {.columns}
+::: {.column width="52%"}
 ::: {.r-stack}
-![](figures/tree_contour_1.svg){width="820"}
+![](figures/bdp_tree_1.svg){width="720"}
 
-![](figures/tree_contour_2.svg){.fragment fragment-index=1 width="820"}
-
-![](figures/tree_contour_3.svg){.fragment fragment-index=2 width="820"}
-
-![](figures/tree_contour_4.svg){.fragment fragment-index=3 width="820"}
-
-![](figures/tree_contour_5.svg){.fragment fragment-index=4 width="820"}
+![](figures/bdp_tree_2.svg){.fragment fragment-index=3 width="720"}
 :::
 :::
 
-::: {.column width="36%"}
-- Walking round the tree gives its **contour**.
+::: {.column width="48%"}
+::: {.fragment fragment-index=1}
+- Each individual **gives birth** at rate $\lambda$ and **dies** at rate $\mu$.
+:::
 
 ::: {.fragment fragment-index=2}
-- Contours can be **simulated**.
+- Start from one ancestor and run to time $T$.
 :::
 
 ::: {.fragment fragment-index=3}
-- Once at $T$, coming down is **easy**.
+- We observe only the individuals **alive at $T$**.
 :::
 
 ::: {.fragment fragment-index=4}
-- The **first ascent** is the hard part.
+- So we must **condition on survival**.
 :::
 :::
-
-::: notes
-Peaks are deaths (or $T$, still alive) and valleys are births.
-The contour is a Markov chain of extrema: down by $\mathrm{Exp}(\lambda)$, up by
-$\mathrm{Exp}(\mu)$, capped at $T$.
-For a subcritical process, reaching $T$ for the first time is a rare event.
-:::
-
 ::::
 
-## Swapping mothers and daughters
+## Naive simulation fails as the process declines
+
+:::: {.columns}
+::: {.column width="54%"}
+::: {.algo}
+**Naive (Gillespie) simulation**
+
+1. $t \leftarrow 0$, $n \leftarrow 1$
+2. **while** $t < T$ and $n > 0$:
+    - draw $\Delta \sim \mathrm{Exp}\big(n(\lambda+\mu)\big)$ and set $t \leftarrow t + \Delta$
+    - birth ($n \leftarrow n+1$) with probability $\frac{\lambda}{\lambda+\mu}$, otherwise death ($n \leftarrow n-1$)
+3. **if** $n = 0$: discard and restart; **else** keep the tree
+:::
+:::
+
+::: {.column width="46%"}
+::: {.incremental}
+- For $\mu > \lambda$: $\Pr(T) \approx \big(1 - \tfrac{\lambda}{\mu}\big)\, e^{-(\mu - \lambda)T}$
+- Runs needed per survivor: $1 / \Pr(T)$
+- $\lambda = 1$, $\mu = 2$, $T = 10$: about **44,000** runs
+:::
+:::
+::::
+
+## Multilevel splitting yields correlated trees
+
+:::: {.columns}
+::: {.column width="50%"}
+![](images/mls_placeholder.svg){width="100%"}
+:::
+
+::: {.column width="50%"}
+::: {.incremental}
+- An **unbiased** estimator of rare-event probabilities:
+  $$\hat p = \frac{N_K}{\prod_{k=1}^{K} R_k}, \qquad \mathbb{E}\,\hat p = \Pr(T)$$
+  [($N_K$ lines alive at $T$, $R_k$ clones at level $k$)]{.small}
+- Clones share ancestry, so the kept trees are **highly correlated**.
+:::
+:::
+::::
+
+## A tree is encoded by its contour
+
+:::: {.columns}
+::: {.column width="58%"}
+::: {.r-stack}
+![](figures/tree_contour_1.svg){width="740"}
+
+![](figures/tree_contour_2.svg){.fragment fragment-index=2 width="740"}
+:::
+:::
+
+::: {.column width="42%"}
+::: {.fragment fragment-index=1}
+- Explore the tree **depth-first**.
+:::
+
+::: {.fragment fragment-index=2}
+- Record the **time** at each step: the **contour**.
+:::
+
+::: {.fragment fragment-index=3}
+- Peaks are **deaths** (or $T$), valleys are **births**.
+:::
+:::
+::::
+
+## A contour is a simple Markov chain of extrema
+
+:::: {.columns}
+::: {.column width="58%"}
+![](figures/tree_contour_3.svg){width="740"}
+:::
+
+::: {.column width="42%"}
+::: {.incremental}
+- The extrema form a **Markov chain**.
+- Down by $\mathrm{Exp}(\lambda)$.
+- Up by $\mathrm{Exp}(\mu)$, capped at $T$.
+- Stop on hitting $0$.
+:::
+:::
+::::
+
+::: notes
+In the code, `_generate_non_spine_component` subtracts Exp(birth_rate) for each down jump
+(floored at 0) and adds Exp(death_rate) for each up jump (capped at T).
+:::
+
+## Only the first ascent of a contour is hard
 
 ::: {.r-stack}
-![](figures/exchanged_pair_1.svg){width="950"}
+![](figures/tree_contour_4.svg){width="900"}
 
-![](figures/exchanged_pair_2.svg){.fragment fragment-index=1 width="950"}
+![](figures/tree_contour_5.svg){.fragment fragment-index=1 width="900"}
 :::
 
-- Swapping mothers and daughters **reverses** the contour.
+## The hard ascent is a reversed easy descent
 
+:::: {.columns}
+::: {.column width="58%"}
+::: {.r-stack}
+![](figures/exchanged_pair_1.svg){width="690"}
+
+![](figures/exchanged_pair_2.svg){.fragment fragment-index=2 width="690"}
+:::
+:::
+
+::: {.column width="42%"}
 ::: {.fragment fragment-index=1}
-- First ascent = last descent: **simulate a descent, reverse it**.
+- Swap mothers and daughters: the contour is **reversed**.
 :::
 
-## Cost per tree at $T = 100$
+::: {.fragment fragment-index=2}
+- First ascent = **reversed** last descent.
+:::
+
+::: {.fragment fragment-index=3}
+- So **simulate a descent** and reverse it.
+:::
+:::
+::::
+
+## The more subcritical, the bigger the speed-up
 
 ```{python}
 import importlib.util
@@ -144,8 +263,8 @@ speedup = (
 )
 display(
     Markdown(
-        f"At $\\mu = {mu_top:g}$, splitting costs **{speedup:,.0f}×** more "
-        "per independent tree."
+        f"At $T = {T_SHOWN:g}$ and $\\mu = {mu_top:g}$, splitting costs "
+        f"**{speedup:,.0f}×** more per independent tree."
     )
 )
 ```

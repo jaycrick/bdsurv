@@ -1,8 +1,8 @@
-% The default tree with its contour (left) and the birth-exchanged tree with the
-% time-reversed contour (right). Coordinates follow fig:cont-right-bdp and fig:cont-left-bdp of
+% The default tree with its contour (top) and the birth-exchanged tree with the
+% time-reversed contour (bottom). Coordinates follow fig:cont-right-bdp and fig:cont-left-bdp of
 % Paper01_AgeBDPVarEnv/sections/4_Contours.tex.
 % Compile with: pdflatex "\def\stage{k}\input{exchanged_pair.tex}"   (k = 1..2)
-%   1 both pictures      2 first ascent (left) and last descent (right) highlighted;
+%   1 both pictures      2 first ascent (top) and last descent (bottom) highlighted;
 %                        they are the same path run in opposite directions
 \documentclass[tikz,border=4pt]{standalone}
 \usepackage{xcolor}
@@ -18,10 +18,10 @@
   \def\hiop{1}\def\loop{0.15}\def\treeop{0.35}\fi
 
 \begin{document}
-\begin{tikzpicture}[xscale=0.38, yscale=0.8, font=\fontsize{19pt}{23pt}\selectfont]
-  \fill[paper] (-3,-2.4) rectangle (49,7.6);
+\begin{tikzpicture}[xscale=0.45, yscale=0.5, font=\fontsize{19pt}{23pt}\selectfont]
+  \fill[paper] (-3,-13.4) rectangle (24,7.6);
 
-  % ---- Left: the default tree and its contour H(s) ------------------------------------
+  % ---- Top: the default tree and its contour H(s) ------------------------------------
   \begin{scope}
     \draw[->] (0,0) -- (22,0) node[right] {$s$};
     \draw[->] (0,0) -- (0,6) node[above] {$t$};
@@ -41,8 +41,8 @@
     \node at (10.5,-1.6) {tree and contour $H(s)$};
   \end{scope}
 
-  % ---- Right: the birth-exchanged tree, contour H(S - s) ---------------------------------
-  \begin{scope}[shift={(26,0)}]
+  % ---- Bottom: the birth-exchanged tree, contour H(S - s) ---------------------------------
+  \begin{scope}[shift={(0,-10.5)}]
     \draw[->] (0,0) -- (22,0) node[right] {$s$};
     \draw[->] (0,0) -- (0,6) node[above] {$t$};
     \draw[dashed, gray] (0,5) -- (22,5);

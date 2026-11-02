@@ -49,20 +49,22 @@ $presentation-title-slide-text-align: left;
     font-size: 1.9em;
     text-transform: none;
   }
-  .subtitle {
-    font-style: italic;
-    color: lighten($mDarkTeal, 20%);
-  }
   .author, .institute {
     margin: 0.15em 0;
   }
-  .subtitle::after {
+  h1.title::after {
     content: "";
     display: block;
     width: 100%;
-    margin: 0.4em 0 0.6em;
+    margin: 0.3em 0 0.5em;
     border-bottom: 2px solid $mLightBrown;
   }
+}
+
+// Numbered lists line up with the bullets.
+.reveal ol {
+  margin-left: 0;
+  padding-left: 1.4em;
 }
 
 // Circle bullets with an orange marker.
@@ -95,4 +97,29 @@ $presentation-title-slide-text-align: left;
   p {
     text-align: left !important;
   }
+}
+
+// Columns: centre the text against the picture.
+.reveal .columns {
+  align-items: center;
+}
+
+// Boxed pseudocode.
+.reveal .algo {
+  border: 2px solid $mDarkTeal;
+  border-radius: 6px;
+  padding: 0.4em 0.7em;
+  font-size: 0.72em;
+  line-height: 1.3;
+  background: #fff;
+  ol, ul {
+    margin: 0.2em 0;
+  }
+  p {
+    margin: 0.1em 0 0.3em;
+  }
+}
+
+.reveal .small {
+  font-size: 0.68em;
 }
