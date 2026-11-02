@@ -131,7 +131,9 @@ optimistic view.
 Each point is the **median** over independent replicates (at least
 `{python} N_REPS` per method and cell, across `{python} N_CELLS` cells), and the
 shaded band is the 10th to 90th percentile.
-The x-axis (terminal time $T$) is logarithmic and the y-axis is linear.
+Both axes of the cost charts are logarithmic.
+Click a legend entry to show only that method (shift-click to add more,
+double-click to reset).
 
 ::: {.callout-note}
 A cell $(\mu, T)$ is skipped when the expected tree size given survival,
@@ -191,11 +193,16 @@ def cost_chart(mu: float) -> alt.Chart:
         title="terminal time T (log scale)",
         axis=alt.Axis(values=[float(t) for t in TS], format="g", labelOverlap=True),
     )
-    y = alt.Y(
-        "median:Q",
-        scale=alt.Scale(zero=True),
-        title="seconds per tree",
-    )
+    y_scale = alt.Scale(type="log")
+    y_title = "seconds per tree (log scale)"
+    y = alt.Y("median:Q", scale=y_scale, title=y_title)
+    # Clicking a legend entry shows that method and fades the rest;
+    # shift-click adds more, double-click resets.
+    selection = alt.selection_point(fields=["method"], bind="legend")
+
+    def fade(shown: float, hidden: float) -> alt.Opacity:
+        return alt.condition(selection, alt.value(shown), alt.value(hidden))
+
     tooltip = [
         "method",
         alt.Tooltip("T:Q", format="g"),
@@ -205,12 +212,20 @@ def cost_chart(mu: float) -> alt.Chart:
         "replicates",
     ]
     base = alt.Chart(data).encode(x=x, color=COLOR)
-    area = base.mark_area(opacity=0.15).encode(
-        y=alt.Y("lo:Q", title="seconds per tree"), y2="hi:Q"
+    area = base.mark_area().encode(
+        y=alt.Y("lo:Q", scale=y_scale, title=y_title),
+        y2="hi:Q",
+        opacity=fade(0.15, 0.02),
     )
-    line = base.mark_line(strokeWidth=3).encode(y=y)
-    points = base.mark_point(size=70, filled=True).encode(y=y, tooltip=tooltip)
-    return (area + line + points).properties(width=900, height=380)
+    line = base.mark_line(strokeWidth=3).encode(y=y, opacity=fade(1.0, 0.08))
+    points = base.mark_point(size=70, filled=True).encode(
+        y=y, tooltip=tooltip, opacity=fade(1.0, 0.08)
+    )
+    return (
+        alt.layer(area, line, points)
+        .add_params(selection)
+        .properties(width=900, height=380)
+    )
 
 
 diagnostics = (

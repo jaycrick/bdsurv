@@ -24,8 +24,8 @@ directly from the age distributions, live in `bdpinf` (`qmd_scripts/validation/`
 
 Compares the contour process with multilevel splitting over a grid of death rates
 `mu` (0.6 to 10, with `lambda = 1`) and horizons `T` (1 to 100).
-It shows one tab per `mu` with cost per tree against `T` (log x-axis, linear
-y-axis), a splitting-versus-contour ratio map, and a Kolmogorov–Smirnov check of
+It shows one tab per `mu` with cost per tree against `T` (log-log axes,
+with a clickable legend), a splitting-versus-contour ratio map, and a Kolmogorov–Smirnov check of
 the simulated population at `T` against its exact geometric law.
 
 The page reads `benchmarks/data/method_comparison.csv` (raw timings, one row per
