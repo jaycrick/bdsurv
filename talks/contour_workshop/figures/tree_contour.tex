@@ -1,0 +1,60 @@
+% A birth-death tree (vermillion) and its contour (blue), revealed in stages.
+% Coordinates follow fig:cont-left-bdp of Paper01_AgeBDPVarEnv/sections/4_Contours.tex.
+% Compile with: pdflatex "\def\stage{k}\input{tree_contour.tex}"   (k = 1..5)
+%   1 tree only            2 + contour            3 + extrema labelled
+%   4 first ascent faded   5 everything after the first ascent faded
+\documentclass[tikz,border=4pt]{standalone}
+\usepackage{xcolor}
+\definecolor{treecol}{HTML}{D55E00}
+\definecolor{contcol}{HTML}{0072B2}
+
+% Opacity of the first ascent, of the rest of the contour, and of the extrema labels.
+\ifcase\stage\or
+  \def\ascop{0}\def\restop{0}\def\dotop{0}\or
+  \def\ascop{1}\def\restop{1}\def\dotop{0}\or
+  \def\ascop{1}\def\restop{1}\def\dotop{1}\or
+  \def\ascop{0.15}\def\restop{1}\def\dotop{0}\or
+  \def\ascop{1}\def\restop{0.15}\def\dotop{0}\fi
+
+\begin{document}
+\begin{tikzpicture}[xscale=0.55, yscale=0.95, font=\large]
+  % The same canvas for every stage, so stacked slides line up.
+  \fill[white] (-2.2,-1.6) rectangle (22.5,6.6);
+
+  % Axes and the terminal level T
+  \draw[->] (0,0) -- (22,0) node[right] {$s$};
+  \draw[->] (0,0) -- (0,6) node[above] {$t$};
+  \draw[dashed, gray] (0,5) -- (22,5);
+  \node[left] at (0,5) {$T$};
+  \node[left] at (0,0) {$0$};
+
+  % The tree: vertical lifelines, dotted births
+  \draw[very thick, treecol]
+    (5,0) -- (5,5)
+    (7,4) -- (7,5)
+    (11.5,2) -- (11.5,3.5)
+    (14,3) -- (14,5)
+    (19,1) -- (19,2);
+  \draw[thick, treecol, dotted]
+    (5,4) -- (7,4)
+    (5,2) -- (11.5,2)
+    (11.5,3) -- (14,3)
+    (5,1) -- (19,1);
+
+  % The contour: first ascent to T, then the rest
+  \draw[ultra thick, contcol, opacity=\ascop] (0,0) -- (5,5);
+  \draw[ultra thick, contcol, opacity=\restop]
+    (5,5) -- (6,4) -- (7,5) -- (10,2) -- (11.5,3.5) -- (12,3)
+    -- (14,5) -- (18,1) -- (19,2) -- (21,0);
+
+  % Extrema, as in the paper: X_1, X_3, ... peaks (deaths or T), X_2, X_4, ... valleys (births)
+  \foreach \x/\y/\i/\pos in {5/5/1/above, 6/4/2/below, 7/5/3/above, 10/2/4/below,
+      11.5/3.5/5/above, 12/3/6/below, 14/5/7/above, 18/1/8/below, 19/2/9/above,
+      21/0/10/below} {
+    \fill[contcol, opacity=\dotop] (\x,\y) circle (0.14);
+    \node[\pos, contcol, opacity=\dotop, inner sep=2pt] at (\x,\y) {$X_{\i}$};
+  }
+  \fill[contcol, opacity=\dotop] (0,0) circle (0.14);
+  \node[below, contcol, opacity=\dotop] at (0,0) {$X_0$};
+\end{tikzpicture}
+\end{document}

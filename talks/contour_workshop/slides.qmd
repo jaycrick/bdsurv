@@ -1,0 +1,140 @@
+---
+title: "Simulating survival-conditioned birth-death trees"
+subtitle: "Contour processes and a time-reversal trick"
+author: "Jacob Cumming"
+institute: "University of Melbourne"
+format:
+  revealjs:
+    slide-number: true
+    transition: none
+    width: 1280
+    height: 720
+    theme: simple
+    embed-resources: true
+execute:
+  echo: false
+---
+
+## Why simulate long, non-extinct subcritical trees?
+
+- *Placeholder: motivation goes here.*
+-
+-
+
+## Trees and contours
+
+:::: {.columns}
+
+::: {.column width="64%"}
+::: {.r-stack}
+![](figures/tree_contour_1.svg){width="820"}
+
+![](figures/tree_contour_2.svg){.fragment fragment-index=1 width="820"}
+
+![](figures/tree_contour_3.svg){.fragment fragment-index=2 width="820"}
+
+![](figures/tree_contour_4.svg){.fragment fragment-index=3 width="820"}
+
+![](figures/tree_contour_5.svg){.fragment fragment-index=4 width="820"}
+:::
+:::
+
+::: {.column width="36%"}
+- A depth-first walk around the tree is its **contour**:
+  peaks are deaths (or $T$, still alive), valleys are births.
+
+::: {.fragment fragment-index=2}
+- Contours can be **simulated**: a Markov chain of extrema,
+  down by $\mathrm{Exp}(\lambda)$, up by $\mathrm{Exp}(\mu)$, capped at $T$.
+:::
+
+::: {.fragment fragment-index=3}
+- Once the contour hits $T$, coming down is **easy**:
+  an ordinary walk back to $0$.
+:::
+
+::: {.fragment fragment-index=4}
+- The **first ascent** to $T$ is the hard part:
+  for a subcritical process, it is a rare event.
+:::
+:::
+
+::::
+
+## Swapping mothers and daughters
+
+::: {.r-stack}
+![](figures/exchanged_pair_1.svg){width="1150"}
+
+![](figures/exchanged_pair_2.svg){.fragment fragment-index=1 width="1150"}
+:::
+
+- Exchanging every mother/daughter pair of a tree gives a tree whose contour is
+  the original contour **run backwards**.
+
+::: {.fragment fragment-index=1}
+- The first ascent of one is the last descent of the other,
+  so simulate a **second descent** and reverse it.
+:::
+
+## Cost per tree at $T = 100$
+
+```{python}
+import importlib.util
+import sys
+from pathlib import Path
+
+import pandas as pd
+from IPython.display import Markdown, display
+
+
+def load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def find_root() -> Path:
+    here = Path.cwd().resolve()
+    for candidate in (here, *here.parents):
+        if (candidate / "scripts" / "bench_method_comparison.py").exists():
+            return candidate
+    msg = "Run from inside the bdsurv repository."
+    raise FileNotFoundError(msg)
+
+
+ROOT = find_root()
+bench = load("bench_method_comparison", ROOT / "scripts" / "bench_method_comparison.py")
+charts = load("method_comparison_charts", ROOT / "scripts" / "method_comparison_charts.py")
+
+T_SHOWN = 100.0
+rows = pd.read_csv(ROOT / "benchmarks" / "data" / bench.ROWS_FILE)
+curves = charts.curves_from_rows(rows)
+at_t = curves[curves["T"] == T_SHOWN]
+mus = sorted(at_t["mu"].unique())
+
+charts.cost_chart(
+    at_t,
+    charts.x_by_mu(mus),
+    lam=bench.LAMBDA,
+    mark_critical=True,
+    width=1000,
+    height=360,
+)
+```
+
+```{python}
+median = at_t.pivot_table(index="mu", columns="method", values="median")
+mu_top = max(mus)
+speedup = (
+    median.loc[mu_top, charts.LABEL_RUN] / median.loc[mu_top, charts.LABEL_CONTOUR]
+)
+display(
+    Markdown(
+        f"At $\\mu = {mu_top:g}$, splitting costs about **{speedup:,.0f}×** "
+        "the contour process, per independent tree."
+    )
+)
+```

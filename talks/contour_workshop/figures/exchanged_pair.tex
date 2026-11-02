@@ -1,0 +1,62 @@
+% A tree with its contour (left) and the birth-exchanged tree with the time-reversed
+% contour (right). Coordinates follow fig:cont-left-bdp and fig:cont-right-bdp of
+% Paper01_AgeBDPVarEnv/sections/4_Contours.tex.
+% Compile with: pdflatex "\def\stage{k}\input{exchanged_pair.tex}"   (k = 1..2)
+%   1 both pictures      2 first ascent (left) and last descent (right) highlighted
+\documentclass[tikz,border=4pt]{standalone}
+\usepackage{xcolor}
+\definecolor{treecol}{HTML}{D55E00}
+\definecolor{contcol}{HTML}{0072B2}
+
+\ifcase\stage\or
+  \def\hiop{1}\def\loop{1}\def\treeop{1}\or
+  \def\hiop{1}\def\loop{0.15}\def\treeop{0.35}\fi
+
+\begin{document}
+\begin{tikzpicture}[xscale=0.38, yscale=0.8, font=\large]
+  \fill[white] (-3,-2.4) rectangle (49,7.6);
+
+  % ---- Left: the tree and its contour -------------------------------------------------
+  \begin{scope}
+    \draw[->] (0,0) -- (22,0) node[right] {$s$};
+    \draw[->] (0,0) -- (0,6) node[above] {$t$};
+    \draw[dashed, gray] (0,5) -- (22,5);
+    \node[left] at (0,5) {$T$};
+    \node[left] at (0,0) {$0$};
+
+    \draw[very thick, treecol, opacity=\treeop]
+      (5,0) -- (5,5) (7,4) -- (7,5) (11.5,2) -- (11.5,3.5) (14,3) -- (14,5) (19,1) -- (19,2);
+    \draw[thick, treecol, dotted, opacity=\treeop]
+      (5,4) -- (7,4) (5,2) -- (11.5,2) (11.5,3) -- (14,3) (5,1) -- (19,1);
+
+    \draw[ultra thick, contcol, opacity=\hiop] (0,0) -- (5,5);
+    \draw[ultra thick, contcol, opacity=\loop]
+      (5,5) -- (6,4) -- (7,5) -- (10,2) -- (11.5,3.5) -- (12,3)
+      -- (14,5) -- (18,1) -- (19,2) -- (21,0);
+
+    \node at (10.5,-1.6) {tree and contour $H(s)$};
+  \end{scope}
+
+  % ---- Right: birth-exchanged tree, contour H(S - s) ------------------------------------
+  \begin{scope}[shift={(26,0)}]
+    \draw[->] (0,0) -- (22,0) node[right] {$s$};
+    \draw[->] (0,0) -- (0,6) node[above] {$t$};
+    \draw[dashed, gray] (0,5) -- (22,5);
+    \node[left] at (0,5) {$T$};
+    \node[left] at (0,0) {$0$};
+
+    % Right-aligned tree, mirrored: x -> 21 - x
+    \draw[very thick, treecol, opacity=\treeop]
+      (2,0) -- (2,2) (7,1) -- (7,5) (14,2) -- (14,5) (9.5,3) -- (9.5,3.5) (16,4) -- (16,5);
+    \draw[thick, treecol, dotted, opacity=\treeop]
+      (2,1) -- (7,1) (7,2) -- (14,2) (7,3) -- (9.5,3) (14,4) -- (16,4);
+
+    \draw[ultra thick, contcol, opacity=\loop]
+      (0,0) -- (2,2) -- (3,1) -- (7,5) -- (9,3) -- (9.5,3.5) -- (11,2)
+      -- (14,5) -- (15,4) -- (16,5);
+    \draw[ultra thick, contcol, opacity=\hiop] (16,5) -- (21,0);
+
+    \node at (10.5,-1.6) {birth-exchanged tree and $H(S-s)$};
+  \end{scope}
+\end{tikzpicture}
+\end{document}
