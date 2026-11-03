@@ -59,7 +59,10 @@ rows = pd.read_csv(DATA / arley.ROWS_FILE)
 units = pd.read_csv(DATA / arley.UNITS_FILE)
 slopes = pd.read_csv(DATA / arley.SLOPES_FILE)
 env = json.loads((DATA / arley.ENV_FILE).read_text())
-const_rows = pd.read_csv(ROOT / "benchmarks" / "data" / arley.base.ROWS_FILE)
+_const_path = ROOT / "benchmarks" / "data" / arley.base.ROWS_FILE
+const_rows = (
+    pd.read_csv(_const_path) if _const_path.exists() else pd.DataFrame(columns=rows.columns)
+)
 
 LABEL = {
     "contour": "Contour process",

@@ -41,11 +41,10 @@ the timed runs without a wrapper in them.
 Shard it with `--shard i/N` (one replicate of all cells takes about 8 minutes serially),
 then `--merge`.
 
-A note on comparability: the timings in `method_comparison.csv` predate the speed-ups
-to the shared splitting and contour code (inline `isclose`, copy-on-write particle
-records), which leave every seeded result unchanged but cut the run time several-fold.
-Re-run `scripts/bench_method_comparison.slurm` before comparing it with the Arley
-timings.
+Run both timed benchmarks on the same code version before comparing them: the
+speed-ups to the shared splitting and contour code (inline `isclose`, copy-on-write
+particle records) leave every seeded result unchanged but cut run times several-fold,
+and `arley_comparison.qmd` reads `method_comparison.csv` for the constant-rate side.
 
 ## `method_comparison.qmd`
 
@@ -59,9 +58,11 @@ The page reads `benchmarks/data/method_comparison.csv` (raw timings, one row per
 call or run), `method_comparison_units.csv` and `environment.json`.
 If `data/method_comparison.csv` is missing it runs a tiny draft grid so the page
 still renders.
-The data currently committed is a 100-replicate run on a laptop
-(`scripts/bench_method_comparison_local.sh`, 9 shards, one host).
-A cluster run gives the same simulated trees; only the timings differ.
+No results are committed at the moment: the earlier laptop run used code that has
+since been sped up (see below), so it was removed. Produce fresh data with
+`scripts/bench_method_comparison_local.sh` or on a cluster (below), and commit
+`benchmarks/data/`. A cluster run gives the same simulated trees; only the
+timings differ.
 
 ### Producing the data
 
@@ -103,9 +104,8 @@ one CPU each) and a merge job that depends on the whole array.
 Shards go to `benchmarks/_shards/` (git-ignored), logs to `logs/`, and the merged
 files to `benchmarks/data/`.
 Edit `--account` in the script for your allocation; it is set to `punim1793`.
-The 100-replicate laptop run took about 4.7 CPU-hours in total (most cells take
-milliseconds; the longest block took about 12 minutes), so 200 tasks should
-finish quickly.
+An earlier 100-replicate laptop run (before the speed-ups) took about 4.7 CPU-hours
+in total (most cells take milliseconds), so 200 tasks should finish quickly.
 Raise `REPLICATES` for tighter bands.
 Timings from different nodes scatter, so the notebook lists the hosts used and
 shows percentile bands.
