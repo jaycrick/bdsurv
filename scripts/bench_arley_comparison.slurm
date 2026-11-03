@@ -10,27 +10,27 @@
 #
 # Usage (from the repo root, on an HPC login node):
 #   scripts/bench_arley_comparison.slurm submit
-#   SHARDS=360 BLOCK_SIZE=5 scripts/bench_arley_comparison.slurm submit
+#   SHARDS=240 BLOCK_SIZE=5 scripts/bench_arley_comparison.slurm submit
 #
 # Settings (environment variables, all tasks must agree):
-#   SHARDS        number of array tasks (default 180)
+#   SHARDS        number of array tasks (default 120)
 #   REPLICATES    timed replicates per method and cell (default 100)
 #   BLOCK_SIZE    replicates per unit (default 5); smaller blocks lose less work
 #                 when the time budget cuts one short, and parallelise further
 #   UNIT_SECONDS  stop starting replicates in a block after this many seconds
-#                 (default 2400); blocks cut short are flagged in the units CSV
+#                 (default 1800); blocks cut short are flagged in the units CSV
 #
-# Sizing (PROVISIONAL, from the first 30 minutes of a local run; update once
-# that run has finished):
-#   - 9 cells x 2 methods x (REPLICATES / BLOCK_SIZE) units: 360 at the defaults.
-#   - splitting at mu = 10 (m = 0.2) takes about 60-90 s per run and at mu = 5
-#     (m = 0.1) over 90 s, so a block of 5 can need 7-10 minutes or more; the
-#     contour process at mu = 3 (m = 0.06) takes 2-5 s per tree.
-#   - the other cells (mu = 0.6, 0.8, 1, 1.2, 1.5, 2, 3 splitting) were not yet
-#     measured; mu = 1 splitting needs several hundred levels.
-#   - a splitting shard held about 1 GB after 30 minutes and copies every
-#     particle's records at each level, so memory is set well above the
-#     constant-rate benchmark's 4G per CPU.
+# Sizing, from timings of the optimised code on one machine (3 trees or one run
+# per cell; 1000 particles):
+#   - 6 of the 9 matched cells are run (mu = 1.2, 1.5 and 2 are skipped as too
+#     large, see MAX_LOG10_CUMULATIVE): 6 x 2 methods x (REPLICATES / BLOCK_SIZE)
+#     = 240 units at the defaults.
+#   - splitting per run: mu = 0.6 under 1 s; 0.8 about 14 s; 1, 5 and 10 about
+#     25-35 s; mu = 3 about 75 s (the heaviest).  A block of 5 at mu = 3 is about
+#     6-7 minutes, and run lengths vary a lot with the number of restarts.
+#   - contour per tree: 0.1-0.3 s everywhere (mu = 0.8 and 3 the slowest).
+#   - total about 5 CPU-hours.  Peak memory of one splitting run was 0.8-1.9 GB
+#     (mu = 3 the highest), hence 4G per CPU.
 # Units are ordered heaviest first and dealt out round-robin, so tasks finish at
 # similar times.  Timings are single-threaded, so one CPU per task.  Check the
 # cluster's limit on array size and running jobs before submitting.
@@ -40,18 +40,18 @@
 #SBATCH --account=punim1793
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem-per-cpu=12G
-#SBATCH --time=04:00:00
-#SBATCH --array=0-179
+#SBATCH --mem-per-cpu=4G
+#SBATCH --time=02:00:00
+#SBATCH --array=0-119
 #SBATCH --output=logs/slurm-bench-arley-comparison-%A_%a-%N.log
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 
-SHARDS="${SHARDS:-180}"
+SHARDS="${SHARDS:-120}"
 REPLICATES="${REPLICATES:-100}"
 BLOCK_SIZE="${BLOCK_SIZE:-5}"
-UNIT_SECONDS="${UNIT_SECONDS:-2400}"
+UNIT_SECONDS="${UNIT_SECONDS:-1800}"
 SHARDS_DIR=benchmarks/_shards_arley
 
 if [[ "${1:-}" == "submit" ]]; then

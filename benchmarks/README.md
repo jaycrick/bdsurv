@@ -20,6 +20,33 @@ Times every `bdsurv` simulator once, on a laptop-sized workload.
 Exact-versus-theory validation of the simulated ages, and the timing of sampling
 directly from the age distributions, live in `bdpinf` (`qmd_scripts/validation/`).
 
+## `arley_comparison.qmd`
+
+The same comparison for Arley processes (`lambda = 1`, `mu(t) = m t`) with the linear-rate
+simulators, each slope `m` matched to a constant-rate cell (see
+`scripts/bench_arley_comparison.py`).
+Cells whose Arley trees would be too large (`mu` = 1.2, 1.5, 2) are listed but not run.
+Data: `benchmarks/data/arley_comparison.csv`, `arley_comparison_units.csv`,
+`arley_slopes.csv` and `arley_environment.json`.
+Produce it locally with
+`SCRIPT=scripts/bench_arley_comparison.py scripts/bench_method_comparison_local.sh`,
+or on a cluster with `scripts/bench_arley_comparison.slurm submit`.
+
+Both comparisons also have an untimed *draw count* (`scripts/count_draws.py`, writing
+`benchmarks/data/draws.csv`): it re-runs the benchmark seeds inside `bdsurv.count_draws`
+and records the random numbers each method draws, plus events, clones and records
+copied.
+Counts are deterministic and counted runs give identical trees, so this reproduces
+the timed runs without a wrapper in them.
+Shard it with `--shard i/N` (one replicate of all cells takes about 8 minutes serially),
+then `--merge`.
+
+A note on comparability: the timings in `method_comparison.csv` predate the speed-ups
+to the shared splitting and contour code (inline `isclose`, copy-on-write particle
+records), which leave every seeded result unchanged but cut the run time several-fold.
+Re-run `scripts/bench_method_comparison.slurm` before comparing it with the Arley
+timings.
+
 ## `method_comparison.qmd`
 
 Compares the contour process with multilevel splitting over a grid of death rates

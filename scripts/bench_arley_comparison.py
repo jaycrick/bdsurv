@@ -18,6 +18,10 @@ subcritical ``mu`` (1.2, 1.5, 2, 3, 5, 10) at ``T = 100``
     ``mu = 1.2`` is pinned to ``m = 0.025`` (``SLOPE_OVERRIDES``), the closest
     value to its exact match of about 0.0243 on a 0.005 grid.
 
+Cells whose Arley trees would be too large (mean individuals ever born above
+``10^MAX_LOG10_CUMULATIVE``; here ``mu`` = 1.2, 1.5 and 2) are listed in the slope
+table with ``feasible = False`` but not run.
+
 All the maths is in ``bdsurv._linear_math`` (ported from ``bdpinf``).
 The work is split into units and sharded exactly as in
 ``bench_method_comparison.py``; this script reuses that module's constants,
@@ -63,6 +67,13 @@ CUMULATIVE_CELLS = ((0.6, 21.544), (0.8, 46.416), (1.0, 100.0))
 SURVIVAL_MUS = (1.2, 1.5, 2.0, 3.0, 5.0, 10.0)
 SURVIVAL_T = 100.0
 SLOPE_OVERRIDES = {1.2: 0.025}
+# Cells whose Arley process has more than 10^5 mean individuals ever born are
+# skipped, as the constant-rate benchmark skips cells with a mean population
+# above 1e5 (``MAX_EXPECTED_POPULATION``).  An Arley process is supercritical
+# until t = 1 / m, so a slow slope grows enormous before it dies back, e.g. about
+# 10^9.9 individuals at mu = 1.2 (m = 0.025).  A conditioned tree has about 10^5
+# individuals at 10^4.6 (mu = 3), which already costs ~2 GB and a minute per run.
+MAX_LOG10_CUMULATIVE = 5.0
 QUICK_MUS = (0.6, 3.0)
 QUICK_REPLICATES = 4
 QUICK_BLOCK_SIZE = 2
@@ -84,6 +95,12 @@ class Cell:
     matched_on: str  # "cumulative" or "survival"
     constant_value: float  # log10 of the matched quantity, constant rates
     arley_value: float  # log10 of the matched quantity, Arley rates
+    log10_mean_cumulative: float  # log10 mean individuals ever born, Arley rates
+
+    @property
+    def feasible(self) -> bool:
+        """Whether trees are small enough to simulate (see ``MAX_LOG10_CUMULATIVE``)."""
+        return self.log10_mean_cumulative <= MAX_LOG10_CUMULATIVE
 
 
 @dataclass(frozen=True)
@@ -182,6 +199,13 @@ def match_survival_slope(mu: float, terminal_time: float) -> float:
     return min(candidate_slopes(), key=distance)
 
 
+def _log10_cumulative(slope: float, terminal_time: float) -> float:
+    birth, death = _arley(slope, terminal_time)
+    return lm.log_mean_cumulative_individuals(birth, death, terminal_time) / math.log(
+        10
+    )
+
+
 def build_cells() -> list[Cell]:
     """Return every matched cell, with the matched quantity on both sides."""
     cells: list[Cell] = []
@@ -200,6 +224,7 @@ def build_cells() -> list[Cell]:
                     birth, death, terminal_time
                 )
                 / math.log(10),
+                log10_mean_cumulative=_log10_cumulative(slope, terminal_time),
             )
         )
     for mu in SURVIVAL_MUS:
@@ -217,6 +242,7 @@ def build_cells() -> list[Cell]:
                 / math.log(10),
                 arley_value=log_inverse_survival(birth, death, SURVIVAL_T)
                 / math.log(10),
+                log10_mean_cumulative=_log10_cumulative(slope, SURVIVAL_T),
             )
         )
     return cells
@@ -233,16 +259,20 @@ def slopes_frame(cells: list[Cell]) -> pd.DataFrame:
                 "matched_on": c.matched_on,
                 "log10_constant": c.constant_value,
                 "log10_arley": c.arley_value,
+                "log10_mean_cumulative": c.log10_mean_cumulative,
+                "feasible": c.feasible,
             }
             for c in cells
         ]
     )
 
 
-def build_units(cells: list[Cell], replicates: int, block_size: int) -> list[base.Unit]:
+def build_units(cells: list[Cell], replicates: int, block_size: int) -> list[Unit]:
     """List every unit, heaviest first so round-robin sharding balances load."""
     units: list[Unit] = []
     for cell_index, cell in enumerate(cells):
+        if not cell.feasible:  # keep cell_index, so seeds do not depend on the skips
+            continue
         for method in METHODS:
             for first in range(0, replicates, block_size):
                 units.append(

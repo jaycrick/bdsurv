@@ -46,6 +46,7 @@ sys.modules["bench_arley_comparison"] = arley
 _spec.loader.exec_module(arley)
 
 DATA = ROOT / "benchmarks" / "data"
+DRAWS = DATA / "draws.csv"
 DRAFT = not (DATA / arley.ROWS_FILE).exists()
 if DRAFT:
     _tmp = Path(tempfile.mkdtemp())
@@ -134,10 +135,21 @@ table = slopes.rename(
         "matched_on": "matched on",
         "log10_constant": "log10 matched quantity, constant",
         "log10_arley": "log10 matched quantity, Arley",
+        "log10_mean_cumulative": "log10 mean individuals ever born, Arley",
+        "feasible": "run",
     }
 )
 display(table.style.hide(axis="index").format(precision=4))
 ```
+
+An Arley process is supercritical until $t = 1/m$, so a slow slope grows
+enormous before it dies back: at $\mu = 1.2$ ($m = 0.025$) the process has about
+$10^{10}$ individuals ever born, against about $10^2$ to $10^5$ elsewhere.
+Cells above $10^5$ (`run = False`) are skipped, as the constant-rate comparison
+skips cells with a mean population above $10^5$; they would need terabytes for
+splitting and minutes per contour tree.
+A conditioned tree at $\mu = 3$ already has about $10^5$ individuals and takes
+splitting a minute and about 2 GB.
 
 Each cell has `{python} int(rows.groupby(["method", "mu"]).size().min())` or more
 timed replicates per method (single-threaded, CPU only, on
@@ -220,3 +232,73 @@ sizes = (
 )
 display(sizes.style.hide(axis="index").format(precision=1))
 ```
+
+## Random numbers drawn
+
+Time depends on the machine and on bookkeeping.
+A machine-independent measure of the stochastic work is the number of random
+numbers drawn, counted by `bdsurv.count_draws` in an untimed pass
+(`scripts/count_draws.py`) that reuses the benchmark seeds.
+Counted runs produce the same trees as the timed ones.
+Splitting also copies every particle's records when it clones it; that costs
+time but no draws, so `records_copied` is shown alongside.
+
+```{python}
+#| label: draws
+if not DRAWS.exists():
+    display(
+        Markdown(
+            "No draw counts yet: run `uv run python scripts/count_draws.py` "
+            "(or shard it with `--shard i/N`, then `--merge`)."
+        )
+    )
+else:
+    draws = pd.read_csv(DRAWS)
+    draws["kept"] = draws["n_trees"].clip(lower=1)
+    per_run = (
+        draws.groupby(["mu", "T", "model", "method"])
+        .agg(
+            runs=("replicate", "size"),
+            draws=("draws_total", "median"),
+            draws_per_tree=("draws_total", lambda s: s.median()),
+            events=("events", "median"),
+            attempts=("attempts", "median"),
+            spine_resets=("spine_resets", "median"),
+            contour_steps=("contour_steps", "median"),
+            clones=("clones", "median"),
+            records_copied=("records_copied", "median"),
+        )
+        .reset_index()
+        .sort_values(["T", "mu", "model", "method"])
+    )
+    display(per_run.style.hide(axis="index").format(precision=4, thousands=","))
+```
+
+```{python}
+#| label: draws-chart
+#| fig-height: 6
+if DRAWS.exists():
+    chart = (
+        alt.Chart(per_run.assign(cell=per_run.apply(lambda r: f"μ={r['mu']:g}, T={r['T']:g}", axis=1)))
+        .mark_point(filled=True, size=90)
+        .encode(
+            x=alt.X("cell:N", sort=order, title=None, axis=alt.Axis(labelAngle=-40)),
+            y=alt.Y("draws:Q", scale=alt.Scale(type="log"), title="Median random numbers drawn per run"),
+            color=alt.Color(
+                "method:N",
+                scale=alt.Scale(domain=["contour", "splitting"], range=["#0072B2", "#E69F00"]),
+                legend=alt.Legend(title=None, orient="bottom", labelFontSize=14),
+            ),
+            shape=alt.Shape(
+                "model:N", legend=alt.Legend(title=None, orient="bottom", labelFontSize=14)
+            ),
+            tooltip=["cell", "model", "method", alt.Tooltip("draws:Q", format=",.0f")],
+        )
+        .properties(width=900, height=420)
+    )
+    display(chart)
+```
+
+For the contour process, `spine_resets` counts how often the spine excursion
+reached $T$ and restarted; `contour_steps` is the number of jumps in total.
+For splitting, `attempts` includes failed restarts, whose work is discarded.

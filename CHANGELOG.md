@@ -20,6 +20,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   whose slopes match the constant-rate benchmark cells.
 - `scripts/bench_method_comparison_local.sh` takes `SCRIPT=` to run either
   benchmark.
+- `bdsurv.count_draws`: a context manager that counts the random numbers the
+  conditioned simulators draw (by role and kind), plus events, clones, records
+  copied, attempts, contour steps and spine resets. Counted runs give identical
+  trees. `scripts/count_draws.py` runs it over the benchmark cells with the
+  benchmark seeds.
+- `scripts/bench_arley_comparison.slurm`: SLURM array job for the Arley benchmark.
+
+### Changed
+
+- Speed-ups that leave every seeded result unchanged: `numpy.isclose` replaced by
+  an inline comparison in the contour and trace code; splitting particles share
+  immutable record dicts (copy-on-write), so cloning is one shallow copy; scalar
+  hazard inversion in pure Python. Splitting runs 3.6-5x and the linear contour
+  about 15x faster at the Arley cells measured.
 
 ## [0.3.0] - 2026-11-02
 
