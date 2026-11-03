@@ -18,6 +18,10 @@ subcritical ``mu`` (1.2, 1.5, 2, 3, 5, 10) at ``T = 100``
     ``mu = 1.2`` is pinned to ``m = 0.025`` (``SLOPE_OVERRIDES``), the closest
     value to its exact match of about 0.0243 on a 0.005 grid.
 
+With ``--grid`` every matched slope is run over the whole constant-rate ``T``
+grid instead (files ``arley_grid*.csv``, seeds independent of the matched run),
+which gives cost against ``T`` for each slope and against slope at each ``T``.
+
 Cells whose Arley trees would be too large (mean individuals ever born above
 ``10^MAX_LOG10_CUMULATIVE``; here ``mu`` = 1.2, 1.5 and 2) are listed in the slope
 table with ``feasible = False`` but not run.
@@ -30,6 +34,7 @@ sharding and environment record.
 Usage
 -----
     uv run python scripts/bench_arley_comparison.py --slopes
+    uv run python scripts/bench_arley_comparison.py --grid --slopes
     uv run python scripts/bench_arley_comparison.py --quick
     uv run python scripts/bench_arley_comparison.py --shard 3/40
     uv run python scripts/bench_arley_comparison.py --merge
@@ -42,7 +47,7 @@ import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import bench_method_comparison as base
 import numpy as np
@@ -83,6 +88,41 @@ ROWS_FILE = "arley_comparison.csv"
 UNITS_FILE = "arley_comparison_units.csv"
 SLOPES_FILE = "arley_slopes.csv"
 ENV_FILE = "arley_environment.json"
+QUICK_GRID_MAX_T = 10.0
+
+
+class Files(NamedTuple):
+    """Names of the files, shard directory and seed base of one benchmark mode."""
+
+    prefix: str  # shard files are <prefix>_{rows,units,env}_<i>.*
+    rows: str
+    units: str
+    cells: str
+    env: str
+    shards_dir: Path
+    seed_base: int
+
+
+# The nine matched (mu, T) cells.
+MATCHED = Files(
+    "arley",
+    ROWS_FILE,
+    UNITS_FILE,
+    SLOPES_FILE,
+    ENV_FILE,
+    ROOT / "benchmarks" / "_shards_arley",
+    BASE_SEED,
+)
+# Every matched slope over the whole T grid (``--grid``).
+GRID = Files(
+    "arley_grid",
+    "arley_grid.csv",
+    "arley_grid_units.csv",
+    "arley_grid_cells.csv",
+    "arley_grid_environment.json",
+    ROOT / "benchmarks" / "_shards_arley_grid",
+    BASE_SEED + 1,
+)
 
 
 @dataclass(frozen=True)
@@ -112,6 +152,7 @@ class Unit:
     cell_index: int
     first_replicate: int
     n_replicates: int
+    seed_base: int = BASE_SEED
 
 
 def arley_rates(slope: float, terminal_time: float) -> tuple[Any, Any]:
@@ -248,6 +289,33 @@ def build_cells() -> list[Cell]:
     return cells
 
 
+def build_grid_cells() -> list[Cell]:
+    """Return every matched slope at every ``T`` of the constant-rate grid.
+
+    Cells that are too large to simulate stay in the list (``feasible`` is false)
+    so cell indices, and hence seeds, do not depend on the cap.
+    """
+    cells: list[Cell] = []
+    for matched in build_cells():
+        for terminal_time in base.TS:
+            birth, death = _arley(matched.slope, terminal_time)
+            cells.append(
+                Cell(
+                    mu=matched.mu,
+                    time=float(terminal_time),
+                    slope=matched.slope,
+                    matched_on="grid",
+                    constant_value=math.nan,
+                    arley_value=log_inverse_survival(birth, death, terminal_time)
+                    / math.log(10),
+                    log10_mean_cumulative=_log10_cumulative(
+                        matched.slope, terminal_time
+                    ),
+                )
+            )
+    return cells
+
+
 def slopes_frame(cells: list[Cell]) -> pd.DataFrame:
     """Tabulate the matched cells (quantities are log10)."""
     return pd.DataFrame(
@@ -267,7 +335,12 @@ def slopes_frame(cells: list[Cell]) -> pd.DataFrame:
     )
 
 
-def build_units(cells: list[Cell], replicates: int, block_size: int) -> list[Unit]:
+def build_units(
+    cells: list[Cell],
+    replicates: int,
+    block_size: int,
+    seed_base: int = BASE_SEED,
+) -> list[Unit]:
     """List every unit, heaviest first so round-robin sharding balances load."""
     units: list[Unit] = []
     for cell_index, cell in enumerate(cells):
@@ -282,6 +355,7 @@ def build_units(cells: list[Cell], replicates: int, block_size: int) -> list[Uni
                         cell_index=cell_index,
                         first_replicate=first,
                         n_replicates=min(block_size, replicates - first),
+                        seed_base=seed_base,
                     )
                 )
     units.sort(key=lambda u: (-u.cell.arley_value, u.method, u.first_replicate))
@@ -291,7 +365,7 @@ def build_units(cells: list[Cell], replicates: int, block_size: int) -> list[Uni
 def replicate_seed(unit: Unit, replicate: int) -> int:
     """Return a seed depending only on the cell, method and replicate."""
     sequence = np.random.SeedSequence(
-        [BASE_SEED, unit.cell_index, METHODS.index(unit.method), replicate]
+        [unit.seed_base, unit.cell_index, METHODS.index(unit.method), replicate]
     )
     return int(sequence.generate_state(1)[0] % (2**31 - 1))
 
@@ -384,7 +458,12 @@ def run_unit(
 
 
 def run_shard(
-    units: list[Unit], shard: int, n_shards: int, out_dir: Path, unit_seconds: float
+    units: list[Unit],
+    shard: int,
+    n_shards: int,
+    out_dir: Path,
+    unit_seconds: float,
+    files: Files = MATCHED,
 ) -> None:
     """Run this shard's units and write its rows, unit summaries and environment."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -403,30 +482,37 @@ def run_shard(
             f"{summary['status']} {summary['seconds']:.2f}s",
             flush=True,
         )
-    pd.DataFrame(rows).to_csv(out_dir / f"arley_rows_{shard}.csv", index=False)
-    pd.DataFrame(summaries).to_csv(out_dir / f"arley_units_{shard}.csv", index=False)
-    (out_dir / f"arley_env_{shard}.json").write_text(json.dumps(env, indent=2) + "\n")
+    prefix = files.prefix
+    pd.DataFrame(rows).to_csv(out_dir / f"{prefix}_rows_{shard}.csv", index=False)
+    pd.DataFrame(summaries).to_csv(out_dir / f"{prefix}_units_{shard}.csv", index=False)
+    (out_dir / f"{prefix}_env_{shard}.json").write_text(
+        json.dumps(env, indent=2) + "\n"
+    )
 
 
-def merge_shards(shards_dir: Path, data_dir: Path, cells: list[Cell]) -> pd.DataFrame:
+def merge_shards(
+    shards_dir: Path, data_dir: Path, cells: list[Cell], files: Files = MATCHED
+) -> pd.DataFrame:
     """Concatenate shard files into the committed data files and return the rows."""
-    row_files = sorted(shards_dir.glob("arley_rows_*.csv"))
+    prefix = files.prefix
+    row_files = sorted(shards_dir.glob(f"{prefix}_rows_*.csv"))
     if not row_files:
         msg = f"No shard files found in {shards_dir}"
         raise FileNotFoundError(msg)
     rows = pd.concat([pd.read_csv(f) for f in row_files], ignore_index=True)
     rows = rows.sort_values(["method", "mu", "T", "replicate"]).reset_index(drop=True)
     units = pd.concat(
-        [pd.read_csv(f) for f in sorted(shards_dir.glob("arley_units_*.csv"))],
+        [pd.read_csv(f) for f in sorted(shards_dir.glob(f"{prefix}_units_*.csv"))],
         ignore_index=True,
     )
     envs = [
-        json.loads(f.read_text()) for f in sorted(shards_dir.glob("arley_env_*.json"))
+        json.loads(f.read_text())
+        for f in sorted(shards_dir.glob(f"{prefix}_env_*.json"))
     ]
     data_dir.mkdir(parents=True, exist_ok=True)
-    rows.to_csv(data_dir / ROWS_FILE, index=False)
-    units.to_csv(data_dir / UNITS_FILE, index=False)
-    slopes_frame(cells).to_csv(data_dir / SLOPES_FILE, index=False)
+    rows.to_csv(data_dir / files.rows, index=False)
+    units.to_csv(data_dir / files.units, index=False)
+    slopes_frame(cells).to_csv(data_dir / files.cells, index=False)
     summary = {
         "lambda": LAMBDA,
         "n_shards": len(envs),
@@ -437,30 +523,39 @@ def merge_shards(shards_dir: Path, data_dir: Path, cells: list[Cell]) -> pd.Data
         "bdsurv": sorted({e["bdsurv"] for e in envs}),
         "git_sha": sorted({e["git_sha"] for e in envs}),
     }
-    (data_dir / ENV_FILE).write_text(json.dumps(summary, indent=2) + "\n")
+    (data_dir / files.env).write_text(json.dumps(summary, indent=2) + "\n")
     return rows
 
 
 def main(argv: list[str] | None = None) -> None:
     """Print the slope table, run one shard, merge shard files, or do both."""
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
-    parser.add_argument("--slopes", action="store_true", help="print matched slopes")
+    parser.add_argument("--slopes", action="store_true", help="print the cells")
+    parser.add_argument(
+        "--grid",
+        action="store_true",
+        help="every matched slope over the whole T grid, not just the matched T",
+    )
     parser.add_argument("--shard", type=base._parse_shard, help="run shard i/N only")  # pyright: ignore[reportPrivateUsage]
     parser.add_argument("--merge", action="store_true", help="merge shard files")
     parser.add_argument("--quick", action="store_true", help="tiny grid for a draft")
     parser.add_argument("--replicates", type=int, default=None)
     parser.add_argument("--block-size", type=int, default=None)
     parser.add_argument("--unit-seconds", type=float, default=base.DEFAULT_UNIT_SECONDS)
-    parser.add_argument("--shards-dir", type=Path, default=base.DEFAULT_SHARDS_DIR)
+    parser.add_argument("--shards-dir", type=Path, default=None)
     parser.add_argument("--data-dir", type=Path, default=base.DEFAULT_DATA_DIR)
     args = parser.parse_args(argv)
 
-    cells = build_cells()
+    files = GRID if args.grid else MATCHED
+    shards_dir = args.shards_dir or files.shards_dir
+    cells = build_grid_cells() if args.grid else build_cells()
     if args.slopes:
         print(slopes_frame(cells).to_string(index=False))
         return
     if args.quick:
         cells = [c for c in cells if c.mu in QUICK_MUS]
+        if args.grid:
+            cells = [c for c in cells if c.time <= QUICK_GRID_MAX_T]
     replicates = args.replicates or (
         QUICK_REPLICATES if args.quick else base.DEFAULT_REPLICATES
     )
@@ -469,21 +564,21 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     if args.merge:
-        rows = merge_shards(args.shards_dir, args.data_dir, cells)
-        print(f"Merged {len(rows)} rows into {args.data_dir / ROWS_FILE}")
+        rows = merge_shards(shards_dir, args.data_dir, cells, files)
+        print(f"Merged {len(rows)} rows into {args.data_dir / files.rows}")
         return
 
-    units = build_units(cells, replicates, block_size)
+    units = build_units(cells, replicates, block_size, files.seed_base)
     if args.shard is not None:
         shard, n_shards = args.shard
-        run_shard(units, shard, n_shards, args.shards_dir, args.unit_seconds)
+        run_shard(units, shard, n_shards, shards_dir, args.unit_seconds, files)
         return
 
-    for stale in args.shards_dir.glob("arley_*_0.*"):
+    for stale in shards_dir.glob(f"{files.prefix}_*_0.*"):
         stale.unlink()
-    run_shard(units, 0, 1, args.shards_dir, args.unit_seconds)
-    rows = merge_shards(args.shards_dir, args.data_dir, cells)
-    print(f"Wrote {len(rows)} rows to {args.data_dir / ROWS_FILE}")
+    run_shard(units, 0, 1, shards_dir, args.unit_seconds, files)
+    rows = merge_shards(shards_dir, args.data_dir, cells, files)
+    print(f"Wrote {len(rows)} rows to {args.data_dir / files.rows}")
 
 
 if __name__ == "__main__":

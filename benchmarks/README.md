@@ -32,6 +32,16 @@ Produce it locally with
 `SCRIPT=scripts/bench_arley_comparison.py scripts/bench_method_comparison_local.sh`,
 or on a cluster with `scripts/bench_arley_comparison.slurm submit`.
 
+The two tabbed sections (cost per tree over time for each slope, with a graph of the birth
+and death rates, and over slope at each time) need every slope run over the whole `T`
+grid: `bench_arley_comparison.py --grid`, or on a cluster `scripts/bench_arley_grid.slurm submit`
+(300 tasks, 100 replicates, `resubmit` to re-run failed tasks).
+It writes `benchmarks/data/arley_grid.csv`, `arley_grid_units.csv`, `arley_grid_cells.csv` and
+`arley_grid_environment.json`; cells above the size cap (slopes 0.025, 0.03 and 0.04 at long
+horizons) are listed in `arley_grid_cells.csv` with `feasible = False` and not run.
+Until those files exist the two sections show a "no grid data" note;
+`uv run python scripts/bench_arley_comparison.py --grid --quick` makes a tiny draft.
+
 Both comparisons also have an untimed *draw count* (`scripts/count_draws.py`, writing
 `benchmarks/data/draws.csv`): it re-runs the benchmark seeds inside `bdsurv.count_draws`
 and records the random numbers each method draws, plus events, clones and records

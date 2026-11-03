@@ -25,6 +25,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   copied, attempts, contour steps and spine resets. Counted runs give identical
   trees. `scripts/count_draws.py` runs it over the benchmark cells with the
   benchmark seeds.
+- `bench_arley_comparison.py --grid` and `scripts/bench_arley_grid.slurm`: every matched
+  slope over the whole `T` grid. `benchmarks/arley_comparison.qmd` gains two tabbed
+  sections from it, cost per tree over time by death-rate slope (with a graph of the birth
+  and death rates over time in each tab) and over slope by time; charts in
+  `scripts/arley_charts.py`.
 - `scripts/bench_arley_comparison.slurm` and `scripts/count_draws.slurm`: SLURM array
   jobs (with a `resubmit` mode that re-runs only the tasks without output) for the
   Arley benchmark and the draw counts.

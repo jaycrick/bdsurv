@@ -64,6 +64,20 @@ const_rows = (
     pd.read_csv(_const_path) if _const_path.exists() else pd.DataFrame(columns=rows.columns)
 )
 
+import arley_charts as charts  # noqa: E402  (scripts/ is on sys.path)
+
+GRID = arley.GRID
+HAVE_GRID = (DATA / GRID.rows).exists()
+if HAVE_GRID:
+    grid_rows = pd.read_csv(DATA / GRID.rows)
+    grid_units = pd.read_csv(DATA / GRID.units)
+    grid_cells = pd.read_csv(DATA / GRID.cells)
+    grid_curves = charts.curves_from_rows(grid_rows)
+    grid_diag = charts.diagnostics_from_rows(grid_rows)
+    GRID_TS = sorted(float(t) for t in grid_cells["T"].unique())
+    GRID_SLOPES = sorted(float(m) for m in grid_cells["slope"].unique())
+    GRID_REPS = int(grid_rows.groupby(["method", "mu", "T"]).size().min())
+
 LABEL = {
     "contour": "Contour process",
     "splitting": "Splitting (one run, one independent tree)",
@@ -158,6 +172,10 @@ Each cell has `{python} int(rows.groupby(["method", "mu"]).size().min())` or mor
 timed replicates per method (single-threaded, CPU only, on
 `{python} ", ".join(env["hosts"])`).
 
+Two further sections run every slope over the whole horizon grid
+($T$ = 1 to 100) so that cost can be read against $T$ for each slope and
+against slope at each $T$.
+
 ## Time per tree
 
 ```{python}
@@ -202,6 +220,260 @@ wide = wide.sort_values(["T", "mu", "kind"])
 wide.columns.name = None
 display(wide.style.hide(axis="index").format(precision=4))
 ```
+
+```{python}
+#| label: grid-banner
+if not HAVE_GRID:
+    display(
+        Markdown(
+            "::: {.callout-warning}\n"
+            "## No grid data\n"
+            "`benchmarks/data/arley_grid.csv` does not exist, so the two tabbed sections "
+            "below are empty. Produce it with "
+            "`scripts/bench_arley_grid.slurm submit` (see `benchmarks/README.md`), or a "
+            "tiny draft with `uv run python scripts/bench_arley_comparison.py --grid --quick`.\n"
+            ":::"
+        )
+    )
+```
+
+## Cost per tree over time, by death-rate slope
+
+The matched cells above give one horizon per slope.
+Here each slope $m$ is run over the whole horizon grid ($T$ from 1 to 100), so each
+tab shows how the cost of one slope grows with $T$.
+Click through the tabs to step from the slowest slope (matched to a constant
+$\mu = 0.6$) to the steepest (matched to $\mu = 10$).
+Each tab starts with the birth and death rates over time: $\lambda = 1$ is
+constant and $\mu(t) = m\,t$ starts at zero, so the process is supercritical until
+the two cross at $t = 1/m$ and subcritical afterwards.
+A cell is skipped when its Arley process has more than $10^5$ individuals ever born
+(the slowest slopes, $m \le 0.04$, stop at $T = 10$ to $15$), and under each
+cost chart the three small panels show how splitting behaved: the trees kept per
+run, the attempts per run (above 1 means some attempts died out and were
+restarted) and the number of levels (1 means nothing was split).
+
+```{python}
+#| label: by-slope
+NO_GRID = "No grid data yet: see the note above."
+
+
+def show_slope(mu: float) -> None:
+    if not HAVE_GRID:
+        display(Markdown(NO_GRID))
+        return
+    cells_mu = grid_cells[grid_cells["mu"] == mu]
+    if cells_mu.empty:
+        display(Markdown(f"No data for $\\mu = {mu:g}$ in this results file."))
+        return
+    slope = float(cells_mu["slope"].iloc[0])
+    data = grid_curves[grid_curves["mu"] == mu]
+    ran = cells_mu[cells_mu["feasible"]]
+    top = float(ran["T"].max())
+    skipped = cells_mu[~cells_mu["feasible"]]
+    note = (
+        ""
+        if skipped.empty
+        else f" Horizons from $T = {float(skipped['T'].min()):.3g}$ are skipped "
+        "(too many individuals)."
+    )
+    display(
+        Markdown(
+            f"$\\lambda = 1$ and $\\mu(t) = {slope:.3g}\\,t$, matched to the constant "
+            f"$\\mu = {mu:g}$. The process is supercritical until $t = {1 / slope:.3g}$ "
+            f"and subcritical after. Benchmarked up to $T = {top:.3g}$.{note}"
+        )
+    )
+    display(Markdown("**Birth and death rates over time**"))
+    display(charts.rate_chart(slope))
+    display(
+        Markdown(
+            "The death rate keeps rising beyond the plotted range "
+            f"(to {slope * 100:.3g} at $t = 100$)."
+        )
+    )
+    display(Markdown("**Cost per tree**"))
+    display(charts.cost_chart(data, charts.x_by_t(GRID_TS)))
+    display(Markdown("**How splitting behaved**"))
+    display(charts.diagnostic_chart(grid_diag[grid_diag["mu"] == mu]))
+```
+
+::: {.panel-tabset}
+
+### m = 0.0684 (μ = 0.6)
+
+```{python}
+show_slope(0.6)
+```
+
+### m = 0.0585 (μ = 0.8)
+
+```{python}
+show_slope(0.8)
+```
+
+### m = 0.177 (μ = 1)
+
+```{python}
+show_slope(1.0)
+```
+
+### m = 0.025 (μ = 1.2)
+
+```{python}
+show_slope(1.2)
+```
+
+### m = 0.03 (μ = 1.5)
+
+```{python}
+show_slope(1.5)
+```
+
+### m = 0.04 (μ = 2)
+
+```{python}
+show_slope(2.0)
+```
+
+### m = 0.06 (μ = 3)
+
+```{python}
+show_slope(3.0)
+```
+
+### m = 0.1 (μ = 5)
+
+```{python}
+show_slope(5.0)
+```
+
+### m = 0.2 (μ = 10)
+
+```{python}
+show_slope(10.0)
+```
+
+:::
+
+## Cost per tree over death-rate slope, by time
+
+The same grid, cut the other way: each tab fixes the horizon $T$ and shows how the
+cost changes with the slope $m$ (log scale, as is the cost axis).
+Hover a point to see the constant $\mu$ each slope was matched to.
+At long horizons the slowest slopes are skipped (see above), so those tabs
+start at a steeper slope.
+
+```{python}
+#| label: by-time
+
+
+def show_t(t: float) -> None:
+    if not HAVE_GRID:
+        display(Markdown(NO_GRID))
+        return
+    data = grid_curves[np.isclose(grid_curves["T"], t)]
+    if data.empty:
+        display(Markdown(f"No data for $T = {t:g}$ in this results file."))
+        return
+    skipped = grid_cells[np.isclose(grid_cells["T"], t) & ~grid_cells["feasible"]]
+    note = (
+        ""
+        if skipped.empty
+        else " Skipped as too large: "
+        + ", ".join(f"$m = {m:.3g}$" for m in sorted(skipped["slope"]))
+        + "."
+    )
+    display(
+        Markdown(
+            f"$\\lambda = 1$, $T = {t:g}$. Benchmarked slopes $m$ from "
+            f"{data['slope'].min():.3g} to {data['slope'].max():.3g}.{note}"
+        )
+    )
+    display(charts.cost_chart(data, charts.x_by_slope(GRID_SLOPES)))
+```
+
+::: {.panel-tabset}
+
+### T = 1
+
+```{python}
+show_t(1.0)
+```
+
+### T = 1.47
+
+```{python}
+show_t(1.468)
+```
+
+### T = 2.15
+
+```{python}
+show_t(2.154)
+```
+
+### T = 3.16
+
+```{python}
+show_t(3.162)
+```
+
+### T = 4.64
+
+```{python}
+show_t(4.642)
+```
+
+### T = 6.81
+
+```{python}
+show_t(6.813)
+```
+
+### T = 10
+
+```{python}
+show_t(10.0)
+```
+
+### T = 14.7
+
+```{python}
+show_t(14.678)
+```
+
+### T = 21.5
+
+```{python}
+show_t(21.544)
+```
+
+### T = 31.6
+
+```{python}
+show_t(31.623)
+```
+
+### T = 46.4
+
+```{python}
+show_t(46.416)
+```
+
+### T = 68.1
+
+```{python}
+show_t(68.129)
+```
+
+### T = 100
+
+```{python}
+show_t(100.0)
+```
+
+:::
 
 ## Cells cut short by the time budget
 
