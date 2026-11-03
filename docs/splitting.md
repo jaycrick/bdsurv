@@ -123,6 +123,29 @@ at index 0 of `alive_ids`, matching the head-of-alive-list convention used
 elsewhere. Parent-child lineage across enrichment steps is recorded in
 `particle_genealogy` (one row per clone, per level).
 
+## Linear (time-varying) rates
+
+`simulate_linear_survival_splitting(LinearSplittingConfig(...))` runs the same
+algorithm for piecewise-constant or piecewise-linear rates.
+Two ingredients change; the levels, replicates, enrichment and restarts are
+shared with the constant-rate code.
+
+- **Survival probability.** For one individual at time 0,
+  $\Pr(Z_t > 0) = 1 / (1 + I(t))$ with
+  $I(t) = \int_0^t \mu(s) e^{-\Gamma(s)}\,ds$ and
+  $\Gamma(s) = \int_0^s (\lambda - \mu)$ (`bdpinf`'s $\mathcal W$
+  formulation).
+  $I$ is computed in log space by Gauss-Legendre quadrature on panels short
+  enough that the exponent changes by at most a few units, so cases with
+  $1/\Pr$ of order $10^{300}$ stay accurate.
+  This replaces the closed form in the level grid, `R_i` and the restart cap.
+- **Dynamics.** Within a segment where both rates are linear, the next event
+  among $n$ individuals solves $a s + b s^2/2 = E$ with
+  $a = n(\lambda + \mu)$, $b = n(\lambda' + \mu')$.
+  An event beyond the segment end is discarded and redrawn from the boundary
+  (exact, by independent increments).
+  A birth has probability $\lambda(t) / (\lambda(t) + \mu(t))$.
+
 ## Reproducibility and RNG
 
 A single master `np.random.default_rng(config.random_seed)` seeds every

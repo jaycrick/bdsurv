@@ -11,6 +11,10 @@ survival to a terminal time ``T``:
 - ``simulate_subcritical_survival_splitting`` — approximate, via adaptive-grid
   (RESTART) multilevel splitting (see ``docs/splitting.md``).
 
+Both have counterparts for rates that are piecewise linear in time:
+``simulate_linear_rate_contour_process`` and
+``simulate_linear_survival_splitting``.
+
 Both return a ``SimulatedTree``: a plain dataclass wrapping the individual-
 level records DataFrame plus the rates and terminal time used to generate it.
 
@@ -35,6 +39,7 @@ jax.config.update("jax_enable_x64", True)
 
 from bdsurv.contour import (  # noqa: E402
     simulate_birth_death_process_from_contour_process,
+    simulate_linear_rate_contour_process,
 )
 from bdsurv.era_conditioning import (  # noqa: E402
     ConditionedSurvivalResult,
@@ -60,11 +65,13 @@ from bdsurv.linear_rates import (  # noqa: E402
 from bdsurv.splitting import (  # noqa: E402
     ConditionedTrajectory,
     LevelDiagnostic,
+    LinearSplittingConfig,
     SplittingConfig,
     SplittingSimulationResult,
     compute_level_replicates,
     default_max_restarts,
     select_level_times_for_band,
+    simulate_linear_survival_splitting,
     simulate_subcritical_survival_splitting,
 )
 from bdsurv.tree import SimulatedProcess, SimulatedTree  # noqa: E402
@@ -80,6 +87,7 @@ __all__ = [
     "LevelDiagnostic",
     "LifespanSimulationArrays",
     "LinearRateLike",
+    "LinearSplittingConfig",
     "MatchedSurvivalSample",
     "PiecewiseConstant",
     "PiecewiseLinear",
@@ -98,5 +106,7 @@ __all__ = [
     "simulate_birth_death_linear",
     "simulate_birth_death_process",
     "simulate_birth_death_process_from_contour_process",
+    "simulate_linear_rate_contour_process",
+    "simulate_linear_survival_splitting",
     "simulate_subcritical_survival_splitting",
 ]

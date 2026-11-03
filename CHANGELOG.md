@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `simulate_linear_rate_contour_process` and `simulate_linear_survival_splitting`
+  (with `LinearSplittingConfig`): the contour process and multilevel splitting for
+  birth and death rates that are piecewise constant or piecewise linear in time.
+  The maths (hazard inversion, survival probability `1 / (1 + I(T))`, mean
+  cumulative individuals) is in `bdsurv._linear_math`, ported from `bdpinf`.
+- `SimulatedTree.birth_rate_function` / `death_rate_function`: the rates of a
+  linear-rate tree (its scalar `birth_rate` / `death_rate` are NaN).
+- `scripts/bench_arley_comparison.py` and `benchmarks/arley_comparison.qmd`:
+  contour against splitting on Arley processes (`lambda = 1`, `mu(t) = m t`)
+  whose slopes match the constant-rate benchmark cells.
+- `scripts/bench_method_comparison_local.sh` takes `SCRIPT=` to run either
+  benchmark.
+
 ## [0.3.0] - 2026-11-02
 
 ### Added

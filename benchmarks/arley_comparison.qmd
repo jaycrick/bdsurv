@@ -1,0 +1,222 @@
+---
+title: "Contour process against splitting on Arley processes"
+subtitle: "Birth rate 1, death rate rising linearly from zero, matched to the constant-rate benchmark cells"
+execute:
+  echo: false
+  cache: false
+  freeze: false
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    page-layout: full
+---
+
+```{python}
+#| label: setup
+import importlib.util
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+import altair as alt
+import numpy as np
+import pandas as pd
+from IPython.display import Markdown, display
+
+
+def find_root() -> Path:
+    here = Path.cwd().resolve()
+    for candidate in (here, *here.parents):
+        if (candidate / "_quarto.yml").exists():
+            return candidate
+    msg = "Run from inside the bdsurv project (no _quarto.yml found)."
+    raise FileNotFoundError(msg)
+
+
+ROOT = find_root()
+sys.path.insert(0, str(ROOT / "scripts"))
+_spec = importlib.util.spec_from_file_location(
+    "bench_arley_comparison", ROOT / "scripts" / "bench_arley_comparison.py"
+)
+arley = importlib.util.module_from_spec(_spec)
+sys.modules["bench_arley_comparison"] = arley
+_spec.loader.exec_module(arley)
+
+DATA = ROOT / "benchmarks" / "data"
+DRAFT = not (DATA / arley.ROWS_FILE).exists()
+if DRAFT:
+    _tmp = Path(tempfile.mkdtemp())
+    arley.main(
+        ["--quick", "--shards-dir", str(_tmp / "shards"), "--data-dir", str(_tmp / "data")]
+    )
+    DATA = _tmp / "data"
+
+rows = pd.read_csv(DATA / arley.ROWS_FILE)
+units = pd.read_csv(DATA / arley.UNITS_FILE)
+slopes = pd.read_csv(DATA / arley.SLOPES_FILE)
+env = json.loads((DATA / arley.ENV_FILE).read_text())
+const_rows = pd.read_csv(ROOT / "benchmarks" / "data" / arley.base.ROWS_FILE)
+
+LABEL = {
+    "contour": "Contour process",
+    "splitting": "Splitting (one run, one independent tree)",
+}
+KIND = ["Constant death rate", "Arley death rate"]
+PALETTE = {"Contour process": "#0072B2", "Splitting (one run, one independent tree)": "#E69F00"}
+
+# Constant-rate timings at exactly the same (mu, T) cells.
+cells = slopes[["mu", "T"]].drop_duplicates()
+const = const_rows.merge(cells, on=["mu", "T"])
+const["kind"] = KIND[0]
+arl = rows.copy()
+arl["kind"] = KIND[1]
+both = pd.concat([const, arl], ignore_index=True)
+both["label"] = both["method"].map(LABEL)
+both["cell"] = both.apply(lambda r: f"μ={r['mu']:g}, T={r['T']:g}", axis=1)
+
+
+@alt.theme.register("bdsurv", enable=True)
+def _bdsurv_theme() -> alt.theme.ThemeConfig:
+    return alt.theme.ThemeConfig(
+        {
+            "config": {
+                "view": {"stroke": "transparent"},
+                "axis": {"labelFontSize": 14, "titleFontSize": 16, "gridColor": "#e6e6e6"},
+                "title": {"fontSize": 18, "anchor": "start"},
+            }
+        }
+    )
+```
+
+```{python}
+#| label: draft-banner
+if DRAFT:
+    display(
+        Markdown(
+            "> **Draft.** No committed results were found, so this page shows a tiny "
+            "run. Produce the real data with "
+            "`SCRIPT=scripts/bench_arley_comparison.py scripts/bench_method_comparison_local.sh`."
+        )
+    )
+```
+
+## What is compared
+
+Both methods sample a tree conditioned on survival to $T$, as in the
+[constant-rate comparison](method_comparison.qmd), but the death rate is now
+$\mu(t) = m\,t$ (an Arley process) and the birth rate is $\lambda = 1$.
+The slope $m$ is chosen for each constant-rate case $(\mu, T)$ so that the two
+processes are comparable:
+
+- **$\mu \in \{0.6, 0.8, 1\}$** (at $T$ = 21.544, 46.416, 100 of the benchmark
+  grid): $m$ is the exact root that equalises the *mean number of individuals ever
+  born* by $T$, $1 + \int_0^T e^{\Gamma(\tau)}\lambda(\tau)\,d\tau$ (with
+  $\Gamma(\tau) = \int_0^\tau (\lambda - \mu)$).
+  For constant rates this is $(\mu - \lambda\bar n_T)/(\mu - \lambda)$ with
+  $\bar n_T = e^{(\lambda - \mu)T}$, and $1 + \lambda T$ at criticality.
+- **$\mu \in \{1.2, 1.5, 2, 3, 5, 10\}$** (at $T = 100$): $m$ is the candidate
+  slope that brings $1/\Pr(Z_T > 0)$ closest to the constant-rate value,
+  measured by absolute distance (computed in logs).
+  Candidates step by 0.01 below 0.1, by 0.1 up to 2, and by 1 beyond.
+  For $\mu = 1.2$ the slope is pinned to 0.025.
+  Survival is used rather than extinction because $1/\Pr(\text{extinction})$ is
+  about 1 for every subcritical case and could not tell the slopes apart.
+
+```{python}
+#| label: slopes
+table = slopes.rename(
+    columns={
+        "mu": "μ (constant)",
+        "slope": "Arley slope m",
+        "matched_on": "matched on",
+        "log10_constant": "log10 matched quantity, constant",
+        "log10_arley": "log10 matched quantity, Arley",
+    }
+)
+display(table.style.hide(axis="index").format(precision=4))
+```
+
+Each cell has `{python} int(rows.groupby(["method", "mu"]).size().min())` or more
+timed replicates per method (single-threaded, CPU only, on
+`{python} ", ".join(env["hosts"])`).
+
+## Time per tree
+
+```{python}
+#| label: timings
+#| fig-height: 6
+medians = (
+    both.groupby(["cell", "mu", "T", "kind", "label"])["seconds"]
+    .agg(median="median", q1=lambda s: s.quantile(0.25), q3=lambda s: s.quantile(0.75))
+    .reset_index()
+)
+order = list(cells.sort_values(["T", "mu"]).apply(lambda r: f"μ={r['mu']:g}, T={r['T']:g}", axis=1))
+base_chart = alt.Chart(medians).encode(
+    x=alt.X("cell:N", sort=order, title=None, axis=alt.Axis(labelAngle=-40)),
+    color=alt.Color(
+        "label:N",
+        scale=alt.Scale(domain=list(PALETTE), range=list(PALETTE.values())),
+        legend=alt.Legend(title=None, orient="bottom", labelFontSize=14),
+    ),
+    xOffset="label:N",
+)
+points = base_chart.mark_point(filled=True, size=90).encode(
+    y=alt.Y("median:Q", scale=alt.Scale(type="log"), title="Median seconds per tree"),
+    shape=alt.Shape("kind:N", legend=alt.Legend(title=None, orient="bottom", labelFontSize=14)),
+    tooltip=["cell", "kind", "label", alt.Tooltip("median:Q", format=".3g")],
+)
+bars = base_chart.mark_rule().encode(y="q1:Q", y2="q3:Q")
+display((points + bars).properties(width=900, height=420))
+```
+
+Points show the median over replicates and the rules the interquartile range;
+circles are the constant death rate and squares the Arley death rate.
+
+```{python}
+#| label: ratio-table
+wide = medians.pivot_table(
+    index=["mu", "T", "kind"], columns="label", values="median"
+).reset_index()
+wide["splitting / contour"] = (
+    wide["Splitting (one run, one independent tree)"] / wide["Contour process"]
+)
+wide = wide.sort_values(["T", "mu", "kind"])
+wide.columns.name = None
+display(wide.style.hide(axis="index").format(precision=4))
+```
+
+## Cells cut short by the time budget
+
+Splitting is run in blocks of replicates with a wall-clock budget; a block that
+exhausts it stops starting new replicates, so those cells have fewer than the
+requested replicates.
+
+```{python}
+#| label: budget
+cut = units[units["status"] != "ok"]
+if cut.empty:
+    display(Markdown("No block ran out of budget."))
+else:
+    summary = (
+        cut.groupby(["method", "mu", "T"])
+        .agg(blocks_cut=("status", "size"), replicates_done=("replicates_done", "sum"),
+             replicates_requested=("replicates_requested", "sum"))
+        .reset_index()
+    )
+    display(summary.style.hide(axis="index"))
+```
+
+## Population at $T$ and tree size
+
+```{python}
+#| label: sizes
+sizes = (
+    rows.groupby(["method", "mu", "T"])[["pop_at_T", "n_individuals"]]
+    .median()
+    .reset_index()
+)
+display(sizes.style.hide(axis="index").format(precision=1))
+```

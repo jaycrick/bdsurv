@@ -3,6 +3,7 @@ project:
   output-dir: _output
   render:
     - benchmarks/method_comparison.qmd
+    - benchmarks/arley_comparison.qmd
     - benchmarks/simulator_speed.qmd
     - docs/*.md
 
@@ -18,6 +19,8 @@ website:
         menu:
           - text: "Contour process against splitting"
             file: benchmarks/method_comparison.qmd
+          - text: "Contour process against splitting, Arley rates"
+            file: benchmarks/arley_comparison.qmd
           - text: "Simulator speed"
             file: benchmarks/simulator_speed.qmd
       - text: "Methods"
