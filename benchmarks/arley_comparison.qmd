@@ -168,9 +168,14 @@ splitting and minutes per contour tree.
 A conditioned tree at $\mu = 3$ already has about $10^5$ individuals and takes
 splitting a minute and about 2 GB.
 
-Each cell has `{python} int(rows.groupby(["method", "mu"]).size().min())` or more
-timed replicates per method (single-threaded, CPU only, on
-`{python} ", ".join(env["hosts"])`).
+```{python}
+#| output: asis
+fewest = int(rows.groupby(["method", "mu"]).size().min())
+print(
+    f"Each cell has {fewest} or more timed replicates per method "
+    f"(single-threaded, CPU only, on {', '.join(env['hosts'])})."
+)
+```
 
 Two further sections run every slope over the whole horizon grid
 ($T$ = 1 to 100) so that cost can be read against $T$ for each slope and
