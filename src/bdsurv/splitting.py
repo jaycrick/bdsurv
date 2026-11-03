@@ -26,6 +26,8 @@ import numpy as np
 import pandas as pd
 
 from bdsurv import _linear_math
+from bdsurv._numerics import close
+from bdsurv._rng_counter import bump, make_rng
 from bdsurv.linear_rates import (
     ConstantRateLike,
     LinearRateLike,
@@ -328,7 +330,7 @@ def _make_child_rng(
     seed_rng: np.random.Generator,
 ) -> np.random.Generator:
     child_seed = int(seed_rng.integers(0, 2**31 - 1))
-    return np.random.default_rng(child_seed)
+    return make_rng(child_seed, "dynamics")
 
 
 def _log_survival_probability(
@@ -664,7 +666,7 @@ def _append_trace_point(
     if time_point < state.trace_times[-1]:
         msg = "time_point must be monotone in particle trace"
         raise RuntimeError(msg)
-    if np.isclose(time_point, state.trace_times[-1]):
+    if close(time_point, state.trace_times[-1]):
         state.trace_populations[-1] = len(state.alive_ids)
         return
     state.trace_times.append(time_point)
@@ -706,6 +708,7 @@ def _simulate_to_level(
 
 def _apply_event(state: _ParticleState, *, event_time: float, is_birth: bool) -> None:
     """Apply a birth or death at ``event_time`` to a uniformly chosen individual."""
+    bump("events")
     if is_birth:
         child_id = state.next_individual_id
         state.next_individual_id += 1
@@ -729,7 +732,8 @@ def _apply_event(state: _ParticleState, *, event_time: float, is_birth: bool) ->
     else:
         death_idx = int(state.rng.integers(0, len(state.alive_ids)))
         dead_id = state.alive_ids.pop(death_idx)
-        state.records[dead_id]["death_time"] = event_time
+        # Replace rather than mutate: clones share record dicts (copy-on-write).
+        state.records[dead_id] = {**state.records[dead_id], "death_time": event_time}
 
     _append_trace_point(state=state, time_point=event_time)
 
@@ -793,12 +797,14 @@ def _clone_particle(
     particle_id: int,
     seed_rng: np.random.Generator,
 ) -> _ParticleState:
+    bump("clones")
+    bump("records_copied", len(donor.records))
     return _ParticleState(
         particle_id=particle_id,
         current_time=float(donor.current_time),
         next_individual_id=int(donor.next_individual_id),
         alive_ids=donor.alive_ids.copy(),
-        records={key: value.copy() for key, value in donor.records.items()},
+        records=donor.records.copy(),  # record dicts are never mutated, so share them
         trace_times=donor.trace_times.copy(),
         trace_populations=donor.trace_populations.copy(),
         rng=_make_child_rng(seed_rng=seed_rng),
@@ -1007,6 +1013,7 @@ def _run_attempt(
     for level_index in range(1, len(levels)):
         target_time = float(levels[level_index])
         n_entering = len(particles)
+        bump("particle_steps", n_entering)
 
         for particle in particles:
             dynamics.evolve(particle, target_time)
@@ -1298,7 +1305,7 @@ def _run_splitting(
             msg = f"max_restarts must be >= 1, got {config.max_restarts}."
             raise ValueError(msg)
 
-    seed_rng = np.random.default_rng(config.random_seed)
+    seed_rng = make_rng(config.random_seed, "seeding")
 
     n_attempts = 0
     outcome: _AttemptOutcome
@@ -1316,6 +1323,7 @@ def _run_splitting(
         ):
             break
 
+    bump("attempts", n_attempts)
     if not outcome.particles:
         warnings.warn(
             f"No particle survived to the terminal time in {n_attempts} "

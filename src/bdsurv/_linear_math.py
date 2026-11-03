@@ -23,6 +23,7 @@ so integrands of very large dynamic range stay accurate.
 from __future__ import annotations
 
 import math
+from bisect import bisect_left, bisect_right
 from typing import Literal, NamedTuple
 
 import numpy as np
@@ -50,6 +51,11 @@ class Rate(NamedTuple):
     v0: _Array  # value at the start of each segment
     slope: _Array
     cum_before: _Array  # integral from 0 to the start of each segment
+    # Float tuples mirroring the arrays, for the scalar hazard-inversion loops.
+    py_starts: tuple[float, ...] = ()
+    py_ends: tuple[float, ...] = ()
+    py_v0: tuple[float, ...] = ()
+    py_slope: tuple[float, ...] = ()
 
     @property
     def end_time(self) -> float:
@@ -78,7 +84,17 @@ def as_rate(rate: ConstantRateLike | LinearRateLike) -> Rate:
         raise ValueError(msg)
     slope = (v1 - v0) / (ends - starts)
     cum_before = np.concatenate([[0.0], np.cumsum(0.5 * (v0 + v1) * (ends - starts))])
-    return Rate(starts, ends, v0, slope, cum_before[:-1])
+    return Rate(
+        starts,
+        ends,
+        v0,
+        slope,
+        cum_before[:-1],
+        tuple(starts.tolist()),
+        tuple(ends.tolist()),
+        tuple(v0.tolist()),
+        tuple(slope.tolist()),
+    )
 
 
 def _index(
@@ -109,16 +125,19 @@ def forward_hazard_time(rate: Rate, start: float, e: float, cap: float) -> float
     Within a segment the equation is a quadratic, solved by the stable form in
     :func:`bdsurv.linear_rates._next_event_offset`; if the segment's hazard is
     used up before ``e`` is reached, the remainder carries into the next one.
+    Plain Python floats and ``bisect`` are used: this runs once per contour step.
     """
-    k = int(_index(rate, start, side="right"))
+    ends, starts, v0s, slopes = rate.py_ends, rate.py_starts, rate.py_v0, rate.py_slope
+    n = len(ends)
+    k = min(bisect_right(ends, start), n - 1)
     t = start
     remaining = e
-    while k < rate.ends.size:
-        end = float(rate.ends[k])
+    while k < n:
+        end = ends[k]
         if t >= cap:
             return cap
-        a = float(rate.v0[k] + rate.slope[k] * (t - rate.starts[k]))
-        b = float(rate.slope[k])
+        a = v0s[k] + slopes[k] * (t - starts[k])
+        b = slopes[k]
         offset = _next_event_offset(a, b, remaining)
         if t + offset <= end:
             return min(t + offset, cap)
@@ -131,14 +150,15 @@ def forward_hazard_time(rate: Rate, start: float, e: float, cap: float) -> float
 
 def backward_hazard_time(rate: Rate, start: float, e: float) -> float:
     """Largest ``s <= start`` with ``int_s^start rate = e``, or ``0`` if none."""
-    k = int(_index(rate, start, side="left"))
-    hi = min(start, float(rate.ends[k]))
+    ends, starts, v0s, slopes = rate.py_ends, rate.py_starts, rate.py_v0, rate.py_slope
+    k = min(bisect_left(ends, start), len(ends) - 1)
+    hi = min(start, ends[k])
     remaining = e
     while k >= 0:
-        lo = float(rate.starts[k])
+        lo = starts[k]
         length = hi - lo
-        a = float(rate.v0[k] + rate.slope[k] * length)  # value at hi
-        b = -float(rate.slope[k])  # slope when walking backwards
+        a = v0s[k] + slopes[k] * length  # value at hi
+        b = -slopes[k]  # slope when walking backwards
         offset = _next_event_offset(a, b, remaining)
         if offset <= length:
             return hi - offset

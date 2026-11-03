@@ -37,6 +37,7 @@ import jax  # noqa: E402
 # The simulators work in float64 throughout.
 jax.config.update("jax_enable_x64", True)
 
+from bdsurv._rng_counter import DrawCounts, count_draws  # noqa: E402
 from bdsurv.contour import (  # noqa: E402
     simulate_birth_death_process_from_contour_process,
     simulate_linear_rate_contour_process,
@@ -83,6 +84,7 @@ __all__ = [
     "ConditionedSurvivalResult",
     "ConditionedTrajectory",
     "ConstantRateLike",
+    "DrawCounts",
     "EraConditioningDiagnostic",
     "LevelDiagnostic",
     "LifespanSimulationArrays",
@@ -96,6 +98,7 @@ __all__ = [
     "SplittingConfig",
     "SplittingSimulationResult",
     "build_target_ranges",
+    "count_draws",
     "compute_level_replicates",
     "default_max_restarts",
     "sample_conditioned_survival_per_posterior",

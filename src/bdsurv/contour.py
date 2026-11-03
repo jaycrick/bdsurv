@@ -16,6 +16,8 @@ import numpy as np
 import pandas as pd
 
 from bdsurv import _linear_math
+from bdsurv._numerics import close
+from bdsurv._rng_counter import bump, make_rng
 from bdsurv.linear_rates import ConstantRateLike, LinearRateLike
 from bdsurv.tree import SimulatedTree
 
@@ -41,15 +43,20 @@ def _generate_component(
     ``terminal_time`` discards the excursion and restarts it from ``[T]``.
     """
     component = [float(terminal_time)]
+    steps = resets = 0
     while True:
         downward = down_step(component[-1], rng)
         component.append(downward)
-        if np.isclose(downward, 0.0):
+        steps += 1
+        if close(downward, 0.0):
+            bump("contour_steps", steps)
+            bump("spine_resets", resets)
             return component
 
         upward = up_step(component[-1], rng)
-        if reset_at_terminal and np.isclose(upward, terminal_time):
+        if reset_at_terminal and close(upward, terminal_time):
             component = [float(terminal_time)]
+            resets += 1
             continue
         component.append(upward)
 
@@ -202,10 +209,10 @@ def _validate_contour_process_list(contour_process_list: list[float]) -> None:
     if len(contour_process_list) % 2 == 0:
         msg = "contour_process_list must have odd length"
         raise ValueError(msg)
-    if not np.isclose(contour_process_list[0], 0.0):
+    if not close(contour_process_list[0], 0.0):
         msg = "contour_process_list must begin with 0"
         raise ValueError(msg)
-    if not np.isclose(contour_process_list[-1], 0.0):
+    if not close(contour_process_list[-1], 0.0):
         msg = "contour_process_list must end with 0"
         raise ValueError(msg)
 
@@ -273,7 +280,7 @@ def _contour_process_list_to_tree(
         current_value = values[index]
         # Odd indices are death times for the current top-of-stack individual
         if index % 2 == 1:
-            if np.isclose(current_value, terminal_time):
+            if close(current_value, terminal_time):
                 # Individual that 'dies' at terminal time is considered alive
                 records[individual_number_stack[-1]]["death_time"] = float(
                     "nan",
@@ -339,9 +346,9 @@ def _contour_process_list_to_tree(
 
 def _seeded_rng(random_seed: int | None) -> np.random.Generator:
     if random_seed is None:
-        return np.random.default_rng()
-    base_seed_rng = np.random.default_rng(random_seed)
-    return np.random.default_rng(int(base_seed_rng.integers(0, 2**31 - 1)))
+        return make_rng(None, "contour")
+    base_seed_rng = make_rng(random_seed, "seeding")
+    return make_rng(int(base_seed_rng.integers(0, 2**31 - 1)), "contour")
 
 
 def simulate_birth_death_process_from_contour_process(
