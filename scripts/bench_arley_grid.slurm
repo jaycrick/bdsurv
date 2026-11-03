@@ -1,3 +1,4 @@
+#!/bin/bash
 # SLURM array job: benchmark the contour process against multilevel splitting on
 # every matched Arley slope over the whole terminal-time grid (T = 1 ... 100),
 # `scripts/bench_arley_comparison.py --grid`.  It gives cost against T for each
