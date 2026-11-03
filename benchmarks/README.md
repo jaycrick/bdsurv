@@ -38,8 +38,10 @@ and records the random numbers each method draws, plus events, clones and record
 copied.
 Counts are deterministic and counted runs give identical trees, so this reproduces
 the timed runs without a wrapper in them.
-Shard it with `--shard i/N` (one replicate of all cells takes about 8 minutes serially),
-then `--merge`.
+On a cluster use `scripts/count_draws.slurm submit` (100 tasks, 20 replicates, 16G; then
+`resubmit` re-runs any task that wrote nothing), which merges into `benchmarks/data/draws.csv`.
+Locally, shard it with `--shard i/N` (one replicate of all cells takes about 8 minutes
+serially), then `--merge`.
 
 Run both timed benchmarks on the same code version before comparing them: the
 speed-ups to the shared splitting and contour code (inline `isclose`, copy-on-write

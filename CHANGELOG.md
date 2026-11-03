@@ -25,7 +25,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   copied, attempts, contour steps and spine resets. Counted runs give identical
   trees. `scripts/count_draws.py` runs it over the benchmark cells with the
   benchmark seeds.
-- `scripts/bench_arley_comparison.slurm`: SLURM array job for the Arley benchmark.
+- `scripts/bench_arley_comparison.slurm` and `scripts/count_draws.slurm`: SLURM array
+  jobs (with a `resubmit` mode that re-runs only the tasks without output) for the
+  Arley benchmark and the draw counts.
 
 ### Changed
 
