@@ -74,9 +74,9 @@ SLOPE_OVERRIDES = {1.2: 0.025}
 # 10^9.9 individuals at mu = 1.2 (m = 0.025).  A conditioned tree has about 10^5
 # individuals at 10^4.6 (mu = 3), which already costs ~2 GB and a minute per run.
 MAX_LOG10_CUMULATIVE = 5.0
-QUICK_MUS = (0.6, 3.0)
-QUICK_REPLICATES = 4
-QUICK_BLOCK_SIZE = 2
+QUICK_MUS = (0.6, 1.0)
+QUICK_REPLICATES = 3
+QUICK_BLOCK_SIZE = 3
 
 ROOT = base.ROOT
 ROWS_FILE = "arley_comparison.csv"
