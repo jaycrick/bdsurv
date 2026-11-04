@@ -11,7 +11,7 @@
 set -euo pipefail
 
 # figure name : number of stages (stage k is compiled with \def\stage{k})
-FIGURES=("tree_contour:5" "bdp_tree:2" "exchanged_pair:2")
+FIGURES=("tree_contour:5" "bdp_tree:2" "exchanged_pair:2" "birth_exchange:1")
 
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"

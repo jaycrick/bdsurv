@@ -2,7 +2,7 @@
 % Paper01_AgeBDPVarEnv/BDP_Presentation.tex: one ancestor, one individual that dies before T,
 % and three that survive to T (blue, red and green).
 % Compile with: lualatex "\def\stage{k}\input{bdp_tree.tex}"   (k = 1..2)
-%   1 the tree        2 the three individuals alive at T coloured and labelled
+%   1 the tree        2 the three individuals alive at T coloured
 \documentclass[tikz,border=4pt]{standalone}
 \usepackage{xcolor}
 \usepackage{libertinus-otf}
@@ -45,6 +45,5 @@
   \node[circle, fill=\sa, opacity=\dotop, inner sep=2.6pt] at (2.75,5) {};
   \node[circle, fill=\sb, opacity=\dotop, inner sep=2.6pt] at (1.5,5) {};
   \node[circle, fill=\sc, opacity=\dotop, inner sep=2.6pt] at (3.75,5) {};
-  \node[anchor=west, opacity=\dotop] at (4.05,5.0) {alive at $T$};
 \end{tikzpicture}
 \end{document}
