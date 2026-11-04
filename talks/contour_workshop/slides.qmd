@@ -49,23 +49,18 @@ Photos: Ammresh
 
 ::: {.column width="50%"}
 - Models help us understand the behaviour of populations over time.
+- **Declining populations** of particular interest.
 - **Simulation** lets us test, validate, and calibrate inference methods.
-- Of particular interest are **declining populations**, such as threatened species,
-which have survived to the present.
+- Necessary for **statistical methods** (bootstrap) or **training models** (machine learning).
 :::
 ::::
 
 ::: notes
-Declining populations, such as threatened species, are often modelled by subcritical
-birth-and-death processes, in which individuals die at a higher rate than they reproduce.
-Such populations eventually go extinct, so to study those that are still alive today we
-must condition on survival to the present.
-Simulating this directly is costly, because most simulated populations die out before
-reaching the present and have to be discarded.
-We present a new, efficient algorithm that avoids this waste by starting from the
-population as observed today and building its family tree backwards in time to the origin.
-We also show that the more subcritical the process is, the greater the algorithm's
-advantage over standard simulation.
+Declining populations
+Frog: Vulnerable
+Parrot: Critically Endangered - got down to 14 birds in Feb 2017
+
+- want to simulate long trajectories, non-extinct
 :::
 
 ## Subcritical birth-and-death processes can model declining populations
@@ -78,10 +73,15 @@ advantage over standard simulation.
 ::: {.column width="48%"}
 - Birth-and-death process: per individual **birth-rate** $\lambda$, **death-rate** $\mu$.
 - **Subcritical** if $\mu > \lambda$.
-- We are generally motivated to observe **non-extinct** processes at $T$.
-- How do we **simulate** such a process **conditioned on survival**?
+- Observe **non-extinct** processes at finite time $T$.
+- How to simulate **conditioned on survival**?
 :::
 ::::
+
+::: notes
+- Tree representation, time y axis
+- birth-rate and death-rate per individual
+:::
 
 ## Naive simulation becomes increasingly costly for longer times and more subcritical processes
 
@@ -99,11 +99,16 @@ advantage over standard simulation.
 :::
 
 ::: {.column width="46%"}
-- For $\mu > \lambda$: $$\Pr(Z_T > 0) \approx \Bigl(1 - \tfrac{\lambda}{\mu}\Bigr)\, e^{-(\mu - \lambda)T}$$
+- For $\mu > \lambda$: $\Pr(Z_T > 0)$ grows exponentially small with $T$.
 - Runs needed per survivor: $1 / \Pr(Z_T > 0)$
 - $\lambda = 1$, $\mu = 2$, $T = 10$: about **44,000** runs
 :::
 ::::
+
+::: notes
+- The probability of survival decreases exponentially with time.
+- The number of runs needed increases dramatically as the process becomes more subcritical.
+:::
 
 ## Multilevel splitting is more efficient at simulating subcritical processes, but yields correlated trees
 
@@ -128,9 +133,13 @@ Given levels $0=\tau_0 < \tau_1 < \dots < \tau_J = T$, cloning rates $r_j$ and s
 $$\hat{p} = \frac{\text{\# surviving trees}}{N_0 \prod_{j=1}^{J} r_j},$$
 and
 $$\mathbb{E}\bigl(\hat p\bigr) = \Pr(Z_T > 0)$$
-- Clones share ancestry, so kept trees **highly correlated**.
+- Set of trees **highly correlated** (shared ancestry)
 :::
 ::::
+
+::: notes
+- draw levels and tree on blackboard
+:::
 
 ## A tree is encoded by its contour
 
@@ -139,24 +148,25 @@ $$\mathbb{E}\bigl(\hat p\bigr) = \Pr(Z_T > 0)$$
 ::: {.r-stack}
 ![](figures/tree_contour_1.svg){width="740"}
 
-![](figures/tree_contour_2.svg){.fragment fragment-index=2 width="740"}
+![](figures/tree_contour_2.svg){.fragment fragment-index=1 width="740"}
 :::
 :::
 
 ::: {.column width="42%"}
+
+- Explore the tree **depth-first**, height over time: the **contour**.
+
 ::: {.fragment fragment-index=1}
-- Explore the tree **depth-first**.
-:::
-
-::: {.fragment fragment-index=2}
-- Record the **time** at each step: the **contour**.
-:::
-
-::: {.fragment fragment-index=3}
-- Peaks are **deaths** (or $T$), valleys are **births**.
+- Peaks: **deaths** (or $T$), valleys: **births**.
+- Can we simulate the contour **directly**?
 :::
 :::
 ::::
+
+::: notes
+Explore at constant rate.
+There is a bijection between trees and their contours.
+:::
 
 ## A contour is a simple Markov chain of extrema
 
@@ -166,26 +176,31 @@ $$\mathbb{E}\bigl(\hat p\bigr) = \Pr(Z_T > 0)$$
 :::
 
 ::: {.column width="42%"}
-::: {.incremental}
-- The extrema form a **Markov chain**.
-- Down by $\mathrm{Exp}(\lambda)$.
-- Up by $\mathrm{Exp}(\mu)$, capped at $T$.
-- Stop on hitting $0$.
-:::
+- The extrema form **Markov chain**:
+    - **up** by $\mathrm{Exp}(\mu)$
+    - **down** by $\mathrm{Exp}(\lambda)$.
+- Truncate at $T$, stop on hitting $0$.
+- Extrema $\mapsto$ Contour $\mapsto$ Tree.
 :::
 ::::
 
 ::: notes
-In the code, `_generate_non_spine_component` subtracts Exp(birth_rate) for each down jump
-(floored at 0) and adds Exp(death_rate) for each up jump (capped at T).
+Point
 :::
 
 ## Only the first ascent of a contour is hard
 
 ::: {.r-stack}
-![](figures/tree_contour_4.svg){width="900"}
 
-![](figures/tree_contour_5.svg){.fragment fragment-index=1 width="900"}
+![](figures/tree_contour_5.svg){width="900"}
+
+![](figures/tree_contour_4.svg){.fragment fragment-index=1 width="900"}
+
+![](figures/tree_contour_5.svg){.fragment fragment-index=2 width="900"}
+:::
+
+::: notes
+- split contour, first ascent, and then descent.
 :::
 
 ## The hard ascent is a reversed easy descent
@@ -195,24 +210,24 @@ In the code, `_generate_non_spine_component` subtracts Exp(birth_rate) for each 
 ::: {.r-stack}
 ![](figures/exchanged_pair_1.svg){width="690"}
 
-![](figures/exchanged_pair_2.svg){.fragment fragment-index=2 width="690"}
+![](figures/exchanged_pair_2.svg){.fragment fragment-index=1 width="690"}
 :::
 :::
 
 ::: {.column width="42%"}
-::: {.fragment fragment-index=1}
+
 - Swap mothers and daughters: the contour is **reversed**.
-:::
 
-::: {.fragment fragment-index=2}
+::: {.fragment fragment-index=1}
 - First ascent = **reversed** last descent.
-:::
-
-::: {.fragment fragment-index=3}
 - So **simulate a descent** and reverse it.
 :::
 :::
 ::::
+
+::: notes
+Last descent just ignore first times it hits T, explain this is why get more efficient as more subcritical.
+:::
 
 ## The more subcritical, the bigger the speed-up
 
