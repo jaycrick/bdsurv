@@ -113,9 +113,9 @@ price when independence matters.
 *Per kept tree* divides the run by the number of trees it kept, which is the
 optimistic view.
 
-Each point is the **median** over independent replicates (at least
+Each point is the **mean** over independent replicates (at least
 `{python} N_REPS` per method and cell, across `{python} N_CELLS` cells), and the
-shaded band is the 10th to 90th percentile.
+shaded band is a 95% confidence interval for the mean (normal approximation).
 Both axes of the cost charts are logarithmic.
 Click a legend entry to show only that method (shift-click to add more,
 double-click to reset).
@@ -151,7 +151,7 @@ X_BY_MU = charts.x_by_mu(MUS)
 
 
 def cost_chart(data: pd.DataFrame, x: alt.X, **kwargs) -> alt.Chart:
-    return charts.cost_chart(data, x, lam=LAMBDA, **kwargs)
+    return charts.cost_chart(data, x, lam=LAMBDA, statistic="mean", **kwargs)
 
 
 diagnostics = (
@@ -386,7 +386,7 @@ Above 1 the contour process is cheaper.
 
 ```{python}
 #| label: ratio
-wide = curves.pivot_table(index=["mu", "T"], columns="method", values="median").reset_index()
+wide = curves.pivot_table(index=["mu", "T"], columns="method", values="mean").reset_index()
 wide["ratio"] = wide[LABEL_RUN] / wide[LABEL_CONTOUR]
 heat = wide.dropna(subset=["ratio"]).copy()
 heat["T_label"] = heat["T"].map(lambda t: f"{t:g}")
@@ -639,28 +639,28 @@ c = curves[curves["method"] == LABEL_CONTOUR]
 k = curves[curves["method"] == LABEL_KEPT]
 
 lines_out = []
-fastest, slowest = c.loc[c["median"].idxmin()], c.loc[c["median"].idxmax()]
+fastest, slowest = c.loc[c["mean"].idxmin()], c.loc[c["mean"].idxmax()]
 lines_out.append(
-    f"- **Contour process:** median cost per tree runs from "
-    f"{fastest['median'] * 1e3:.2g} ms (μ = {fastest['mu']:g}, T = {fastest['T']:g}) "
-    f"to {slowest['median']:.2g} s (μ = {slowest['mu']:g}, T = {slowest['T']:g})."
+    f"- **Contour process:** mean cost per tree runs from "
+    f"{fastest['mean'] * 1e3:.2g} ms (μ = {fastest['mu']:g}, T = {fastest['T']:g}) "
+    f"to {slowest['mean']:.2g} s (μ = {slowest['mu']:g}, T = {slowest['T']:g})."
 )
 if not heat.empty:
     lo, hi = heat.loc[heat["ratio"].idxmin()], heat.loc[heat["ratio"].idxmax()]
     share = float((heat["ratio"] > 1).mean())
     lines_out.append(
-        f"- **Splitting, per independent tree** costs between {lo['ratio']:.2g}× "
+        f"- **Splitting, per set of trees** costs between {lo['ratio']:.2g}× "
         f"(μ = {lo['mu']:g}, T = {lo['T']:g}) and {hi['ratio']:.2g}× "
         f"(μ = {hi['mu']:g}, T = {hi['T']:g}) the contour process; the contour "
         f"process is cheaper in {share:.0%} of the {len(heat)} cells."
     )
     merged = pd.merge(
-        k[["mu", "T", "median"]],
-        c[["mu", "T", "median"]],
+        k[["mu", "T", "mean"]],
+        c[["mu", "T", "mean"]],
         on=["mu", "T"],
         suffixes=("_kept", "_contour"),
     )
-    cheaper = float((merged["median_kept"] < merged["median_contour"]).mean())
+    cheaper = float((merged["mean_kept"] < merged["mean_contour"]).mean())
     lines_out.append(
         f"- **Splitting, per kept tree** is cheaper than the contour process in "
         f"{cheaper:.0%} of cells, but those trees are correlated."

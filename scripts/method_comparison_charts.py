@@ -10,15 +10,18 @@ import numpy as np
 import pandas as pd
 
 LABEL_CONTOUR = "Contour process (exact)"
-LABEL_RUN = "Splitting, per independent tree (one run)"
+LABEL_RUN = "Splitting, per set of trees (one run)"
 LABEL_KEPT = "Splitting, per kept tree"
 PALETTE = {LABEL_CONTOUR: "#0072B2", LABEL_RUN: "#E69F00", LABEL_KEPT: "#D55E00"}
 
 
-def color_encoding(legend_font_size: int = 14) -> alt.Color:
+def color_encoding(
+    legend_font_size: int = 14, methods: list[str] | None = None
+) -> alt.Color:
+    shown = methods or list(PALETTE)
     return alt.Color(
         "method:N",
-        scale=alt.Scale(domain=list(PALETTE), range=list(PALETTE.values())),
+        scale=alt.Scale(domain=shown, range=[PALETTE[m] for m in shown]),
         legend=alt.Legend(
             title=None, orient="bottom", labelFontSize=legend_font_size, labelLimit=0
         ),
@@ -47,9 +50,14 @@ def _bdsurv_theme() -> alt.theme.ThemeConfig:
 
 def band(frame: pd.DataFrame, column: str, label: str) -> pd.DataFrame:
     grouped = frame.groupby(["mu", "T"])[column]
+    sem = grouped.std() / np.sqrt(grouped.count())
     out = pd.DataFrame(
         {
             "median": grouped.median(),
+            "mean": grouped.mean(),
+            # Normal-approximation 95% confidence interval for the mean.
+            "ci_lo": (grouped.mean() - 1.96 * sem).clip(lower=0),
+            "ci_hi": grouped.mean() + 1.96 * sem,
             "lo": grouped.quantile(0.1),
             "hi": grouped.quantile(0.9),
             "replicates": grouped.count(),
@@ -101,14 +109,22 @@ def cost_chart(
     *,
     lam: float,
     log_y: bool = True,
+    methods: list[str] | None = None,
+    show_band: bool = True,
+    statistic: str = "median",
     mark_critical: bool = False,
     legend_font_size: int = 14,
     width: int = 900,
     height: int = 380,
 ) -> alt.Chart:
     y_scale = alt.Scale(type="log") if log_y else alt.Scale(zero=True)
-    y_title = "seconds per tree (log scale)" if log_y else "seconds per tree"
-    y = alt.Y("median:Q", scale=y_scale, title=y_title)
+    unit = "mean sec per tree" if statistic == "mean" else "seconds per tree"
+    y_title = f"{unit} (log scale)" if log_y else unit
+    # The median gets the 10th-90th percentile band, the mean a 95% interval.
+    lo, hi, band_name = (
+        ("ci_lo", "ci_hi", "95% CI") if statistic == "mean" else ("lo", "hi", None)
+    )
+    y = alt.Y(f"{statistic}:Q", scale=y_scale, title=y_title)
     # Clicking a legend entry shows that method and fades the rest;
     # shift-click adds more, double-click resets.
     selection = alt.selection_point(fields=["method"], bind="legend")
@@ -119,22 +135,22 @@ def cost_chart(
     tooltip = [
         "method",
         alt.Tooltip(x.shorthand, format="g"),
-        alt.Tooltip("median:Q", format=".3g", title="median s"),
-        alt.Tooltip("lo:Q", format=".3g", title="10th pct"),
-        alt.Tooltip("hi:Q", format=".3g", title="90th pct"),
+        alt.Tooltip(f"{statistic}:Q", format=".3g", title=f"{statistic} s"),
+        alt.Tooltip(f"{lo}:Q", format=".3g", title=f"{band_name or '10th pct'} low"),
+        alt.Tooltip(f"{hi}:Q", format=".3g", title=f"{band_name or '90th pct'} high"),
         "replicates",
     ]
-    base = alt.Chart(data).encode(x=x, color=color_encoding(legend_font_size))
+    base = alt.Chart(data).encode(x=x, color=color_encoding(legend_font_size, methods))
     area = base.mark_area().encode(
-        y=alt.Y("lo:Q", scale=y_scale, title=y_title),
-        y2="hi:Q",
+        y=alt.Y(f"{lo}:Q", scale=y_scale, title=y_title),
+        y2=f"{hi}:Q",
         opacity=fade(0.15, 0.02),
     )
     line = base.mark_line(strokeWidth=3).encode(y=y, opacity=fade(1.0, 0.08))
     points = base.mark_point(size=70, filled=True).encode(
         y=y, tooltip=tooltip, opacity=fade(1.0, 0.08)
     )
-    layers = [area, line, points]
+    layers = [area, line, points] if show_band else [line, points]
     if mark_critical:
         # Splits the supercritical (mu < lambda) and subcritical regimes.
         critical = (

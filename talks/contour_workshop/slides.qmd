@@ -199,6 +199,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import altair as alt
 import pandas as pd
 from IPython.display import Markdown, display
 
@@ -234,6 +235,7 @@ chart = charts.cost_chart(
     at_t,
     charts.x_by_mu(mus),
     lam=bench.LAMBDA,
+    statistic="mean",
     mark_critical=True,
     legend_font_size=21,
     width=960,
@@ -247,15 +249,45 @@ chart = charts.cost_chart(
 ```
 
 ```{python}
-median = at_t.pivot_table(index="mu", columns="method", values="median")
+mean = at_t.pivot_table(index="mu", columns="method", values="mean")
 mu_top = max(mus)
 speedup = (
-    median.loc[mu_top, charts.LABEL_RUN] / median.loc[mu_top, charts.LABEL_CONTOUR]
+    mean.loc[mu_top, charts.LABEL_RUN] / mean.loc[mu_top, charts.LABEL_CONTOUR]
 )
 display(
     Markdown(
         f"At $T = {T_SHOWN:g}$ and $\\mu = {mu_top:g}$, splitting costs "
         f"**{speedup:,.0f}×** more per independent tree."
     )
+)
+```
+
+## The same comparison on linear axes
+
+```{python}
+linear_methods = [charts.LABEL_CONTOUR, charts.LABEL_KEPT]
+linear_mus = [m for m in mus if m >= 1]
+linear_data = at_t[at_t["method"].isin(linear_methods) & (at_t["mu"] >= 1)]
+linear_chart = charts.cost_chart(
+    linear_data,
+    alt.X(
+        "mu:Q",
+        scale=alt.Scale(domain=[1, max(linear_mus)], nice=False),
+        title="death rate μ",
+        axis=alt.Axis(values=[float(m) for m in linear_mus], format="g", labelOverlap=True),
+    ),
+    lam=bench.LAMBDA,
+    log_y=False,
+    methods=linear_methods,
+    statistic="mean",
+    mark_critical=True,
+    legend_font_size=21,
+    width=960,
+    height=320,
+)
+(
+    linear_chart.configure(font="Libertinus Serif", background="#FAFAFA")
+    .configure_axis(labelFontSize=22, titleFontSize=26)
+    .configure_legend(symbolSize=200)
 )
 ```

@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 LABEL_CONTOUR = "Contour process (exact)"
-LABEL_RUN = "Splitting, per independent tree (one run)"
+LABEL_RUN = "Splitting, per set of trees (one run)"
 LABEL_KEPT = "Splitting, per kept tree"
 PALETTE = {LABEL_CONTOUR: "#0072B2", LABEL_RUN: "#E69F00", LABEL_KEPT: "#D55E00"}
 BIRTH_COLOR = "#009E73"
@@ -35,9 +35,14 @@ def color_encoding(legend_font_size: int = 14) -> alt.Color:
 
 def _band(frame: pd.DataFrame, column: str, label: str) -> pd.DataFrame:
     grouped = frame.groupby(GROUP)[column]
+    sem = grouped.std() / np.sqrt(grouped.count())
     out = pd.DataFrame(
         {
             "median": grouped.median(),
+            "mean": grouped.mean(),
+            # Normal-approximation 95% confidence interval for the mean.
+            "ci_lo": (grouped.mean() - 1.96 * sem).clip(lower=0),
+            "ci_hi": grouped.mean() + 1.96 * sem,
             "lo": grouped.quantile(0.1),
             "hi": grouped.quantile(0.9),
             "replicates": grouped.count(),
@@ -48,7 +53,7 @@ def _band(frame: pd.DataFrame, column: str, label: str) -> pd.DataFrame:
 
 
 def curves_from_rows(rows: pd.DataFrame) -> pd.DataFrame:
-    """Median and percentile band of seconds per tree, one block per method label."""
+    """Mean, median and bands of seconds per tree, one block per method label."""
     rows = rows.assign(
         per_kept=np.where(
             rows["n_trees"] > 0, rows["seconds"] / rows["n_trees"], np.nan
@@ -106,18 +111,26 @@ def cost_chart(
     data: pd.DataFrame,
     x: alt.X,
     *,
+    statistic: str = "mean",
     legend_font_size: int = 14,
     width: int = 900,
     height: int = 380,
 ) -> alt.LayerChart:
-    """Seconds per tree against ``x`` for each method, with a percentile band.
+    """Seconds per tree against ``x`` for each method, with a band.
+
+    ``statistic`` is ``"mean"`` (with a 95% confidence interval) or ``"median"``
+    (with the 10th to 90th percentile).
 
     Clicking a legend entry shows that method and fades the rest; shift-click
     adds more and double-click resets.
     """
     y_scale = alt.Scale(type="log")
-    y_title = "seconds per tree (log scale)"
-    y = alt.Y("median:Q", scale=y_scale, title=y_title)
+    unit = "mean sec per tree" if statistic == "mean" else "seconds per tree"
+    y_title = f"{unit} (log scale)"
+    lo, hi, band_name = (
+        ("ci_lo", "ci_hi", "95% CI") if statistic == "mean" else ("lo", "hi", None)
+    )
+    y = alt.Y(f"{statistic}:Q", scale=y_scale, title=y_title)
     selection = alt.selection_point(fields=["method"], bind="legend")
 
     def fade(shown: float, hidden: float) -> alt.Opacity:
@@ -128,15 +141,15 @@ def cost_chart(
         alt.Tooltip("slope:Q", format=".3~g", title="slope m"),
         alt.Tooltip("mu:Q", format="g", title="matched constant μ"),
         alt.Tooltip("T:Q", format="g"),
-        alt.Tooltip("median:Q", format=".3g", title="median s"),
-        alt.Tooltip("lo:Q", format=".3g", title="10th pct"),
-        alt.Tooltip("hi:Q", format=".3g", title="90th pct"),
+        alt.Tooltip(f"{statistic}:Q", format=".3g", title=f"{statistic} s"),
+        alt.Tooltip(f"{lo}:Q", format=".3g", title=f"{band_name or '10th pct'} low"),
+        alt.Tooltip(f"{hi}:Q", format=".3g", title=f"{band_name or '90th pct'} high"),
         "replicates",
     ]
     base = alt.Chart(data).encode(x=x, color=color_encoding(legend_font_size))
     area = base.mark_area().encode(
-        y=alt.Y("lo:Q", scale=y_scale, title=y_title),
-        y2="hi:Q",
+        y=alt.Y(f"{lo}:Q", scale=y_scale, title=y_title),
+        y2=f"{hi}:Q",
         opacity=fade(0.15, 0.02),
     )
     line = base.mark_line(strokeWidth=3).encode(y=y, opacity=fade(1.0, 0.08))

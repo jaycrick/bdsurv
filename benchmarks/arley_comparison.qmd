@@ -80,10 +80,10 @@ if HAVE_GRID:
 
 LABEL = {
     "contour": "Contour process",
-    "splitting": "Splitting (one run, one independent tree)",
+    "splitting": "Splitting, per set of trees",
 }
 KIND = ["Constant death rate", "Arley death rate"]
-PALETTE = {"Contour process": "#0072B2", "Splitting (one run, one independent tree)": "#E69F00"}
+PALETTE = {"Contour process": "#0072B2", "Splitting, per set of trees": "#E69F00"}
 
 # Constant-rate timings at exactly the same (mu, T) cells.
 cells = slopes[["mu", "T"]].drop_duplicates()
@@ -186,13 +186,15 @@ against slope at each $T$.
 ```{python}
 #| label: timings
 #| fig-height: 6
-medians = (
+means = (
     both.groupby(["cell", "mu", "T", "kind", "label"])["seconds"]
-    .agg(median="median", q1=lambda s: s.quantile(0.25), q3=lambda s: s.quantile(0.75))
+    .agg(mean="mean", sem=lambda s: s.std() / np.sqrt(s.count()))
     .reset_index()
 )
+means["ci_lo"] = (means["mean"] - 1.96 * means["sem"]).clip(lower=0)
+means["ci_hi"] = means["mean"] + 1.96 * means["sem"]
 order = list(cells.sort_values(["T", "mu"]).apply(lambda r: f"μ={r['mu']:g}, T={r['T']:g}", axis=1))
-base_chart = alt.Chart(medians).encode(
+base_chart = alt.Chart(means).encode(
     x=alt.X("cell:N", sort=order, title=None, axis=alt.Axis(labelAngle=-40)),
     color=alt.Color(
         "label:N",
@@ -202,24 +204,24 @@ base_chart = alt.Chart(medians).encode(
     xOffset="label:N",
 )
 points = base_chart.mark_point(filled=True, size=90).encode(
-    y=alt.Y("median:Q", scale=alt.Scale(type="log"), title="Median seconds per tree"),
+    y=alt.Y("mean:Q", scale=alt.Scale(type="log"), title="mean sec per tree (log scale)"),
     shape=alt.Shape("kind:N", legend=alt.Legend(title=None, orient="bottom", labelFontSize=14)),
-    tooltip=["cell", "kind", "label", alt.Tooltip("median:Q", format=".3g")],
+    tooltip=["cell", "kind", "label", alt.Tooltip("mean:Q", format=".3g")],
 )
-bars = base_chart.mark_rule().encode(y="q1:Q", y2="q3:Q")
+bars = base_chart.mark_rule().encode(y="ci_lo:Q", y2="ci_hi:Q")
 display((points + bars).properties(width=900, height=420))
 ```
 
-Points show the median over replicates and the rules the interquartile range;
+Points show the mean over replicates and the rules a 95% confidence interval for the mean;
 circles are the constant death rate and squares the Arley death rate.
 
 ```{python}
 #| label: ratio-table
-wide = medians.pivot_table(
-    index=["mu", "T", "kind"], columns="label", values="median"
+wide = means.pivot_table(
+    index=["mu", "T", "kind"], columns="label", values="mean"
 ).reset_index()
 wide["splitting / contour"] = (
-    wide["Splitting (one run, one independent tree)"] / wide["Contour process"]
+    wide["Splitting, per set of trees"] / wide["Contour process"]
 )
 wide = wide.sort_values(["T", "mu", "kind"])
 wide.columns.name = None
