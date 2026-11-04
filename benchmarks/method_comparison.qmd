@@ -416,6 +416,142 @@ heat["T_label"] = heat["T"].map(lambda t: f"{t:g}")
 )
 ```
 
+## Random numbers drawn
+
+Time depends on the machine and on bookkeeping.
+A machine-independent measure of the stochastic work is the number of random
+numbers drawn, counted by `bdsurv.count_draws` in an untimed pass
+(`scripts/count_draws.py`) that reuses the benchmark seeds.
+Counted runs produce the same trees as the timed ones.
+Splitting also copies every particle's records when it clones it; that costs
+time but no draws, so draws understate its cost.
+The draw counts cover the constant-rate cells at $T = 21.5$, $46.4$ and $100$.
+
+```{python}
+#| label: draws
+DRAWS = DATA / "draws.csv"
+HAVE_DRAWS = DRAWS.exists()
+if not HAVE_DRAWS:
+    display(
+        Markdown(
+            "No draw counts yet: run `uv run python scripts/count_draws.py` "
+            "(or shard it with `--shard i/N`, then `--merge`)."
+        )
+    )
+else:
+    draws = pd.read_csv(DRAWS)
+    draws = draws[draws["model"] == "constant"]
+    draws = draws.assign(
+        per_kept=np.where(
+            draws["n_trees"] > 0, draws["draws_total"] / draws["n_trees"], np.nan
+        )
+    )
+    contour_d = draws[draws["method"] == "contour"]
+    split_d = draws[draws["method"] == "splitting"]
+    draw_curves = pd.concat(
+        [
+            charts.band(contour_d, "draws_total", LABEL_CONTOUR),
+            charts.band(split_d, "draws_total", LABEL_RUN),
+            charts.band(split_d, "per_kept", LABEL_KEPT),
+        ],
+        ignore_index=True,
+    )
+    draw_mus = sorted(draw_curves["mu"].unique())
+    draw_ts = sorted(draw_curves["T"].unique())
+
+    def draws_chart(data: pd.DataFrame, x: alt.X, title: str, *, critical: bool) -> alt.Chart:
+        base = alt.Chart(data).encode(x=x, color=charts.color_encoding())
+        y_title = "mean random numbers drawn per tree (log scale)"
+        y = alt.Y("mean:Q", scale=alt.Scale(type="log"), title=y_title)
+        tooltip = [
+            "method",
+            alt.Tooltip(x.shorthand, format="g"),
+            alt.Tooltip("mean:Q", format=",.0f", title="mean draws"),
+            alt.Tooltip("ci_lo:Q", format=",.0f", title="95% CI low"),
+            alt.Tooltip("ci_hi:Q", format=",.0f", title="95% CI high"),
+            "replicates",
+        ]
+        area = base.mark_area(opacity=0.15).encode(
+            y=alt.Y("ci_lo:Q", scale=alt.Scale(type="log"), title=y_title), y2="ci_hi:Q"
+        )
+        line = base.mark_line(strokeWidth=3).encode(y=y)
+        points = base.mark_point(size=70, filled=True).encode(y=y, tooltip=tooltip)
+        layers = [area, line, points]
+        if critical:
+            layers.append(
+                alt.Chart(pd.DataFrame({"mu": [LAMBDA]}))
+                .mark_rule(strokeDash=[6, 4], color="#888888")
+                .encode(x="mu:Q")
+            )
+        return alt.layer(*layers).properties(width=900, height=380, title=title)
+
+    X_DRAWS_BY_MU = alt.X(
+        "mu:Q",
+        scale=alt.Scale(type="log", nice=False, padding=12),
+        title="death rate μ (log scale)",
+        axis=alt.Axis(values=[float(m) for m in draw_mus], format="g", labelOverlap=True),
+    )
+    X_DRAWS_BY_T = alt.X(
+        "T:Q",
+        scale=alt.Scale(type="log", nice=False, padding=12),
+        title="terminal time T (log scale)",
+        axis=alt.Axis(values=[float(t) for t in draw_ts], format="g", labelOverlap=True),
+    )
+```
+
+Points are the mean over replicates and the band is a 95% confidence interval for
+the mean.
+Both axes are logarithmic.
+Draws were counted at only three horizons, so each curve over time has three points.
+
+## Random draws per tree over time, by death rate
+
+Click through the tabs to step the death rate $\mu$ from supercritical to highly
+subcritical.
+
+::: {.panel-tabset}
+
+```{python}
+#| output: asis
+if HAVE_DRAWS:
+    for mu in draw_mus:
+        display(Markdown(f"### $\\mu = {mu:g}$"))
+        display(
+            draws_chart(
+                draw_curves[draw_curves["mu"] == mu],
+                X_DRAWS_BY_T,
+                f"μ = {mu:g}",
+                critical=False,
+            )
+        )
+```
+
+:::
+
+## Random draws per tree over death rate, by time
+
+Click through the tabs to step the horizon $T$ from 21.5 to 100.
+The dashed line marks the critical rate $\mu = \lambda$.
+
+::: {.panel-tabset}
+
+```{python}
+#| output: asis
+if HAVE_DRAWS:
+    for t in draw_ts:
+        display(Markdown(f"### T = {t:g}"))
+        display(
+            draws_chart(
+                draw_curves[draw_curves["T"] == t],
+                X_DRAWS_BY_MU,
+                f"T = {t:g}",
+                critical=True,
+            )
+        )
+```
+
+:::
+
 ## Are the trees right?
 
 For a linear birth-death process from one individual, the number alive at $T$ given
