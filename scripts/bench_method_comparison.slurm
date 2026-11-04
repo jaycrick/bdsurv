@@ -18,8 +18,8 @@
 #   UNIT_SECONDS  stop starting replicates in a block after this many seconds
 #                 (default 900); blocks cut short are flagged in the units CSV
 #
-# Sizing: a 100-replicate local run took about 4.7 CPU-hours in total (longest
-# block about 12 minutes).  A single splitting run costs about 40 s at its worst
+# Sizing: a 100-replicate local run, before the splitting speed-ups, took about
+# 4.7 CPU-hours in total (longest block about 12 minutes); expect less now.  A single splitting run costs about 40 s at its worst
 # grid cell (mu = 10, T = 100) and a contour tree about 13 s at (mu = 0.8,
 # T = 50); most cells take milliseconds.  Units are ordered heaviest first and dealt out
 # round-robin, so tasks finish at similar times.  Adjust --time if you raise

@@ -20,6 +20,44 @@ Times every `bdsurv` simulator once, on a laptop-sized workload.
 Exact-versus-theory validation of the simulated ages, and the timing of sampling
 directly from the age distributions, live in `bdpinf` (`qmd_scripts/validation/`).
 
+## `arley_comparison.qmd`
+
+The same comparison for Arley processes (`lambda = 1`, `mu(t) = m t`) with the linear-rate
+simulators, each slope `m` matched to a constant-rate cell (see
+`scripts/bench_arley_comparison.py`).
+Cells whose Arley trees would be too large (`mu` = 1.2, 1.5, 2) are listed but not run.
+Data: `benchmarks/data/arley_comparison.csv`, `arley_comparison_units.csv`,
+`arley_slopes.csv` and `arley_environment.json`.
+Produce it locally with
+`SCRIPT=scripts/bench_arley_comparison.py scripts/bench_method_comparison_local.sh`,
+or on a cluster with `scripts/bench_arley_comparison.slurm submit`.
+
+The two tabbed sections (cost per tree over time for each slope, with a graph of the birth
+and death rates, and over slope at each time) need every slope run over the whole `T`
+grid: `bench_arley_comparison.py --grid`, or on a cluster `scripts/bench_arley_grid.slurm submit`
+(300 tasks, 100 replicates, `resubmit` to re-run failed tasks).
+It writes `benchmarks/data/arley_grid.csv`, `arley_grid_units.csv`, `arley_grid_cells.csv` and
+`arley_grid_environment.json`; cells above the size cap (slopes 0.025, 0.03 and 0.04 at long
+horizons) are listed in `arley_grid_cells.csv` with `feasible = False` and not run.
+Until those files exist the two sections show a "no grid data" note;
+`uv run python scripts/bench_arley_comparison.py --grid --quick` makes a tiny draft.
+
+Both comparisons also have an untimed *draw count* (`scripts/count_draws.py`, writing
+`benchmarks/data/draws.csv`): it re-runs the benchmark seeds inside `bdsurv.count_draws`
+and records the random numbers each method draws, plus events, clones and records
+copied.
+Counts are deterministic and counted runs give identical trees, so this reproduces
+the timed runs without a wrapper in them.
+On a cluster use `scripts/count_draws.slurm submit` (100 tasks, 20 replicates, 16G; then
+`resubmit` re-runs any task that wrote nothing), which merges into `benchmarks/data/draws.csv`.
+Locally, shard it with `--shard i/N` (one replicate of all cells takes about 8 minutes
+serially), then `--merge`.
+
+Run both timed benchmarks on the same code version before comparing them: the
+speed-ups to the shared splitting and contour code (inline `isclose`, copy-on-write
+particle records) leave every seeded result unchanged but cut run times several-fold,
+and `arley_comparison.qmd` reads `method_comparison.csv` for the constant-rate side.
+
 ## `method_comparison.qmd`
 
 Compares the contour process with multilevel splitting over a grid of death rates
@@ -32,9 +70,11 @@ The page reads `benchmarks/data/method_comparison.csv` (raw timings, one row per
 call or run), `method_comparison_units.csv` and `environment.json`.
 If `data/method_comparison.csv` is missing it runs a tiny draft grid so the page
 still renders.
-The data currently committed is a 100-replicate run on a laptop
-(`scripts/bench_method_comparison_local.sh`, 9 shards, one host).
-A cluster run gives the same simulated trees; only the timings differ.
+No results are committed at the moment: the earlier laptop run used code that has
+since been sped up (see below), so it was removed. Produce fresh data with
+`scripts/bench_method_comparison_local.sh` or on a cluster (below), and commit
+`benchmarks/data/`. A cluster run gives the same simulated trees; only the
+timings differ.
 
 ### Producing the data
 
@@ -76,9 +116,8 @@ one CPU each) and a merge job that depends on the whole array.
 Shards go to `benchmarks/_shards/` (git-ignored), logs to `logs/`, and the merged
 files to `benchmarks/data/`.
 Edit `--account` in the script for your allocation; it is set to `punim1793`.
-The 100-replicate laptop run took about 4.7 CPU-hours in total (most cells take
-milliseconds; the longest block took about 12 minutes), so 200 tasks should
-finish quickly.
+An earlier 100-replicate laptop run (before the speed-ups) took about 4.7 CPU-hours
+in total (most cells take milliseconds), so 200 tasks should finish quickly.
 Raise `REPLICATES` for tighter bands.
 Timings from different nodes scatter, so the notebook lists the hosts used and
 shows percentile bands.

@@ -8,6 +8,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `simulate_linear_rate_contour_process` and `simulate_linear_survival_splitting`
+  (with `LinearSplittingConfig`): the contour process and multilevel splitting for
+  birth and death rates that are piecewise constant or piecewise linear in time.
+  The maths (hazard inversion, survival probability `1 / (1 + I(T))`, mean
+  cumulative individuals) is in `bdsurv._linear_math`, ported from `bdpinf`.
+- `SimulatedTree.birth_rate_function` / `death_rate_function`: the rates of a
+  linear-rate tree (its scalar `birth_rate` / `death_rate` are NaN).
+- `scripts/bench_arley_comparison.py` and `benchmarks/arley_comparison.qmd`:
+  contour against splitting on Arley processes (`lambda = 1`, `mu(t) = m t`)
+  whose slopes match the constant-rate benchmark cells.
+- `scripts/bench_method_comparison_local.sh` takes `SCRIPT=` to run either
+  benchmark.
+- `bdsurv.count_draws`: a context manager that counts the random numbers the
+  conditioned simulators draw (by role and kind), plus events, clones, records
+  copied, attempts, contour steps and spine resets. Counted runs give identical
+  trees. `scripts/count_draws.py` runs it over the benchmark cells with the
+  benchmark seeds.
+- `bench_arley_comparison.py --grid` and `scripts/bench_arley_grid.slurm`: every matched
+  slope over the whole `T` grid. `benchmarks/arley_comparison.qmd` gains two tabbed
+  sections from it, cost per tree over time by death-rate slope (with a graph of the birth
+  and death rates over time in each tab) and over slope by time; charts in
+  `scripts/arley_charts.py`.
+- `scripts/bench_arley_comparison.slurm` and `scripts/count_draws.slurm`: SLURM array
+  jobs (with a `resubmit` mode that re-runs only the tasks without output) for the
+  Arley benchmark and the draw counts.
+
+### Changed
+
+- Speed-ups that leave every seeded result unchanged: `numpy.isclose` replaced by
+  an inline comparison in the contour and trace code; splitting particles share
+  immutable record dicts (copy-on-write), so cloning is one shallow copy; scalar
+  hazard inversion in pure Python. Splitting runs 3.6-5x and the linear contour
+  about 15x faster at the Arley cells measured.
+
+## [0.3.0] - 2026-11-02
+
+### Added
+
 - `compute_level_replicates`: per-level replicate counts `R_i`, the smallest
   integer `>= 2` keeping the expected number of live lines at least one.
 - `default_max_restarts`: number of attempts so at least one survives with

@@ -1,23 +1,56 @@
 {
   "lambda": 1.0,
   "max_expected_population": 100000.0,
-  "n_shards": 9,
+  "n_shards": 200,
   "hosts": [
-    "UML-HF7KG662JY"
+    "spartan-bm021.hpc.unimelb.edu.au",
+    "spartan-bm022.hpc.unimelb.edu.au",
+    "spartan-bm023.hpc.unimelb.edu.au",
+    "spartan-bm024.hpc.unimelb.edu.au",
+    "spartan-bm025.hpc.unimelb.edu.au",
+    "spartan-bm026.hpc.unimelb.edu.au",
+    "spartan-bm027.hpc.unimelb.edu.au",
+    "spartan-bm028.hpc.unimelb.edu.au",
+    "spartan-bm029.hpc.unimelb.edu.au",
+    "spartan-bm046.hpc.unimelb.edu.au",
+    "spartan-bm056.hpc.unimelb.edu.au",
+    "spartan-bm057.hpc.unimelb.edu.au",
+    "spartan-bm060.hpc.unimelb.edu.au",
+    "spartan-bm073.hpc.unimelb.edu.au",
+    "spartan-bm134.hpc.unimelb.edu.au",
+    "spartan-bm135.hpc.unimelb.edu.au",
+    "spartan-bm138.hpc.unimelb.edu.au",
+    "spartan-bm142.hpc.unimelb.edu.au",
+    "spartan-bm156.hpc.unimelb.edu.au",
+    "spartan-bm160.hpc.unimelb.edu.au",
+    "spartan-bm162.hpc.unimelb.edu.au",
+    "spartan-bm165.hpc.unimelb.edu.au",
+    "spartan-bm166.hpc.unimelb.edu.au",
+    "spartan-bm167.hpc.unimelb.edu.au",
+    "spartan-bm168.hpc.unimelb.edu.au",
+    "spartan-bm169.hpc.unimelb.edu.au",
+    "spartan-bm170.hpc.unimelb.edu.au",
+    "spartan-bm172.hpc.unimelb.edu.au",
+    "spartan-bm174.hpc.unimelb.edu.au",
+    "spartan-bm175.hpc.unimelb.edu.au",
+    "spartan-bm176.hpc.unimelb.edu.au",
+    "spartan-bm177.hpc.unimelb.edu.au",
+    "spartan-bm178.hpc.unimelb.edu.au",
+    "spartan-bm179.hpc.unimelb.edu.au"
   ],
   "processors": [
-    "arm"
+    "x86_64"
   ],
   "python": [
-    "3.13.12"
+    "3.13.14"
   ],
   "numpy": [
     "2.5.2"
   ],
   "bdsurv": [
-    "0.2.0"
+    "0.3.0"
   ],
   "git_sha": [
-    "e7496e7"
+    "48e5866"
   ]
 }

@@ -25,6 +25,20 @@ Compared head-to-head in
 | Contour process            | `simulate_birth_death_process_from_contour_process`    | Exact — the spine excursion is constructed to reach `T` |
 | Multilevel splitting       | `simulate_subcritical_survival_splitting`               | Adaptive-grid (RESTART) enrichment at level boundaries |
 
+Both have counterparts for rates that are piecewise linear in time
+(for example an Arley process, `mu(t) = m t`):
+
+| Method               | Function                                  | Config                  |
+| -------------------- | ----------------------------------------- | ----------------------- |
+| Contour process      | `simulate_linear_rate_contour_process`    | rates passed directly   |
+| Multilevel splitting | `simulate_linear_survival_splitting`      | `LinearSplittingConfig` |
+
+The rates are `PiecewiseConstant` or `PiecewiseLinear` objects with a common
+end time, which is the terminal time `T`.
+The jumps of the contour process and the survival probability that drives the
+splitting levels are computed from the rates by exact hazard inversion and
+quadrature (`docs/contour_process.md`, `docs/splitting.md`).
+
 Both return a `SimulatedTree`: a plain dataclass wrapping the individual-level
 records table plus the rates and terminal time used to generate it.
 
@@ -50,7 +64,9 @@ The runtime dependencies are `numpy`, `pandas` and `jax`.
 
 See `docs/` for the mathematical derivation of each method:
 `contour_process.md`, `splitting.md`, `lifespans.md` and `era_conditioning.md`.
-Wall-clock comparisons are in `benchmarks/simulator_speed.qmd`.
+Wall-clock comparisons are in `benchmarks/simulator_speed.qmd`,
+`benchmarks/method_comparison.qmd` and, for Arley processes matched to the
+constant-rate cases, `benchmarks/arley_comparison.qmd`.
 
 ## Installation
 
@@ -88,6 +104,18 @@ config = SplittingConfig(
 )
 result = simulate_subcritical_survival_splitting(config)
 print(len(result.conditioned_trajectories))
+```
+
+Rates that vary linearly in time (here birth 1, death `0.1 t`, over `[0, 20]`):
+
+```python
+import numpy as np
+
+from bdsurv import PiecewiseConstant, PiecewiseLinear, simulate_linear_rate_contour_process
+
+birth = PiecewiseConstant(np.array([1.0]), np.array([20.0]))
+death = PiecewiseLinear(np.array([0.0]), np.array([2.0]), np.array([20.0]))
+tree = simulate_linear_rate_contour_process(birth, death, random_seed=0)
 ```
 
 Forward simulation with rates that change at the epoch end times:

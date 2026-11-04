@@ -73,6 +73,32 @@ This document describes the contour-process based simulator in
   > written into the paper; whichever convention is intended, the code,
   > this document, and the comparison notebook's caveat text should agree.
 
+## Linear (time-varying) rates
+
+`simulate_linear_rate_contour_process` accepts piecewise-constant or
+piecewise-linear rates $\lambda(t)$, $\mu(t)$ on $[0, T]$.
+The construction and reconstruction are unchanged; only the jumps differ, and
+they now depend on the absolute time:
+
+- a downward jump from level $x$ goes to the $s < x$ with
+  $\int_s^x \lambda = E$ (the previous birth time), floored at 0;
+- an upward jump from $y$ goes to the $s > y$ with $\int_y^s \mu = E$ (a death
+  time), capped at $T$.
+
+Here $E \sim \mathrm{Exp}(1)$.
+Within a linear segment $\int_t^{t+s}(a + b u)\,du = a s + b s^2/2 = E$ has the
+stable root $s = 2E / (a + \sqrt{a^2 + 2 b E})$; when the segment's hazard is
+exhausted before $E$ is reached, the remainder carries into the neighbouring
+segment (`forward_hazard_time` / `backward_hazard_time`).
+The spine's reset-on-$T$ rule is the same.
+Constant rates recover the exponential jumps above.
+The death rate must not vanish identically, or the spine would reset forever.
+
+The result is a `SimulatedTree` whose scalar rates are NaN and whose
+`birth_rate_function` / `death_rate_function` hold the rates.
+`tests/test_linear_conditioned.py` checks the population at $T$ against
+rejection-sampled forward simulation.
+
 ## Reproducibility and RNG
 
 - All draws use `numpy.random.default_rng` style `Generator` objects.
