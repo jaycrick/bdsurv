@@ -53,7 +53,7 @@ ENV/
 .idea/
 
 # Benchmark shards and SLURM logs
-benchmarks/_shards/
+benchmarks/_shards*/
 logs/*
 !logs/.gitkeep
 
