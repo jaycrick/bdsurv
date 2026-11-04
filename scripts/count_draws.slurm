@@ -16,22 +16,23 @@
 # Usage (from the repo root, on an HPC login node):
 #   scripts/count_draws.slurm submit
 #   scripts/count_draws.slurm resubmit    # re-run only tasks with no output
-#   SHARDS=1000 REPLICATES=100 scripts/count_draws.slurm submit
+#   SHARDS=500 REPLICATES=100 scripts/count_draws.slurm submit
 #
 # Settings (environment variables, all tasks must agree):
-#   SHARDS        number of array tasks (default 500)
+#   SHARDS        number of array tasks (default 250)
 #   REPLICATES    counted runs per model, method and cell (default 50)
 #   MEM           memory per task (default 32G; splitting at mid-range mu needed
 #                 more than 4G in the timed benchmark, so this is generous)
 #
-# Sizing: about 59,600 runs at the defaults (36,200 constant-rate, 23,100 Arley
-# grid and 300 Arley matched, two methods, 50 replicates), about 60 CPU-hours in
-# total with the counting overhead (about 1.25x a timed run).  Runs are dealt out
-# heaviest first, round-robin, so each task gets at most about one of the slowest:
-# Arley splitting at m = 0.06, T = 100 (about 11 minutes each, more on a slow
-# node), so typical tasks take 10-20 minutes and the busiest an hour or two.  There
-# is no per-run time budget, so every requested run completes; the 12 hour limit is
-# far beyond what any task needs.  `resubmit` re-runs only tasks with no output.
+# Sizing: 59,600 runs at the defaults (36,200 constant-rate, 23,100 Arley grid and
+# 300 Arley matched, two methods, 50 replicates).  The Spartan run took 39 CPU-hours in
+# total with 500 tasks: the busiest took 1.1 hours and the median 1 minute.  Counted
+# runs are far slower than timed ones for the heaviest case (Arley splitting at
+# m = 0.06, T = 100 took up to 57 minutes a run), and 69 runs took over 5 minutes.
+# Runs are dealt out heaviest first, round-robin, so 250 tasks still give each
+# of those its own task; a 6 hour limit is about 5x the busiest task.  There is no
+# per-run time budget, so every requested run completes; `resubmit` re-runs only tasks
+# with no output.  Memory: 32G was enough.
 # Check the cluster's limit on array size before submitting.
 #
 # Logs land in repo-root logs/ (gitignored); submit from the repo root.
@@ -40,14 +41,14 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem-per-cpu=32G
-#SBATCH --time=12:00:00
-#SBATCH --array=0-499
+#SBATCH --time=06:00:00
+#SBATCH --array=0-249
 #SBATCH --output=logs/slurm-count-draws-%A_%a-%N.log
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 
-SHARDS="${SHARDS:-500}"
+SHARDS="${SHARDS:-250}"
 REPLICATES="${REPLICATES:-50}"
 MEM="${MEM:-32G}"
 SHARDS_DIR=benchmarks/_shards_draws

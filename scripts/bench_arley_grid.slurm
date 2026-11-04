@@ -18,21 +18,22 @@
 #   SHARDS        number of array tasks (default 400)
 #   REPLICATES    timed replicates per method and cell (default 100)
 #   BLOCK_SIZE    replicates per unit (default 5)
-#   MEM           memory per task (default 16G; the mu = 1 and 3 slopes needed more
-#                 than 4G in the matched run)
+#   MEM           memory per task (default 32G; the m = 0.06 blocks at T = 100 needed
+#                 more than 16G)
 #   UNIT_SECONDS  stop starting replicates in a block after this many seconds
-#                 (default 3600); blocks cut short are flagged in the units CSV
+#                 (default 7200); blocks cut short are flagged in the units CSV
 #
 # Sizing: all 231 (slope, T) cells are run (11 slopes, 0.06 to 0.4, by 21 times;
 # every one is under the MAX_LOG10_CUMULATIVE cap), so 231 x 2 methods x 20 blocks
 # = 9240 units at the defaults, about 23 per task, dealt out heaviest first.  The
-# previous run (a different slope set) took 44 CPU-hours.  The cost is dominated by
-# splitting at the smallest slopes at T = 100: about 540 s per run at m = 0.06,
-# 280 s at 0.07 and 120 s at 0.08, then 35-40 s from 0.1 to 0.2 and up to about
-# 150 s at m = 0.4 (extrapolated).  The last run's m = 0.06 blocks hit the 1800 s
-# budget with only 55-77 of 100 replicates done, so the budget is now 3600 s (a
-# block of 5 at 540 s needs 2700 s).  Expect about 60-70 CPU-hours in total and the
-# busiest task about 1-2 hours.
+# first Spartan run took 51 CPU-hours over the 397 tasks that finished; the busiest
+# took 1.7 hours and the median 1 minute.  The cost is dominated by splitting at
+# m = 0.06 and 0.07 at T = 60 to 100: a block of 5 took up to 4414 s, which went
+# over the old 3600 s budget (one block lost its last replicates), so the budget is
+# now 7200 s.  Memory is the catch: three tasks were OOM-killed at 16G on blocks of
+# m = 0.06, T = 100 (their peak was above 16.7 GB; the other blocks of that cell fit),
+# so the default is 32G.  If tasks are still killed, `resubmit` them with a larger
+# value, e.g. `MEM=64G scripts/bench_arley_grid.slurm resubmit`.
 # Timings are single-threaded, so one CPU per task.  Check the cluster's limit on
 # array size and running jobs before submitting.
 #
@@ -41,7 +42,7 @@
 #SBATCH --account=punim1793
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem-per-cpu=16G
+#SBATCH --mem-per-cpu=32G
 #SBATCH --time=06:00:00
 #SBATCH --array=0-399
 #SBATCH --output=logs/slurm-bench-arley-grid-%A_%a-%N.log
@@ -52,9 +53,9 @@ cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 SHARDS="${SHARDS:-400}"
 REPLICATES="${REPLICATES:-100}"
 BLOCK_SIZE="${BLOCK_SIZE:-5}"
-UNIT_SECONDS="${UNIT_SECONDS:-3600}"
+UNIT_SECONDS="${UNIT_SECONDS:-7200}"
 SHARDS_DIR=benchmarks/_shards_arley_grid
-MEM="${MEM:-16G}"
+MEM="${MEM:-32G}"
 
 if [[ "${1:-}" == "submit" || "${1:-}" == "resubmit" ]]; then
     mkdir -p logs

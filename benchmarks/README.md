@@ -37,8 +37,8 @@ or on a cluster with `scripts/bench_arley_comparison.slurm submit`.
 The two tabbed sections (cost per tree over time for each slope, with a graph of the birth
 and death rates, and over slope at each time) need every slope run over the whole `T`
 grid: `bench_arley_comparison.py --grid`, or on a cluster `scripts/bench_arley_grid.slurm submit`
-(400 tasks, 100 replicates, 3600 s block budget, `resubmit` to re-run failed tasks; about
-60-70 CPU-hours).
+(400 tasks, 100 replicates, 7200 s block budget, 32G; `resubmit` to re-run failed tasks, with
+`MEM=64G` if the m = 0.06 blocks at T = 100 are killed again; about 55-60 CPU-hours).
 The slopes are `GRID_SLOPES` (0.06, 0.07, 0.08, 0.1, 0.12, 0.14, 0.17, 0.2, 0.25, 0.3, 0.4).
 Each is paired with the constant rate `mu = 50 m` (3 to 20), which has the same mean
 death rate over `[0, 100]` and so nearly the same survival probability at `T = 100`
@@ -60,8 +60,8 @@ slope-by-time grid, and the cumulative-matched Arley cells (the `model` and `cel
 columns tell them apart), and feeds the random-draws sections of both pages.
 Counts are deterministic and counted runs give identical trees, so this reproduces
 the timed runs without a wrapper in them.
-On a cluster use `scripts/count_draws.slurm submit` (500 tasks, 50 replicates, 32G, 12 h:
-about 59,600 runs and 60 CPU-hours; then `resubmit` re-runs any task that wrote nothing),
+On a cluster use `scripts/count_draws.slurm submit` (250 tasks, 50 replicates, 32G, 6 h:
+59,600 runs and about 40 CPU-hours; then `resubmit` re-runs any task that wrote nothing),
 which merges into `benchmarks/data/draws.csv`.
 It does not depend on the timed jobs, so submit all three together.
 Locally, `--quick --replicates 2` makes a tiny draft; the full set is too big to run
@@ -132,10 +132,9 @@ one CPU each) and a merge job that depends on the whole array.
 Shards go to `benchmarks/_shards/` (git-ignored), logs to `logs/`, and the merged
 files to `benchmarks/data/`.
 Edit `--account` in the script for your allocation; it is set to `punim1793`.
-The last 100-replicate cluster run, on a 9 by 13 grid, took about 2.1 CPU-hours of
-splitting; the 18 by 21 grid up to `mu` = 20 should take about 18-20 CPU-hours (the worst
-cell, `mu` = 20 at `T` = 100, is about 100 s per splitting run), so 200 tasks finish in
-well under two hours each.
+The 100-replicate cluster run on the 18 by 21 grid up to `mu` = 20 took 17 CPU-hours (the
+worst cell, `mu` = 20 at `T` = 100, is about 100 s per splitting run), and the busiest of
+200 tasks took under half an hour, so the script now defaults to 100 tasks.
 Raise `REPLICATES` for tighter bands.
 Timings from different nodes scatter, so the notebook lists the hosts used and
 shows percentile bands.

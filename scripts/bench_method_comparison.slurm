@@ -14,24 +14,21 @@
 #   scripts/bench_method_comparison.slurm resubmit   # re-run only tasks with no output
 #
 # Settings (environment variables, all tasks must agree):
-#   SHARDS        number of array tasks (default 200)
+#   SHARDS        number of array tasks (default 100)
 #   REPLICATES    timed replicates per method and (mu, T) cell (default 100)
 #   BLOCK_SIZE    replicates per unit (default 5)
 #   UNIT_SECONDS  stop starting replicates in a block after this many seconds
 #                 (default 1800); blocks cut short are flagged in the units CSV
 #   MEM           memory per task (default 8G)
 #
-# Sizing, from the 100-replicate Spartan run on the earlier 9 x 13 grid (about 2.1
-# CPU-hours of splitting, 3 CPU-minutes of contour) extrapolated to the 18 x 21
-# grid (mu 0.6 to 20, T 1 to 100; 357 feasible cells): expect about 18-20 CPU-hours
-# at 100 replicates, nearly all of it splitting at large mu and long T.  The worst
-# cell is splitting at mu = 20, T = 100 at about 100 s per run (mu = 10 took 25 s),
-# so a block of 5 is about 500 s, inside the 1800 s unit budget; the contour
-# process is milliseconds except near-critical long horizons (about 1 s at
-# mu = 0.8, T = 46).  Units are ordered heaviest first and dealt out round-robin,
-# so tasks finish at similar times (the busiest task takes well under 2 hours).
-# Timings are single-threaded, so one CPU per task.  Check the cluster's limit on
-# array size and running jobs before submitting.
+# Sizing, from the 100-replicate Spartan run on the 18 x 21 grid (mu 0.6 to 20, T 1 to
+# 100; 357 feasible cells): 17 CPU-hours in total, nearly all of it splitting at large
+# mu and long T.  The worst cell is splitting at mu = 20, T = 100 (a block of 5 took
+# up to 957 s, inside the 1800 s unit budget).  With 200 shards the busiest task took
+# 0.46 hours and the median 1 minute, so 100 shards is plenty; the 2 hour limit is
+# about 4x the busiest task.  Units are ordered heaviest first and dealt out
+# round-robin.  Memory: 8G was enough.  Timings are single-threaded, so one CPU per
+# task.  Check the cluster's limit on array size and running jobs before submitting.
 #
 # Logs land in repo-root logs/ (gitignored); submit from the repo root.
 #SBATCH --job-name=bench-method-comparison
@@ -39,14 +36,14 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem-per-cpu=8G
-#SBATCH --time=06:00:00
-#SBATCH --array=0-199
+#SBATCH --time=02:00:00
+#SBATCH --array=0-99
 #SBATCH --output=logs/slurm-bench-method-comparison-%A_%a-%N.log
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 
-SHARDS="${SHARDS:-200}"
+SHARDS="${SHARDS:-100}"
 REPLICATES="${REPLICATES:-100}"
 BLOCK_SIZE="${BLOCK_SIZE:-5}"
 UNIT_SECONDS="${UNIT_SECONDS:-1800}"

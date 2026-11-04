@@ -10,7 +10,7 @@
 #
 # Usage (from the repo root, on an HPC login node):
 #   scripts/bench_arley_comparison.slurm submit
-#   SHARDS=240 BLOCK_SIZE=5 scripts/bench_arley_comparison.slurm submit
+#   SHARDS=20 BLOCK_SIZE=5 scripts/bench_arley_comparison.slurm submit
 #   scripts/bench_arley_comparison.slurm resubmit
 #
 # `resubmit` keeps the shard files already written and re-runs only the array
@@ -18,7 +18,7 @@
 # the same SHARDS, REPLICATES and BLOCK_SIZE as the original `submit`.
 #
 # Settings (environment variables, all tasks must agree):
-#   SHARDS        number of array tasks (default 120)
+#   SHARDS        number of array tasks (default 40)
 #   REPLICATES    timed replicates per method and cell (default 100)
 #   BLOCK_SIZE    replicates per unit (default 5); smaller blocks lose less work
 #                 when the time budget cuts one short, and parallelise further
@@ -28,11 +28,11 @@
 #
 # Sizing: 3 cumulative-matched cells (mu = 0.6 at T = 20, 0.8 at T = 40, 1 at
 # T = 100), all under the size cap: 3 x 2 methods x (REPLICATES / BLOCK_SIZE) =
-# 120 units at the defaults.  Splitting costs about 0.8 s per run at (0.6, 20), a
-# few seconds at (0.8, 40) and 35 s at (1, 100) (m = 0.177); the contour process is
-# under a second.  Total about 1-2 CPU-hours.  Memory is the catch on the heavier
-# slopes: a single splitting run peaked at 0.8-1.9 GB locally, and earlier tasks
-# were OOM-killed at 4G, so the default is 16G; `resubmit` re-runs failed tasks.
+# 120 units at the defaults.  The Spartan run took 0.9 CPU-hours in total; the
+# longest block was 226 s (splitting at mu = 1, T = 100) and every block finished.
+# With 120 shards the busiest task took 4 minutes, so 40 shards and a 1 hour limit
+# are plenty.  Memory: a single splitting run peaked at 0.8-1.9 GB locally and earlier
+# tasks were OOM-killed at 4G, so the default stays 16G; `resubmit` re-runs failed tasks.
 # The survival-matched cells (mu = 1.2 to 10) of the earlier version now come from
 # the slope-by-time grid (scripts/bench_arley_grid.slurm).
 # Units are ordered heaviest first and dealt out round-robin, so tasks finish at
@@ -45,14 +45,14 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem-per-cpu=16G
-#SBATCH --time=02:00:00
-#SBATCH --array=0-119
+#SBATCH --time=01:00:00
+#SBATCH --array=0-39
 #SBATCH --output=logs/slurm-bench-arley-comparison-%A_%a-%N.log
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 
-SHARDS="${SHARDS:-120}"
+SHARDS="${SHARDS:-40}"
 REPLICATES="${REPLICATES:-100}"
 BLOCK_SIZE="${BLOCK_SIZE:-5}"
 UNIT_SECONDS="${UNIT_SECONDS:-1800}"
