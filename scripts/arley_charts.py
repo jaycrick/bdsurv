@@ -264,6 +264,14 @@ def diagnostic_chart(data: pd.DataFrame) -> alt.HConcatChart:
     return alt.hconcat(*panels)
 
 
+def _slope_term(slope: float) -> str:
+    """``t/k`` when the slope is ``1/k`` for an integer ``k``, else ``slope t``."""
+    k = round(1.0 / slope)
+    if k >= 2 and abs(slope * k - 1.0) < 1e-9:  # noqa: PLR2004
+        return f"t/{k}"
+    return f"{slope:.3g} t"
+
+
 def rate_chart(
     slope: float,
     *,
@@ -288,12 +296,12 @@ def rate_chart(
             "t": [0.0, t_max, 0.0, t_max],
             "rate": [1.0, 1.0, 0.0, slope * t_max],
             "series": ["birth rate λ = 1"] * 2
-            + [f"death rate μ(t) = {slope:.3g} t"] * 2,
+            + [f"death rate μ(t) = {_slope_term(slope)}"] * 2,
         }
     )
     domain = [
         "birth rate λ = 1",
-        f"death rate μ(t) = {slope:.3g} t",
+        f"death rate μ(t) = {_slope_term(slope)}",
     ]
     base = alt.Chart(lines).encode(
         x=alt.X(

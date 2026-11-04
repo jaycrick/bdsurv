@@ -4,7 +4,7 @@
 % horizontal line and the two children leave from its two ends.
 % Coordinates of B follow tree_contour.tex and those of B_Ex the bottom of exchanged_pair.tex.
 % Compile with: lualatex "\def\stage{k}\input{birth_exchange.tex}"   (k = 1..2)
-%   1 the unlabelled tree only        2 + the tree, its birth-exchanged tree and the arrow
+%   1 the unlabelled tree (left half)   2 the tree, its birth-exchanged tree and the arrow (right half)
 \documentclass[tikz,border=4pt]{standalone}
 \usepackage{xcolor}
 \usepackage{libertinus-otf}
@@ -27,8 +27,14 @@
 
 \begin{document}
 \begin{tikzpicture}[xscale=0.33, yscale=0.62, font=\fontsize{19pt}{23pt}\selectfont]
-  \fill[paper] (-3.5,-0.6) rectangle (51,17.5);
+  % Stage 1 is the left tree and stage 2 the right-hand column, each cropped to fill its half of the slide.
+  \ifnum\stage=1
+    \fill[paper] (-3.5,4.6) rectangle (23.5,12.8);
+  \else
+    \fill[paper] (23.5,-0.6) rectangle (51,17.5);
+  \fi
 
+  \ifnum\stage=1
   % ---- Left: the unlabelled tree, parent stems at the middle of each birth line ----------
   \begin{scope}[shift={(0,5.2)}]
     \treeaxes{unlabelled}
@@ -44,7 +50,9 @@
     \draw[thick, treecol, dotted]
       (2,1) -- (11.625,1) (8.25,2) -- (15,2) (7,3) -- (9.5,3) (14,4) -- (16,4);
   \end{scope}
+  \fi
 
+  \ifnum\stage=2
   % ---- Right, top: the tree B -------------------------------------------------------
   \begin{scope}[shift={(27,9.9)}, opacity=\rop]
     \treeaxes{$\mathcal{B}$}
@@ -68,5 +76,6 @@
     \draw[<->, very thick] (38,7.9) -- (38,9.4);
     \node[anchor=west] at (38.7,8.65) {birth-exchanged};
   \end{scope}
+  \fi
 \end{tikzpicture}
 \end{document}
