@@ -205,7 +205,11 @@ Point
 
 ## Parent--child relationships can be exchanged
 
-![](figures/birth_exchange_1.svg){.nostretch fig-alt="An unlabelled tree and its two labellings, linked by the birth exchange" width="960" style="max-height: none; max-width: none; margin: 0 auto; display: block;"}
+::: {.r-stack}
+![](figures/birth_exchange_1.svg){.nostretch fig-alt="An unlabelled tree" width="960" style="max-height: none; max-width: none; margin: 0;"}
+
+![](figures/birth_exchange_2.svg){.nostretch .fragment fig-alt="The unlabelled tree and its two labellings, linked by the birth exchange" width="960" style="max-height: none; max-width: none; margin: 0;"}
+:::
 
 ::: notes
 - Forget which branch at each birth is the mother and which the daughter: the unlabelled tree.
