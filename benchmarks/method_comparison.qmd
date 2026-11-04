@@ -325,21 +325,7 @@ if not HAVE_DRAWS:
 else:
     draws = pd.read_csv(DRAWS)
     draws = draws[draws["model"] == "constant"]
-    draws = draws.assign(
-        per_kept=np.where(
-            draws["n_trees"] > 0, draws["draws_total"] / draws["n_trees"], np.nan
-        )
-    )
-    contour_d = draws[draws["method"] == "contour"]
-    split_d = draws[draws["method"] == "splitting"]
-    draw_curves = pd.concat(
-        [
-            charts.band(contour_d, "draws_total", LABEL_CONTOUR),
-            charts.band(split_d, "draws_total", LABEL_RUN),
-            charts.band(split_d, "per_kept", LABEL_KEPT),
-        ],
-        ignore_index=True,
-    )
+    draw_curves = charts.curves_from_draws(draws)
     draw_mus = sorted(draw_curves["mu"].unique())
     draw_ts = sorted(draw_curves["T"].unique())
 

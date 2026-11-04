@@ -84,6 +84,29 @@ def curves_from_rows(rows: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def curves_from_draws(rows: pd.DataFrame) -> pd.DataFrame:
+    """Mean draws per tree with a 95% interval, one block per method label.
+
+    ``rows`` are the constant-rate rows of ``draws.csv``.
+    Splitting is charged per set of trees (the whole run) and per kept tree.
+    """
+    rows = rows.assign(
+        per_kept=np.where(
+            rows["n_trees"] > 0, rows["draws_total"] / rows["n_trees"], np.nan
+        )
+    )
+    contour_rows = rows[rows["method"] == "contour"]
+    split_rows = rows[rows["method"] == "splitting"]
+    return pd.concat(
+        [
+            band(contour_rows, "draws_total", LABEL_CONTOUR),
+            band(split_rows, "draws_total", LABEL_RUN),
+            band(split_rows, "per_kept", LABEL_KEPT),
+        ],
+        ignore_index=True,
+    )
+
+
 def x_by_t(ts: list[float]) -> alt.X:
     return alt.X(
         "T:Q",
@@ -112,13 +135,19 @@ def cost_chart(
     methods: list[str] | None = None,
     show_band: bool = True,
     statistic: str = "median",
+    measure: str = "seconds",
     mark_critical: bool = False,
     legend_font_size: int = 14,
     width: int = 900,
     height: int = 380,
 ) -> alt.Chart:
     y_scale = alt.Scale(type="log") if log_y else alt.Scale(zero=True)
-    unit = "mean sec per tree" if statistic == "mean" else "seconds per tree"
+    if measure == "draws":
+        unit = f"{statistic} random draws per tree"
+        short = "draws"
+    else:
+        unit = "mean sec per tree" if statistic == "mean" else "seconds per tree"
+        short = "s"
     y_title = f"{unit} (log scale)" if log_y else unit
     # The median gets the 10th-90th percentile band, the mean a 95% interval.
     lo, hi, band_name = (
@@ -135,7 +164,7 @@ def cost_chart(
     tooltip = [
         "method",
         alt.Tooltip(x.shorthand, format="g"),
-        alt.Tooltip(f"{statistic}:Q", format=".3g", title=f"{statistic} s"),
+        alt.Tooltip(f"{statistic}:Q", format=".3g", title=f"{statistic} {short}"),
         alt.Tooltip(f"{lo}:Q", format=".3g", title=f"{band_name or '10th pct'} low"),
         alt.Tooltip(f"{hi}:Q", format=".3g", title=f"{band_name or '90th pct'} high"),
         "replicates",
