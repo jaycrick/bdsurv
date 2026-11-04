@@ -18,12 +18,23 @@ from __future__ import annotations
 
 import math
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+from bdsurv import _linear_math
+from bdsurv._numerics import close
+from bdsurv._rng_counter import bump, make_rng
+from bdsurv.linear_rates import (
+    ConstantRateLike,
+    LinearRateLike,
+    _as_linear,  # pyright: ignore[reportPrivateUsage]
+    _next_event_offset,  # pyright: ignore[reportPrivateUsage]
+    _segments,  # pyright: ignore[reportPrivateUsage]
+)
 from bdsurv.tree import SimulatedTree
 
 MIN_LEVEL_TIMES = 2
@@ -100,6 +111,37 @@ class SplittingConfig:
 
 
 @dataclass(frozen=True)
+class LinearSplittingConfig:
+    """Configuration for multilevel splitting with time-varying linear rates.
+
+    The fields are those of :class:`SplittingConfig`, except that the rates
+    are piecewise constant or piecewise linear in time over ``[0, T]`` and the
+    terminal time ``T`` is their common end time (``terminal_time``).
+
+    Parameters
+    ----------
+    birth_rate, death_rate : ConstantRateLike | LinearRateLike
+        Per-individual rates with a common end time.
+
+    """
+
+    birth_rate: ConstantRateLike | LinearRateLike
+    death_rate: ConstantRateLike | LinearRateLike
+    n_particles: int
+    level_times: list[float] | None = None
+    n_levels: int | None = None
+    random_seed: int | None = None
+    n_conditioned_trajectories: int | None = None
+    replicates: list[int] | None = None
+    max_restarts: int | None = None
+
+    @property
+    def terminal_time(self) -> float:
+        """The common end time of the rates."""
+        return float(np.atleast_1d(self.birth_rate.epoch_end_times)[-1])
+
+
+@dataclass(frozen=True)
 class LevelDiagnostic:
     """Per-level diagnostics for splitting evolution.
 
@@ -155,7 +197,7 @@ class SplittingSimulationResult:
 
     Parameters
     ----------
-    config : SplittingConfig
+    config : SplittingConfig | LinearSplittingConfig
         The configuration used to run the simulation.
     level_times : np.ndarray
         Array of level boundary times including time 0 and terminal time.
@@ -182,7 +224,7 @@ class SplittingSimulationResult:
 
     """
 
-    config: SplittingConfig
+    config: SplittingConfig | LinearSplittingConfig
     level_times: np.ndarray
     level_diagnostics: list[LevelDiagnostic]
     level_mean_populations: np.ndarray
@@ -288,7 +330,7 @@ def _make_child_rng(
     seed_rng: np.random.Generator,
 ) -> np.random.Generator:
     child_seed = int(seed_rng.integers(0, 2**31 - 1))
-    return np.random.default_rng(child_seed)
+    return make_rng(child_seed, "dynamics")
 
 
 def _log_survival_probability(
@@ -381,23 +423,32 @@ def select_level_times_for_band(
         ``_MAX_GRID_POINTS`` points.
 
     """
+    return _select_level_times(
+        log_pr=lambda t: _log_survival_probability(
+            birth_rate=birth_rate, death_rate=death_rate, time=t
+        ),
+        terminal_time=terminal_time,
+        n_levels=n_levels,
+        initial_level_times=initial_level_times,
+    )
+
+
+def _select_level_times(
+    *,
+    log_pr: Callable[[float], float],
+    terminal_time: float,
+    n_levels: int | None,
+    initial_level_times: list[float] | np.ndarray | None,
+) -> np.ndarray:
+    """Implement :func:`select_level_times_for_band` for any ``log Pr(t)``."""
     if n_levels is None and initial_level_times is None:
-        n_levels = _initial_level_count(
-            _log_survival_probability(
-                birth_rate=birth_rate, death_rate=death_rate, time=terminal_time
-            )
-        )
+        n_levels = _initial_level_count(log_pr(terminal_time))
     grid = _build_level_times(
         terminal_time=terminal_time,
         level_times=None if initial_level_times is None else list(initial_level_times),
         n_levels=n_levels,
     )
     times = [float(t) for t in grid]
-
-    def log_pr(t: float) -> float:
-        return _log_survival_probability(
-            birth_rate=birth_rate, death_rate=death_rate, time=t
-        )
 
     # --- Refine: bisect intervals whose ratio is too small ---
     log_prs = [log_pr(t) for t in times]
@@ -472,14 +523,25 @@ def compute_level_replicates(
         band).
 
     """
+    return _level_replicates(
+        log_pr=lambda t: _log_survival_probability(
+            birth_rate=birth_rate, death_rate=death_rate, time=t
+        ),
+        level_times=level_times,
+    )
+
+
+def _level_replicates(
+    *,
+    log_pr: Callable[[float], float],
+    level_times: list[float] | np.ndarray,
+) -> np.ndarray:
+    """Implement :func:`compute_level_replicates` for any ``log Pr(t)``."""
     times = np.asarray(level_times, dtype=np.float64)
     replicates = np.zeros(times.size - 1, dtype=np.int64)
     log_cumulative = 0.0
     for i in range(1, times.size):
-        log_pr = _log_survival_probability(
-            birth_rate=birth_rate, death_rate=death_rate, time=float(times[i])
-        )
-        needed = -(log_pr + log_cumulative)
+        needed = -(log_pr(float(times[i])) + log_cumulative)
         if needed > _MAX_LOG_REPLICATES:
             msg = f"Replicate count for interval {i} is too large; refine level_times."
             raise ValueError(msg)
@@ -536,17 +598,30 @@ def default_max_restarts(
         Maximum number of attempts.
 
     """
+    return _max_restarts(
+        log_pr=lambda t: _log_survival_probability(
+            birth_rate=birth_rate, death_rate=death_rate, time=t
+        ),
+        level_times=level_times,
+        replicates=replicates,
+        target_success=target_success,
+    )
+
+
+def _max_restarts(
+    *,
+    log_pr: Callable[[float], float],
+    level_times: list[float] | np.ndarray,
+    replicates: list[int] | np.ndarray,
+    target_success: float,
+) -> int:
+    """Implement :func:`default_max_restarts` for any ``log Pr(t)``."""
     if not 0.0 < target_success < 1.0:
         msg = "target_success must lie strictly between 0 and 1"
         raise ValueError(msg)
     times = np.asarray(level_times, dtype=np.float64)
     reps = np.asarray(replicates, dtype=np.int64)
-    log_prs = [
-        _log_survival_probability(
-            birth_rate=birth_rate, death_rate=death_rate, time=float(t)
-        )
-        for t in times
-    ]
+    log_prs = [log_pr(float(t)) for t in times]
     failure = 0.0
     for i in range(reps.size, 0, -1):
         ratio = math.exp(log_prs[i] - log_prs[i - 1])
@@ -591,7 +666,7 @@ def _append_trace_point(
     if time_point < state.trace_times[-1]:
         msg = "time_point must be monotone in particle trace"
         raise RuntimeError(msg)
-    if np.isclose(time_point, state.trace_times[-1]):
+    if close(time_point, state.trace_times[-1]):
         state.trace_populations[-1] = len(state.alive_ids)
         return
     state.trace_times.append(time_point)
@@ -627,32 +702,93 @@ def _simulate_to_level(
             return
 
         state.current_time = event_time
-        if state.rng.uniform() < birth_probability:
-            child_id = state.next_individual_id
-            state.next_individual_id += 1
-            # Insert at a random position >= 1 so index-0 lineage is never
-            # displaced — matching a Gillespie birth-death simulator's
-            # convention. Parent is the left neighbour at insert_idx - 1.
-            if len(state.alive_ids) == 1:
-                state.alive_ids.append(child_id)
-                parent_id = state.alive_ids[0]
-            else:
-                insert_idx = int(state.rng.integers(1, len(state.alive_ids) + 1))
-                state.alive_ids.insert(insert_idx, child_id)
-                parent_id = state.alive_ids[insert_idx - 1]
-            state.records[child_id] = {
-                "individual_id": child_id,
-                "parent_id": parent_id,
-                "creation_time": event_time,
-                "death_time": None,
-                "is_spine": False,
-            }
-        else:
-            death_idx = int(state.rng.integers(0, len(state.alive_ids)))
-            dead_id = state.alive_ids.pop(death_idx)
-            state.records[dead_id]["death_time"] = event_time
+        is_birth = state.rng.uniform() < birth_probability
+        _apply_event(state, event_time=event_time, is_birth=is_birth)
 
-        _append_trace_point(state=state, time_point=event_time)
+
+def _apply_event(state: _ParticleState, *, event_time: float, is_birth: bool) -> None:
+    """Apply a birth or death at ``event_time`` to a uniformly chosen individual."""
+    bump("events")
+    if is_birth:
+        child_id = state.next_individual_id
+        state.next_individual_id += 1
+        # Insert at a random position >= 1 so index-0 lineage is never
+        # displaced — matching a Gillespie birth-death simulator's
+        # convention. Parent is the left neighbour at insert_idx - 1.
+        if len(state.alive_ids) == 1:
+            state.alive_ids.append(child_id)
+            parent_id = state.alive_ids[0]
+        else:
+            insert_idx = int(state.rng.integers(1, len(state.alive_ids) + 1))
+            state.alive_ids.insert(insert_idx, child_id)
+            parent_id = state.alive_ids[insert_idx - 1]
+        state.records[child_id] = {
+            "individual_id": child_id,
+            "parent_id": parent_id,
+            "creation_time": event_time,
+            "death_time": None,
+            "is_spine": False,
+        }
+    else:
+        death_idx = int(state.rng.integers(0, len(state.alive_ids)))
+        dead_id = state.alive_ids.pop(death_idx)
+        # Replace rather than mutate: clones share record dicts (copy-on-write).
+        state.records[dead_id] = {**state.records[dead_id], "death_time": event_time}
+
+    _append_trace_point(state=state, time_point=event_time)
+
+
+def _simulate_to_level_linear(
+    *,
+    state: _ParticleState,
+    segments: list[tuple[float, float, float, float, float, float]],
+    target_time: float,
+) -> None:
+    """Advance a particle to ``target_time`` under linear-in-time rates.
+
+    ``segments`` are ``(start, end, birth_0, birth_slope, death_0, death_slope)``
+    as built by ``bdsurv.linear_rates._segments``.  Within a segment the next
+    event time inverts the cumulative total hazard; an event past the segment
+    end is discarded and redrawn from the boundary, which is exact.
+    """
+    if target_time < state.current_time:
+        msg = "target_time cannot be less than current_time"
+        raise ValueError(msg)
+
+    for start, end, b0, b1, d0, d1 in segments:
+        if end <= state.current_time:
+            continue
+        stop = min(end, target_time)
+        while state.current_time < stop:
+            n = len(state.alive_ids)
+            if n == 0:
+                state.current_time = target_time
+                _append_trace_point(state=state, time_point=target_time)
+                return
+            local = state.current_time - start
+            lam = b0 + b1 * local
+            mu = d0 + d1 * local
+            offset = _next_event_offset(
+                n * (lam + mu), n * (b1 + d1), float(state.rng.exponential())
+            )
+            event_time = state.current_time + offset
+            if event_time >= stop:
+                state.current_time = stop
+                break
+            state.current_time = event_time
+            local = event_time - start
+            lam = b0 + b1 * local
+            mu = d0 + d1 * local
+            _apply_event(
+                state,
+                event_time=event_time,
+                is_birth=state.rng.uniform() * (lam + mu) < lam,
+            )
+        if stop >= target_time:
+            break
+
+    state.current_time = target_time
+    _append_trace_point(state=state, time_point=target_time)
 
 
 def _clone_particle(
@@ -661,12 +797,14 @@ def _clone_particle(
     particle_id: int,
     seed_rng: np.random.Generator,
 ) -> _ParticleState:
+    bump("clones")
+    bump("records_copied", len(donor.records))
     return _ParticleState(
         particle_id=particle_id,
         current_time=float(donor.current_time),
         next_individual_id=int(donor.next_individual_id),
         alive_ids=donor.alive_ids.copy(),
-        records={key: value.copy() for key, value in donor.records.items()},
+        records=donor.records.copy(),  # record dicts are never mutated, so share them
         trace_times=donor.trace_times.copy(),
         trace_populations=donor.trace_populations.copy(),
         rng=_make_child_rng(seed_rng=seed_rng),
@@ -679,6 +817,8 @@ def _particle_to_tree(
     terminal_time: float,
     birth_rate: float,
     death_rate: float,
+    birth_rate_function: ConstantRateLike | LinearRateLike | None = None,
+    death_rate_function: ConstantRateLike | LinearRateLike | None = None,
 ) -> SimulatedTree:
     records_df = pd.DataFrame(state.records.values())
     if records_df.empty:
@@ -715,7 +855,19 @@ def _particle_to_tree(
         birth_rate=float(birth_rate),
         death_rate=float(death_rate),
         terminal_time=float(terminal_time),
+        birth_rate_function=birth_rate_function,
+        death_rate_function=death_rate_function,
     )
+
+
+@dataclass(frozen=True)
+class _Dynamics:
+    """What distinguishes constant-rate from linear-rate splitting."""
+
+    terminal_time: float
+    log_pr: Callable[[float], float]
+    evolve: Callable[[_ParticleState, float], None]
+    tree_rates: dict[str, Any]
 
 
 def _build_conditioned_trajectories(
@@ -723,6 +875,7 @@ def _build_conditioned_trajectories(
     particles: list[_ParticleState],
     config: Any,
     seed_rng: np.random.Generator,
+    dynamics: _Dynamics,
 ) -> list[ConditionedTrajectory]:
     survivors = [particle for particle in particles if len(particle.alive_ids) > 0]
     if not survivors:
@@ -741,9 +894,8 @@ def _build_conditioned_trajectories(
         particle = survivors[int(raw_idx)]
         process = _particle_to_tree(
             state=particle,
-            terminal_time=float(config.terminal_time),
-            birth_rate=float(config.birth_rate),
-            death_rate=float(config.death_rate),
+            terminal_time=dynamics.terminal_time,
+            **dynamics.tree_rates,
         )
         trajectories.append(
             ConditionedTrajectory(
@@ -840,10 +992,11 @@ class _AttemptOutcome:
 
 def _run_attempt(
     *,
-    config: SplittingConfig,
+    config: SplittingConfig | LinearSplittingConfig,
     levels: np.ndarray,
     replicates: np.ndarray,
     seed_rng: np.random.Generator,
+    dynamics: _Dynamics,
 ) -> _AttemptOutcome:
     """Run one pass of multilevel splitting from time 0 to the terminal time."""
     n_particles_cap = int(config.n_particles)
@@ -860,14 +1013,10 @@ def _run_attempt(
     for level_index in range(1, len(levels)):
         target_time = float(levels[level_index])
         n_entering = len(particles)
+        bump("particle_steps", n_entering)
 
         for particle in particles:
-            _simulate_to_level(
-                state=particle,
-                birth_rate=float(config.birth_rate),
-                death_rate=float(config.death_rate),
-                target_time=target_time,
-            )
+            dynamics.evolve(particle, target_time)
 
         populations_at_level = np.asarray(
             [len(particle.alive_ids) for particle in particles],
@@ -915,7 +1064,8 @@ def _run_attempt(
 
 
 def _resolve_levels_and_replicates(
-    config: SplittingConfig,
+    config: SplittingConfig | LinearSplittingConfig,
+    dynamics: _Dynamics,
 ) -> tuple[np.ndarray, np.ndarray, bool]:
     """Return ``(levels, replicates, direct)``.
 
@@ -923,9 +1073,7 @@ def _resolve_levels_and_replicates(
     grid is just ``[0, T]`` with one replicate, so each attempt is a plain
     forward simulation that is kept if it survives.
     """
-    birth_rate = float(config.birth_rate)
-    death_rate = float(config.death_rate)
-    terminal_time = float(config.terminal_time)
+    terminal_time = dynamics.terminal_time
 
     if config.replicates is not None:
         if config.level_times is None:
@@ -948,9 +1096,7 @@ def _resolve_levels_and_replicates(
             raise ValueError(msg)
         return levels, replicates, False
 
-    log_pr_terminal = _log_survival_probability(
-        birth_rate=birth_rate, death_rate=death_rate, time=terminal_time
-    )
+    log_pr_terminal = dynamics.log_pr(terminal_time)
     if log_pr_terminal > _LOG_BAND_UPPER:
         return (
             np.array([0.0, terminal_time], dtype=np.float64),
@@ -958,16 +1104,13 @@ def _resolve_levels_and_replicates(
             True,
         )
 
-    levels = select_level_times_for_band(
-        birth_rate=birth_rate,
-        death_rate=death_rate,
+    levels = _select_level_times(
+        log_pr=dynamics.log_pr,
         terminal_time=terminal_time,
         n_levels=config.n_levels,
         initial_level_times=config.level_times,
     )
-    replicates = compute_level_replicates(
-        birth_rate=birth_rate, death_rate=death_rate, level_times=levels
-    )
+    replicates = _level_replicates(log_pr=dynamics.log_pr, level_times=levels)
     return levels, replicates, False
 
 
@@ -1057,19 +1200,103 @@ def simulate_subcritical_survival_splitting(
         terminal_time=float(config.terminal_time),
         n_particles=int(config.n_particles),
     )
+    birth_rate, death_rate = float(config.birth_rate), float(config.death_rate)
+    dynamics = _Dynamics(
+        terminal_time=float(config.terminal_time),
+        log_pr=lambda t: _log_survival_probability(
+            birth_rate=birth_rate, death_rate=death_rate, time=t
+        ),
+        evolve=lambda state, target: _simulate_to_level(
+            state=state,
+            birth_rate=birth_rate,
+            death_rate=death_rate,
+            target_time=target,
+        ),
+        tree_rates={"birth_rate": birth_rate, "death_rate": death_rate},
+    )
+    return _run_splitting(config, dynamics)
 
-    levels, replicates, direct = _resolve_levels_and_replicates(config)
+
+def simulate_linear_survival_splitting(
+    config: LinearSplittingConfig,
+) -> SplittingSimulationResult:
+    r"""Sample survival-conditioned trajectories by splitting, with linear rates.
+
+    The algorithm is that of :func:`simulate_subcritical_survival_splitting`,
+    with two changes for rates that vary in time.
+
+    - **Survival probability.** A single individual alive at 0 has
+      $\Pr(Z_t > 0) = 1 / (1 + I(t))$ with
+      $I(t) = \int_0^t \mu(s) e^{-\Gamma(s)} ds$ and
+      $\Gamma(s) = \int_0^s (\lambda - \mu)$, evaluated by panelled
+      Gauss-Legendre quadrature in log space.  It drives the level grid, the
+      replicate counts and the default restart cap.
+    - **Dynamics.** Each particle is evolved by exact event simulation: within
+      every linear segment the next event time inverts the cumulative total
+      hazard, and the event is a birth with probability
+      $\lambda(t) / (\lambda(t) + \mu(t))$.
+
+    Parameters
+    ----------
+    config : LinearSplittingConfig
+        Simulation parameters; ``terminal_time`` is the rates' end time.
+
+    Returns
+    -------
+    SplittingSimulationResult
+        As for the constant-rate version.  The trees carry NaN scalar rates
+        and the rates themselves in ``birth_rate_function`` and
+        ``death_rate_function``.
+
+    Raises
+    ------
+    ValueError
+        If the rates are invalid or differ in end time, ``n_particles < 1``,
+        ``max_restarts < 1``, or ``replicates`` is invalid or given without
+        ``level_times``.
+
+    """
+    birth = _linear_math.as_rate(config.birth_rate)
+    death = _linear_math.as_rate(config.death_rate)
+    if not np.isclose(birth.end_time, death.end_time):
+        msg = "birth and death rates must have the same end time"
+        raise ValueError(msg)
+    if config.n_particles <= 0:
+        msg = "n_particles must be positive"
+        raise ValueError(msg)
+    segments = _segments(_as_linear(config.birth_rate), _as_linear(config.death_rate))
+    dynamics = _Dynamics(
+        terminal_time=birth.end_time,
+        log_pr=lambda t: _linear_math.log_survival_probability(birth, death, t),
+        evolve=lambda state, target: _simulate_to_level_linear(
+            state=state, segments=segments, target_time=target
+        ),
+        tree_rates={
+            "birth_rate": math.nan,
+            "death_rate": math.nan,
+            "birth_rate_function": config.birth_rate,
+            "death_rate_function": config.death_rate,
+        },
+    )
+    return _run_splitting(config, dynamics)
+
+
+def _run_splitting(
+    config: SplittingConfig | LinearSplittingConfig, dynamics: _Dynamics
+) -> SplittingSimulationResult:
+    """Run levels, restarts and trajectory extraction for either dynamics."""
+    levels, replicates, direct = _resolve_levels_and_replicates(config, dynamics)
 
     max_restarts: int | None
     if config.max_restarts is None:
         max_restarts = (
             None
             if direct
-            else default_max_restarts(
-                birth_rate=float(config.birth_rate),
-                death_rate=float(config.death_rate),
+            else _max_restarts(
+                log_pr=dynamics.log_pr,
                 level_times=levels,
                 replicates=replicates,
+                target_success=DEFAULT_RESTART_SUCCESS_PROBABILITY,
             )
         )
     else:
@@ -1078,7 +1305,7 @@ def simulate_subcritical_survival_splitting(
             msg = f"max_restarts must be >= 1, got {config.max_restarts}."
             raise ValueError(msg)
 
-    seed_rng = np.random.default_rng(config.random_seed)
+    seed_rng = make_rng(config.random_seed, "seeding")
 
     n_attempts = 0
     outcome: _AttemptOutcome
@@ -1088,6 +1315,7 @@ def simulate_subcritical_survival_splitting(
             levels=levels,
             replicates=replicates,
             seed_rng=seed_rng,
+            dynamics=dynamics,
         )
         n_attempts += 1
         if outcome.particles or (
@@ -1095,6 +1323,7 @@ def simulate_subcritical_survival_splitting(
         ):
             break
 
+    bump("attempts", n_attempts)
     if not outcome.particles:
         warnings.warn(
             f"No particle survived to the terminal time in {n_attempts} "
@@ -1107,6 +1336,7 @@ def simulate_subcritical_survival_splitting(
         particles=outcome.particles,
         config=config,
         seed_rng=seed_rng,
+        dynamics=dynamics,
     )
 
     final_survivor_count = int(sum(len(p.alive_ids) > 0 for p in outcome.particles))

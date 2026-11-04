@@ -1,0 +1,43 @@
+{
+  "lambda": 1.0,
+  "n_shards": 120,
+  "hosts": [
+    "spartan-bm021.hpc.unimelb.edu.au",
+    "spartan-bm022.hpc.unimelb.edu.au",
+    "spartan-bm023.hpc.unimelb.edu.au",
+    "spartan-bm024.hpc.unimelb.edu.au",
+    "spartan-bm025.hpc.unimelb.edu.au",
+    "spartan-bm026.hpc.unimelb.edu.au",
+    "spartan-bm027.hpc.unimelb.edu.au",
+    "spartan-bm029.hpc.unimelb.edu.au",
+    "spartan-bm044.hpc.unimelb.edu.au",
+    "spartan-bm046.hpc.unimelb.edu.au",
+    "spartan-bm057.hpc.unimelb.edu.au",
+    "spartan-bm060.hpc.unimelb.edu.au",
+    "spartan-bm162.hpc.unimelb.edu.au",
+    "spartan-bm165.hpc.unimelb.edu.au",
+    "spartan-bm167.hpc.unimelb.edu.au",
+    "spartan-bm168.hpc.unimelb.edu.au",
+    "spartan-bm175.hpc.unimelb.edu.au",
+    "spartan-bm176.hpc.unimelb.edu.au",
+    "spartan-bm177.hpc.unimelb.edu.au",
+    "spartan-bm178.hpc.unimelb.edu.au",
+    "spartan-bm179.hpc.unimelb.edu.au"
+  ],
+  "processors": [
+    "x86_64"
+  ],
+  "python": [
+    "3.13.14"
+  ],
+  "numpy": [
+    "2.5.2"
+  ],
+  "bdsurv": [
+    "0.3.0"
+  ],
+  "git_sha": [
+    "48e5866",
+    "aa649a4"
+  ]
+}

@@ -9,14 +9,81 @@ derivation.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+from bdsurv import _linear_math
+from bdsurv._numerics import close
+from bdsurv._rng_counter import bump, make_rng
+from bdsurv.linear_rates import ConstantRateLike, LinearRateLike
 from bdsurv.tree import SimulatedTree
 
+_Step = Callable[[float, np.random.Generator], float]
+
 MIN_CONTOUR_PROCESS_LENGTH = 3
+
+
+def _generate_component(
+    *,
+    down_step: _Step,
+    up_step: _Step,
+    terminal_time: float,
+    rng: np.random.Generator,
+    reset_at_terminal: bool,
+) -> list[float]:
+    """Generate one contour excursion from ``T`` down to 0.
+
+    ``down_step(x, rng)`` returns the next (lower) level after a downward jump
+    from ``x``, floored at 0; ``up_step(y, rng)`` returns the next (higher)
+    level after an upward jump from ``y``, capped at ``terminal_time``.
+    With ``reset_at_terminal`` (the spine) an upward jump that reaches
+    ``terminal_time`` discards the excursion and restarts it from ``[T]``.
+    """
+    component = [float(terminal_time)]
+    steps = resets = 0
+    while True:
+        downward = down_step(component[-1], rng)
+        component.append(downward)
+        steps += 1
+        if close(downward, 0.0):
+            bump("contour_steps", steps)
+            bump("spine_resets", resets)
+            return component
+
+        upward = up_step(component[-1], rng)
+        if reset_at_terminal and close(upward, terminal_time):
+            component = [float(terminal_time)]
+            resets += 1
+            continue
+        component.append(upward)
+
+
+def _check_constant_inputs(
+    birth_rate: float, death_rate: float, terminal_time: float
+) -> None:
+    if birth_rate <= 0.0 or death_rate <= 0.0:
+        msg = "birth_rate and death_rate must be positive"
+        raise ValueError(msg)
+    if terminal_time <= 0.0:
+        msg = "terminal_time must be positive"
+        raise ValueError(msg)
+
+
+def _constant_steps(
+    birth_rate: float, death_rate: float, terminal_time: float
+) -> tuple[_Step, _Step]:
+    """Downward jumps are Exp(birth_rate); upward jumps Exp(death_rate)."""
+
+    def down(x: float, rng: np.random.Generator) -> float:
+        return max(x - float(rng.exponential(scale=1.0 / birth_rate)), 0.0)
+
+    def up(y: float, rng: np.random.Generator) -> float:
+        return min(y + float(rng.exponential(scale=1.0 / death_rate)), terminal_time)
+
+    return down, up
 
 
 def _generate_non_spine_component(
@@ -48,27 +115,15 @@ def _generate_non_spine_component(
         The non-spine contour list, e.g. ``[T, x1, y1, x2, ..., 0]``.
 
     """
-    if birth_rate <= 0.0 or death_rate <= 0.0:
-        msg = "birth_rate and death_rate must be positive"
-        raise ValueError(msg)
-    if terminal_time <= 0.0:
-        msg = "terminal_time must be positive"
-        raise ValueError(msg)
-
-    component = [float(terminal_time)]
-    while True:
-        x = float(component[-1])
-        downward = max(x - float(rng.exponential(scale=1.0 / birth_rate)), 0.0)
-        component.append(downward)
-        if np.isclose(downward, 0.0):
-            return component
-
-        y = float(component[-1])
-        upward = min(
-            y + float(rng.exponential(scale=1.0 / death_rate)),
-            float(terminal_time),
-        )
-        component.append(upward)
+    _check_constant_inputs(birth_rate, death_rate, terminal_time)
+    down, up = _constant_steps(birth_rate, death_rate, float(terminal_time))
+    return _generate_component(
+        down_step=down,
+        up_step=up,
+        terminal_time=float(terminal_time),
+        rng=rng,
+        reset_at_terminal=False,
+    )
 
 
 def _generate_spine_component(
@@ -94,30 +149,15 @@ def _generate_spine_component(
         The spine contour list, e.g. ``[T, x1, y1, x2, ..., 0]``.
 
     """
-    if birth_rate <= 0.0 or death_rate <= 0.0:
-        msg = "birth_rate and death_rate must be positive"
-        raise ValueError(msg)
-    if terminal_time <= 0.0:
-        msg = "terminal_time must be positive"
-        raise ValueError(msg)
-
-    component = [float(terminal_time)]
-    while True:
-        x = float(component[-1])
-        downward = max(x - float(rng.exponential(scale=1.0 / birth_rate)), 0.0)
-        component.append(downward)
-        if np.isclose(downward, 0.0):
-            return component
-
-        y = float(component[-1])
-        upward = min(
-            y + float(rng.exponential(scale=1.0 / death_rate)),
-            float(terminal_time),
-        )
-        if np.isclose(upward, terminal_time):
-            component = [float(terminal_time)]
-            continue
-        component.append(upward)
+    _check_constant_inputs(birth_rate, death_rate, terminal_time)
+    down, up = _constant_steps(birth_rate, death_rate, float(terminal_time))
+    return _generate_component(
+        down_step=down,
+        up_step=up,
+        terminal_time=float(terminal_time),
+        rng=rng,
+        reset_at_terminal=True,
+    )
 
 
 def _build_contour_process_list(
@@ -169,10 +209,10 @@ def _validate_contour_process_list(contour_process_list: list[float]) -> None:
     if len(contour_process_list) % 2 == 0:
         msg = "contour_process_list must have odd length"
         raise ValueError(msg)
-    if not np.isclose(contour_process_list[0], 0.0):
+    if not close(contour_process_list[0], 0.0):
         msg = "contour_process_list must begin with 0"
         raise ValueError(msg)
-    if not np.isclose(contour_process_list[-1], 0.0):
+    if not close(contour_process_list[-1], 0.0):
         msg = "contour_process_list must end with 0"
         raise ValueError(msg)
 
@@ -201,6 +241,8 @@ def _contour_process_list_to_tree(
     *,
     birth_rate: float,
     death_rate: float,
+    birth_rate_function: ConstantRateLike | LinearRateLike | None = None,
+    death_rate_function: ConstantRateLike | LinearRateLike | None = None,
 ) -> SimulatedTree:
     """Reconstruct a ``SimulatedTree`` from a validated contour list.
 
@@ -238,7 +280,7 @@ def _contour_process_list_to_tree(
         current_value = values[index]
         # Odd indices are death times for the current top-of-stack individual
         if index % 2 == 1:
-            if np.isclose(current_value, terminal_time):
+            if close(current_value, terminal_time):
                 # Individual that 'dies' at terminal time is considered alive
                 records[individual_number_stack[-1]]["death_time"] = float(
                     "nan",
@@ -297,7 +339,16 @@ def _contour_process_list_to_tree(
         birth_rate=float(birth_rate),
         death_rate=float(death_rate),
         terminal_time=terminal_time,
+        birth_rate_function=birth_rate_function,
+        death_rate_function=death_rate_function,
     )
+
+
+def _seeded_rng(random_seed: int | None) -> np.random.Generator:
+    if random_seed is None:
+        return make_rng(None, "contour")
+    base_seed_rng = make_rng(random_seed, "seeding")
+    return make_rng(int(base_seed_rng.integers(0, 2**31 - 1)), "contour")
 
 
 def simulate_birth_death_process_from_contour_process(
@@ -314,12 +365,7 @@ def simulate_birth_death_process_from_contour_process(
         msg = "terminal_time must be positive"
         raise ValueError(msg)
 
-    base_seed_rng = np.random.default_rng(random_seed)
-    rng = (
-        np.random.default_rng(int(base_seed_rng.integers(0, 2**31 - 1)))
-        if random_seed is not None
-        else np.random.default_rng()
-    )
+    rng = _seeded_rng(random_seed)
 
     spine_component = _generate_spine_component(
         birth_rate=float(birth_rate),
@@ -342,4 +388,91 @@ def simulate_birth_death_process_from_contour_process(
         contour_process_list,
         birth_rate=float(birth_rate),
         death_rate=float(death_rate),
+    )
+
+
+def simulate_linear_rate_contour_process(
+    birth_rate: ConstantRateLike | LinearRateLike,
+    death_rate: ConstantRateLike | LinearRateLike,
+    random_seed: int | None = None,
+) -> SimulatedTree:
+    r"""Simulate a survival-conditioned tree with time-varying linear rates.
+
+    The construction is that of
+    :func:`simulate_birth_death_process_from_contour_process`, with the
+    exponential jumps replaced by hazard inversion at the absolute time of the
+    jump.
+    A downward jump from level $x$ goes to the time $s < x$ at which
+    $\int_s^x \lambda = E$, and an upward jump from $y$ to the time $s > y$ at
+    which $\int_y^s \mu = E$, where $E \sim \mathrm{Exp}(1)$; each is solved
+    exactly as a quadratic within every linear segment.
+    Upward jumps are capped at $T$, and the spine excursion resets when one
+    reaches $T$, as in the constant-rate case.
+
+    Parameters
+    ----------
+    birth_rate, death_rate
+        Per-individual rates over ``[0, T]``, piecewise constant or piecewise
+        linear, non-negative, with a common end time $T$ (the terminal time).
+        The death rate must not be identically zero.
+    random_seed
+        Seed for reproducibility.
+
+    Returns
+    -------
+    SimulatedTree
+        ``birth_rate`` and ``death_rate`` are NaN; the rates are stored in
+        ``birth_rate_function`` and ``death_rate_function``.
+
+    Raises
+    ------
+    ValueError
+        If the rates are invalid, have different end times, or the death rate
+        is identically zero.
+
+    """
+    birth = _linear_math.as_rate(birth_rate)
+    death = _linear_math.as_rate(death_rate)
+    terminal_time = birth.end_time
+    if not np.isclose(terminal_time, death.end_time):
+        msg = "birth and death rates must have the same end time"
+        raise ValueError(msg)
+    if _linear_math.cumulative(death, terminal_time) <= 0.0:
+        msg = "death_rate must not be identically zero"
+        raise ValueError(msg)
+
+    def down(x: float, rng: np.random.Generator) -> float:
+        return _linear_math.backward_hazard_time(birth, x, float(rng.exponential()))
+
+    def up(y: float, rng: np.random.Generator) -> float:
+        return _linear_math.forward_hazard_time(
+            death, y, float(rng.exponential()), terminal_time
+        )
+
+    rng = _seeded_rng(random_seed)
+    spine_component = _generate_component(
+        down_step=down,
+        up_step=up,
+        terminal_time=terminal_time,
+        rng=rng,
+        reset_at_terminal=True,
+    )
+    non_spine_component = _generate_component(
+        down_step=down,
+        up_step=up,
+        terminal_time=terminal_time,
+        rng=rng,
+        reset_at_terminal=False,
+    )
+    contour_process_list = _build_contour_process_list(
+        spine_component=spine_component,
+        non_spine_component=non_spine_component,
+    )
+    _validate_contour_process_list(contour_process_list)
+    return _contour_process_list_to_tree(
+        contour_process_list,
+        birth_rate=float("nan"),
+        death_rate=float("nan"),
+        birth_rate_function=birth_rate,
+        death_rate_function=death_rate,
     )

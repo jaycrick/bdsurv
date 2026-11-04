@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+
+if TYPE_CHECKING:
+    from bdsurv.linear_rates import ConstantRateLike, LinearRateLike
 
 
 @dataclass(frozen=True)
@@ -25,6 +29,9 @@ class SimulatedTree:
         Per-individual death rate used to generate the tree.
     terminal_time : float
         The time horizon ``T`` the tree is conditioned to survive to.
+    birth_rate_function, death_rate_function : rate-like, optional
+        For trees simulated with time-varying (piecewise-linear) rates, the
+        rates used; ``birth_rate`` and ``death_rate`` are then NaN.
 
     """
 
@@ -32,6 +39,8 @@ class SimulatedTree:
     birth_rate: float
     death_rate: float
     terminal_time: float
+    birth_rate_function: ConstantRateLike | LinearRateLike | None = None
+    death_rate_function: ConstantRateLike | LinearRateLike | None = None
 
 
 @dataclass(frozen=True)
