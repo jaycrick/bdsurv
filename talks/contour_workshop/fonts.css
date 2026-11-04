@@ -27,3 +27,11 @@
   font-family: "STIX Two Math";
   src: url("fonts/STIXTwoMath-Regular.otf") format("opentype");
 }
+
+/* Stacked photos with captions on the first content slide. */
+.photo-stack { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.photo-stack p { margin: 0; }
+.photo-stack img { margin: 0; }
+.photo-row { display: flex; align-items: flex-end; gap: 14px; }
+.photo-caption { font-size: 0.5em; line-height: 1.3; }
+.photo-credit { font-size: 0.4em; opacity: 0.8; }

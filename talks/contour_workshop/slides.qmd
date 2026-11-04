@@ -22,7 +22,29 @@ execute:
 
 :::: {.columns}
 ::: {.column width="50%"}
-![](images/species_placeholder.svg){width="100%"}
+::: {.photo-stack}
+::: {.photo-row}
+![](images/frog.jpg){fig-alt="A Growling Grass Frog on a log" width="340px"}
+
+::: {.photo-caption}
+Growling Grass Frog\
+*Ranoidea raniformis*
+:::
+:::
+
+::: {.photo-row}
+![](images/parrot.jpg){fig-alt="An Orange-bellied Parrot perched on a dry twig" width="340px"}
+
+::: {.photo-caption}
+Orange-bellied Parrot\
+*Neophema chrysogaster*
+:::
+:::
+
+::: {.photo-credit}
+Photos: Ammresh
+:::
+:::
 :::
 
 ::: {.column width="50%"}
