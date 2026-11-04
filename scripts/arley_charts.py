@@ -98,16 +98,25 @@ def curves_from_draws(rows: pd.DataFrame) -> pd.DataFrame:
 def draws_chart(
     data: pd.DataFrame,
     x: alt.X,
-    title: str,
+    title: str | None = None,
     *,
     legend_font_size: int = 14,
     width: int = 900,
     height: int = 380,
 ) -> alt.LayerChart:
-    """Mean random numbers drawn per tree against ``x``, with a 95% interval band."""
-    y_title = "mean random numbers drawn per tree (log scale)"
+    """Mean random numbers drawn per tree against ``x``, with a 95% interval band.
+
+    Clicking a legend entry shows that method and fades the rest; shift-click
+    adds more and double-click resets.
+    """
+    y_title = "mean random draws per tree (log scale)"
     y_scale = alt.Scale(type="log")
     y = alt.Y("mean:Q", scale=y_scale, title=y_title)
+    selection = alt.selection_point(fields=["method"], bind="legend")
+
+    def fade(shown: float, hidden: float) -> alt.Opacity:
+        return alt.condition(selection, alt.value(shown), alt.value(hidden))
+
     tooltip = [
         "method",
         alt.Tooltip("slope:Q", format=".3~g", title="slope m"),
@@ -119,14 +128,21 @@ def draws_chart(
         "replicates",
     ]
     base = alt.Chart(data).encode(x=x, color=color_encoding(legend_font_size))
-    area = base.mark_area(opacity=0.15).encode(
-        y=alt.Y("ci_lo:Q", scale=y_scale, title=y_title), y2="ci_hi:Q"
+    area = base.mark_area().encode(
+        y=alt.Y("ci_lo:Q", scale=y_scale, title=y_title),
+        y2="ci_hi:Q",
+        opacity=fade(0.15, 0.02),
     )
-    line = base.mark_line(strokeWidth=3).encode(y=y)
-    points = base.mark_point(size=70, filled=True).encode(y=y, tooltip=tooltip)
-    return alt.layer(area, line, points).properties(
-        width=width, height=height, title=title
+    line = base.mark_line(strokeWidth=3).encode(y=y, opacity=fade(1.0, 0.08))
+    points = base.mark_point(size=70, filled=True).encode(
+        y=y, tooltip=tooltip, opacity=fade(1.0, 0.08)
     )
+    chart = (
+        alt.layer(area, line, points)
+        .add_params(selection)
+        .properties(width=width, height=height)
+    )
+    return chart.properties(title=title) if title else chart
 
 
 def diagnostics_from_rows(rows: pd.DataFrame) -> pd.DataFrame:
@@ -253,6 +269,10 @@ def rate_chart(
     *,
     t_max: float = 100.0,
     y_max: float = 3.0,
+    legend_font_size: int = 14,
+    annotation_font_size: int = 13,
+    t_ticks: list[float] | None = None,
+    rate_ticks: list[float] | None = None,
     width: int = 900,
     height: int = 260,
 ) -> alt.LayerChart:
@@ -280,19 +300,29 @@ def rate_chart(
             "t:Q",
             scale=alt.Scale(domain=[0, t_max], nice=False),
             title="time t",
-            axis=alt.Axis(format="g"),
+            axis=alt.Axis(format="g")
+            if t_ticks is None
+            else alt.Axis(values=t_ticks, format="d"),
         ),
         y=alt.Y(
             "rate:Q",
             scale=alt.Scale(domain=[0, y_max], nice=False),
             title="rate per individual",
+            axis=alt.Axis()
+            if rate_ticks is None
+            else alt.Axis(values=rate_ticks, format="d"),
         ),
     )
     series = base.mark_line(strokeWidth=3, clip=True).encode(
         color=alt.Color(
             "series:N",
             scale=alt.Scale(domain=domain, range=[BIRTH_COLOR, DEATH_COLOR]),
-            legend=alt.Legend(title=None, orient="bottom", labelFontSize=14),
+            legend=alt.Legend(
+                title=None,
+                orient="bottom",
+                labelFontSize=legend_font_size,
+                labelLimit=0,
+            ),
         ),
         tooltip=[
             "series",
@@ -313,7 +343,13 @@ def rate_chart(
         )
         layers.append(
             alt.Chart(marker)
-            .mark_text(align="left", dx=6, dy=-8, color="#555555", fontSize=13)
+            .mark_text(
+                align="left",
+                dx=6,
+                dy=-8,
+                color="#555555",
+                fontSize=annotation_font_size,
+            )
             .encode(x="t:Q", y=alt.value(14), text="label")
         )
     return alt.layer(*layers).properties(width=width, height=height)
