@@ -12,9 +12,9 @@
 \definecolor{paper}{HTML}{FAFAFA}
 \definecolor{treecol}{HTML}{D55E00}
 
-% Axes, the terminal level T and a caption, in the local coordinates of one tree.
+% The time axis, the terminal level T and a caption, in the local coordinates of one tree.
+% There is no s axis: only the vertical order of the births matters here.
 \newcommand{\treeaxes}[1]{%
-  \draw[->] (0,0) -- (22,0) node[right] {$s$};
   \draw[->] (0,0) -- (0,6) node[above] {$t$};
   \draw[dashed, gray] (0,5) -- (22,5);
   \node[left] at (0,5) {$T$};
@@ -22,11 +22,11 @@
   \node at (11,6.7) {#1};}
 
 \begin{document}
-\begin{tikzpicture}[xscale=0.30, yscale=0.42, font=\fontsize{19pt}{23pt}\selectfont]
-  \fill[paper] (-3.5,-1.6) rectangle (51,19.2);
+\begin{tikzpicture}[xscale=0.33, yscale=0.62, font=\fontsize{19pt}{23pt}\selectfont]
+  \fill[paper] (-3.5,-0.6) rectangle (51,17.5);
 
   % ---- Left: the unlabelled tree, parent stems at the middle of each birth line ----------
-  \begin{scope}[shift={(0,6.4)}]
+  \begin{scope}[shift={(0,5.2)}]
     \treeaxes{unlabelled}
     \draw[very thick, treecol]
       (6.8125,0) -- (6.8125,1)          % root stem, into the first birth
@@ -42,7 +42,7 @@
   \end{scope}
 
   % ---- Right, top: the tree B -------------------------------------------------------
-  \begin{scope}[shift={(27,11.5)}]
+  \begin{scope}[shift={(27,9.9)}]
     \treeaxes{$\mathcal{B}$}
     \draw[very thick, treecol]
       (2,0) -- (2,2) (7,1) -- (7,5) (14,2) -- (14,5) (9.5,3) -- (9.5,3.5) (16,4) -- (16,5);
@@ -60,7 +60,7 @@
   \end{scope}
 
   % ---- The bijection ------------------------------------------------------------------
-  \draw[<->, very thick] (38,8.4) -- (38,10.6);
-  \node[anchor=west] at (38.7,9.5) {birth-exchanged};
+  \draw[<->, very thick] (38,7.9) -- (38,9.4);
+  \node[anchor=west] at (38.7,8.65) {birth-exchanged};
 \end{tikzpicture}
 \end{document}

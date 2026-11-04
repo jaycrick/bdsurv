@@ -203,9 +203,9 @@ Point
 - split contour, first ascent, and then descent.
 :::
 
-## The birth exchange is a bijection
+## Parent--child relationships can be exchanged
 
-![](figures/birth_exchange_1.svg){fig-alt="An unlabelled tree and its two labellings, linked by the birth exchange" width="1000"}
+![](figures/birth_exchange_1.svg){.nostretch fig-alt="An unlabelled tree and its two labellings, linked by the birth exchange" width="960" style="max-height: none; max-width: none; margin: 0 auto; display: block;"}
 
 ::: notes
 - Forget which branch at each birth is the mother and which the daughter: the unlabelled tree.
