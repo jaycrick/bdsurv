@@ -28,47 +28,64 @@ arley = _load("bench_arley_comparison")
 
 @pytest.fixture(scope="module")
 def matched_cells():
-    """Return the nine matched cells (the slopes take a few seconds to compute)."""
+    """Return the cumulative-matched cells (the slopes take a few seconds to compute)."""
     return arley.build_cells()
 
 
 @pytest.fixture(scope="module")
 def grid_cells():
-    """Return every matched slope over the whole T grid."""
+    """Return every grid slope over the whole T grid."""
     return arley.build_grid_cells()
 
 
 class TestGridCells:
     def test_every_slope_over_the_whole_grid(self, grid_cells) -> None:
         cells = grid_cells
-        assert len(cells) == 9 * len(arley.base.TS)
-        assert {c.matched_on for c in cells} == {"grid"}
+        assert len(cells) == len(arley.GRID_SLOPES) * len(arley.base.TS)
+        assert {c.matched_on for c in cells} == {"mean-rate"}
         assert {round(c.time, 3) for c in cells} == set(arley.base.TS)
+        assert {c.slope for c in cells} == set(arley.GRID_SLOPES)
 
-    def test_size_cap_trims_only_the_slow_slopes_at_long_times(
+    def test_mu_is_the_constant_rate_with_the_same_mean_death_rate(
         self, grid_cells
     ) -> None:
-        cells = grid_cells
-        feasible = [c for c in cells if c.feasible]
-        assert len(feasible) == 100
-        longest = {
-            c.mu: max(x.time for x in feasible if x.mu == c.mu) for c in feasible
-        }
-        assert longest[1.2] == 10.0
-        assert longest[1.5] == 10.0
-        assert longest[2.0] == pytest.approx(14.678)
-        assert longest[3.0] == 100.0
-        assert longest[10.0] == 100.0
+        # mean of m t over [0, SURVIVAL_T] is m * SURVIVAL_T / 2.
+        for c in grid_cells:
+            assert c.mu == pytest.approx(c.slope * arley.SURVIVAL_T / 2)
 
-    def test_matched_cells_are_in_the_grid(self, grid_cells, matched_cells) -> None:
-        grid = {(c.mu, c.time): c.slope for c in grid_cells}
-        for cell in matched_cells:
-            assert grid[(cell.mu, cell.time)] == pytest.approx(cell.slope)
+    def test_survival_matches_the_constant_rate_at_the_matching_time(
+        self, grid_cells
+    ) -> None:
+        from bdsurv.splitting import _log_survival_probability
+
+        at_t = [c for c in grid_cells if c.time == arley.SURVIVAL_T]
+        assert len(at_t) == len(arley.GRID_SLOPES)
+        for c in at_t:
+            constant = -_log_survival_probability(
+                birth_rate=arley.LAMBDA, death_rate=c.mu, time=c.time
+            ) / math.log(10)
+            assert c.arley_value == pytest.approx(constant, rel=3e-3)
+
+    def test_every_grid_cell_is_under_the_size_cap(self, grid_cells) -> None:
+        assert all(c.feasible for c in grid_cells)
+        assert max(c.log10_mean_cumulative for c in grid_cells) < 5.0
+
+    def test_grid_slopes_are_in_the_grid_and_cover_mu_up_to_20(
+        self, grid_cells
+    ) -> None:
+        assert max(c.mu for c in grid_cells) == pytest.approx(20.0)
+        assert min(c.mu for c in grid_cells) == pytest.approx(3.0)
+
+    def test_matched_cells_are_cumulative_and_feasible(self, matched_cells) -> None:
+        assert {(c.mu, c.time) for c in matched_cells} == set(arley.CUMULATIVE_CELLS)
+        assert {c.matched_on for c in matched_cells} == {"cumulative"}
+        assert all(c.feasible for c in matched_cells)
+        assert all(c.time in arley.base.TS for c in matched_cells)
 
     def test_units_skip_infeasible_cells_but_keep_indices(self, grid_cells) -> None:
         cells = grid_cells
         units = arley.build_units(cells, 4, 2, arley.GRID.seed_base)
-        assert len(units) == 100 * 2 * 2
+        assert len(units) == len(cells) * 2 * 2
         assert all(u.cell.feasible for u in units)
         index_of = {id(c): i for i, c in enumerate(cells)}
         assert all(index_of[id(u.cell)] == u.cell_index for u in units)
@@ -85,14 +102,24 @@ class TestSeeds:
         assert arley.replicate_seed(grid, 0) == arley.replicate_seed(grid, 0)
         assert arley.replicate_seed(matched, 0) != arley.replicate_seed(grid, 0)
 
-    def test_matched_seeds_unchanged_by_the_default(self, matched_cells) -> None:
+    def test_seed_depends_on_cell_values_not_position(self, matched_cells) -> None:
         cell = matched_cells[0]
         unit = arley.Unit("splitting", cell, 3, 0, 1)
+        moved = arley.Unit("splitting", cell, 99, 0, 1)
         expected = int(
-            np.random.SeedSequence([arley.BASE_SEED, 3, 1, 7]).generate_state(1)[0]
+            np.random.SeedSequence(
+                [
+                    arley.BASE_SEED,
+                    round(cell.slope * 10_000),
+                    round(cell.time * 1000),
+                    1,
+                    7,
+                ]
+            ).generate_state(1)[0]
             % (2**31 - 1)
         )
         assert arley.replicate_seed(unit, 7) == expected
+        assert arley.replicate_seed(moved, 7) == expected
 
 
 class TestQuickGridRun:
@@ -116,7 +143,7 @@ class TestQuickGridRun:
         ):
             assert (data / name).exists()
         rows = pd.read_csv(data / arley.GRID.rows)
-        assert set(rows["mu"]) == set(arley.QUICK_MUS)
+        assert set(rows["slope"]) == set(arley.QUICK_SLOPES)
         assert rows["T"].max() <= arley.QUICK_GRID_MAX_T
         assert set(rows["method"]) == {"contour", "splitting"}
         assert not (data / arley.ROWS_FILE).exists()  # the matched files are separate

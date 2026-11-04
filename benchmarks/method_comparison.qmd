@@ -95,7 +95,9 @@ if DRAFT:
 
 Both methods sample a birth-death tree that **survives to time $T$**.
 The birth rate is fixed at $\lambda = 1$ and the death rate $\mu$ runs from
-$0.6$ (supercritical) through $1$ (critical) to $10$ (highly subcritical).
+$0.6$ (supercritical) through $1$ (critical) to $20$ (highly subcritical), on a
+grid of `{python} len(MUS)` rates; the terminal time $T$ runs from $1$ to $100$ on a
+grid of `{python} len(TS)` values.
 
 - **Contour process** builds one tree that survives by construction.
   It is exact and works for any rates.
@@ -231,58 +233,11 @@ and were restarted), and the number of levels (1 means nothing was split).
 
 ::: {.panel-tabset}
 
-### μ = 0.6
-
 ```{python}
-show_mu(0.6)
-```
-
-### μ = 0.8
-
-```{python}
-show_mu(0.8)
-```
-
-### μ = 1.0
-
-```{python}
-show_mu(1.0)
-```
-
-### μ = 1.2
-
-```{python}
-show_mu(1.2)
-```
-
-### μ = 1.5
-
-```{python}
-show_mu(1.5)
-```
-
-### μ = 2
-
-```{python}
-show_mu(2.0)
-```
-
-### μ = 3
-
-```{python}
-show_mu(3.0)
-```
-
-### μ = 5
-
-```{python}
-show_mu(5.0)
-```
-
-### μ = 10
-
-```{python}
-show_mu(10.0)
+#| output: asis
+for mu in MUS:
+    display(Markdown(f"### μ = {mu:g}"))
+    show_mu(mu)
 ```
 
 :::
@@ -298,82 +253,11 @@ so those tabs start at a higher $\mu$.
 
 ::: {.panel-tabset}
 
-### T = 1
-
 ```{python}
-show_t(1.0)
-```
-
-### T = 1.47
-
-```{python}
-show_t(1.468)
-```
-
-### T = 2.15
-
-```{python}
-show_t(2.154)
-```
-
-### T = 3.16
-
-```{python}
-show_t(3.162)
-```
-
-### T = 4.64
-
-```{python}
-show_t(4.642)
-```
-
-### T = 6.81
-
-```{python}
-show_t(6.813)
-```
-
-### T = 10
-
-```{python}
-show_t(10.0)
-```
-
-### T = 14.7
-
-```{python}
-show_t(14.678)
-```
-
-### T = 21.5
-
-```{python}
-show_t(21.544)
-```
-
-### T = 31.6
-
-```{python}
-show_t(31.623)
-```
-
-### T = 46.4
-
-```{python}
-show_t(46.416)
-```
-
-### T = 68.1
-
-```{python}
-show_t(68.129)
-```
-
-### T = 100
-
-```{python}
-show_t(100.0)
+#| output: asis
+for t in TS:
+    display(Markdown(f"### T = {t:g}"))
+    show_t(t)
 ```
 
 :::
@@ -412,7 +296,7 @@ heat["T_label"] = heat["T"].map(lambda t: f"{t:g}")
             alt.Tooltip("ratio:Q", format=".3g"),
         ],
     )
-    .properties(width=900, height=330)
+    .properties(width=900, height=460)
 )
 ```
 
@@ -425,7 +309,7 @@ numbers drawn, counted by `bdsurv.count_draws` in an untimed pass
 Counted runs produce the same trees as the timed ones.
 Splitting also copies every particle's records when it clones it; that costs
 time but no draws, so draws understate its cost.
-The draw counts cover the constant-rate cells at $T = 21.5$, $46.4$ and $100$.
+The draw counts cover the same constant-rate grid as the timings, with fewer replicates.
 
 ```{python}
 #| label: draws
@@ -502,7 +386,6 @@ else:
 Points are the mean over replicates and the band is a 95% confidence interval for
 the mean.
 Both axes are logarithmic.
-Draws were counted at only three horizons, so each curve over time has three points.
 
 ## Random draws per tree over time, by death rate
 

@@ -2,29 +2,29 @@ r"""Benchmark contour against splitting on Arley processes matched to constant o
 
 The birth rate is ``lambda = 1`` and the death rate is linear from zero,
 ``mu(t) = m t`` (an Arley process).
-Each slope ``m`` is chosen so that the Arley process matches the constant-rate
-process with death rate ``mu`` used in ``bench_method_comparison.py``:
 
-supercritical-side and critical ``mu`` (0.6, 0.8, 1) at ``T`` = 21.544, 46.416, 100
-    ``m`` solves *mean cumulative individuals* equality,
+Two runs, both with the constant-rate process of ``bench_method_comparison.py``
+as the reference:
+
+the slope-by-time grid (``--grid``)
+    Each of ``GRID_SLOPES`` is run over the whole constant-rate ``T`` grid (files
+    ``arley_grid*.csv``).
+    A slope ``m`` is paired with the constant rate ``mu = m * SURVIVAL_T / 2``, the
+    same *mean death rate over* ``[0, 100]``.
+    At ``T = 100`` this also matches ``1 / Pr(Z_T > 0)`` to the constant-rate value
+    to within 0.2% (the largest gap is at ``m = 0.06``, 0.1%).
+    The slopes step through round values from 0.06 (``mu = 3``) to 0.4
+    (``mu = 20``); slower slopes grow too large before they die back.
+the matched cells (the default)
+    ``CUMULATIVE_CELLS``: ``mu`` (0.6, 0.8, 1) at ``T`` = 20, 40, 100, with the
+    slope ``m`` solving *mean cumulative individuals* equality,
     ``1 + int_0^T exp(tau - m tau^2 / 2) d tau
     = (mu - e^{(1 - mu) T}) / (mu - 1)``  (``1 + T`` at ``mu = 1``).
     ``m`` is the exact root, not rounded.
-subcritical ``mu`` (1.2, 1.5, 2, 3, 5, 10) at ``T = 100``
-    ``m`` is the candidate slope whose ``1 / Pr(Z_T > 0)`` is closest, in
-    absolute distance, to the constant-rate value.
-    Candidates step by 0.01 below 0.1, by 0.1 from 0.1 to below 2, and by 1
-    from 2.
-    ``mu = 1.2`` is pinned to ``m = 0.025`` (``SLOPE_OVERRIDES``), the closest
-    value to its exact match of about 0.0243 on a 0.005 grid.
-
-With ``--grid`` every matched slope is run over the whole constant-rate ``T``
-grid instead (files ``arley_grid*.csv``, seeds independent of the matched run),
-which gives cost against ``T`` for each slope and against slope at each ``T``.
 
 Cells whose Arley trees would be too large (mean individuals ever born above
-``10^MAX_LOG10_CUMULATIVE``; here ``mu`` = 1.2, 1.5 and 2) are listed in the slope
-table with ``feasible = False`` but not run.
+``10^MAX_LOG10_CUMULATIVE``) are listed in the slope table with
+``feasible = False`` but not run.
 
 All the maths is in ``bdsurv._linear_math`` (ported from ``bdpinf``).
 The work is split into units and sharded exactly as in
@@ -61,25 +61,26 @@ from bdsurv import (
     simulate_linear_survival_splitting,
 )
 from bdsurv import _linear_math as lm
-from bdsurv.splitting import _log_survival_probability
 
 LAMBDA = base.LAMBDA
 METHODS = base.METHODS
 BASE_SEED = base.BASE_SEED + 1
-# (mu, T) cells matched on mean cumulative individuals.
-CUMULATIVE_CELLS = ((0.6, 21.544), (0.8, 46.416), (1.0, 100.0))
-# mu values matched on survival probability, all at SURVIVAL_T.
-SURVIVAL_MUS = (1.2, 1.5, 2.0, 3.0, 5.0, 10.0)
+# (mu, T) cells matched on mean cumulative individuals.  T = 40 rather than 50 for
+# mu = 0.8, because the matched Arley tree at T = 50 is over the size cap.
+CUMULATIVE_CELLS = ((0.6, 20.0), (0.8, 40.0), (1.0, 100.0))
+# Round slopes for the slope-by-time grid, paired with the constant rate
+# mu = m * SURVIVAL_T / 2 (the same mean death rate over [0, SURVIVAL_T]).
+GRID_SLOPES = (0.06, 0.07, 0.08, 0.1, 0.12, 0.14, 0.17, 0.2, 0.25, 0.3, 0.4)
 SURVIVAL_T = 100.0
-SLOPE_OVERRIDES = {1.2: 0.025}
 # Cells whose Arley process has more than 10^5 mean individuals ever born are
 # skipped, as the constant-rate benchmark skips cells with a mean population
 # above 1e5 (``MAX_EXPECTED_POPULATION``).  An Arley process is supercritical
 # until t = 1 / m, so a slow slope grows enormous before it dies back, e.g. about
-# 10^9.9 individuals at mu = 1.2 (m = 0.025).  A conditioned tree has about 10^5
-# individuals at 10^4.6 (mu = 3), which already costs ~2 GB and a minute per run.
+# 10^9.9 individuals at m = 0.025.  A conditioned tree has about 10^5
+# individuals at 10^4.6 (m = 0.06), which already costs ~2 GB and minutes per run.
 MAX_LOG10_CUMULATIVE = 5.0
-QUICK_MUS = (0.6, 1.0)
+QUICK_MUS = (0.6, 1.0)  # matched cells; the grid uses QUICK_SLOPES
+QUICK_SLOPES = (0.1, 0.2)
 QUICK_REPLICATES = 3
 QUICK_BLOCK_SIZE = 3
 
@@ -103,7 +104,7 @@ class Files(NamedTuple):
     seed_base: int
 
 
-# The nine matched (mu, T) cells.
+# The three cumulative-matched (mu, T) cells.
 MATCHED = Files(
     "arley",
     ROWS_FILE,
@@ -113,7 +114,7 @@ MATCHED = Files(
     ROOT / "benchmarks" / "_shards_arley",
     BASE_SEED,
 )
-# Every matched slope over the whole T grid (``--grid``).
+# Every grid slope over the whole T grid (``--grid``).
 GRID = Files(
     "arley_grid",
     "arley_grid.csv",
@@ -202,42 +203,9 @@ def match_cumulative_slope(mu: float, terminal_time: float) -> float:
     return math.sqrt(low * high)
 
 
-def candidate_slopes() -> list[float]:
-    """Slopes on the 0.01 / 0.1 / 1 grid, finer at small slopes."""
-    fine = [round(0.01 * k, 2) for k in range(1, 10)]
-    medium = [round(0.1 * k, 1) for k in range(1, 20)]
-    coarse = [float(k) for k in range(2, 31)]
-    return fine + medium + coarse
-
-
-def _log_odds_distance(log_a: float, log_b: float) -> float:
-    """Return ``ln |exp(log_a) - exp(log_b)|`` without overflow."""
-    high, low = max(log_a, log_b), min(log_a, log_b)
-    if high == low:
-        return -math.inf
-    return high + math.log1p(-math.exp(low - high))
-
-
 def log_inverse_survival(birth: lm.Rate, death: lm.Rate, t: float) -> float:
     """Return ``ln(1 / Pr(Z_t > 0))``."""
     return -lm.log_survival_probability(birth, death, t)
-
-
-def match_survival_slope(mu: float, terminal_time: float) -> float:
-    """Return the candidate slope with ``1 / Pr(survival)`` closest to constant."""
-    if mu in SLOPE_OVERRIDES:
-        return SLOPE_OVERRIDES[mu]
-    target = -_log_survival_probability(
-        birth_rate=LAMBDA, death_rate=mu, time=terminal_time
-    )
-
-    def distance(slope: float) -> float:
-        birth, death = _arley(slope, terminal_time)
-        return _log_odds_distance(
-            log_inverse_survival(birth, death, terminal_time), target
-        )
-
-    return min(candidate_slopes(), key=distance)
 
 
 def _log10_cumulative(slope: float, terminal_time: float) -> float:
@@ -248,7 +216,7 @@ def _log10_cumulative(slope: float, terminal_time: float) -> float:
 
 
 def build_cells() -> list[Cell]:
-    """Return every matched cell, with the matched quantity on both sides."""
+    """Return the cumulative-matched cells, with the matched quantity on both sides."""
     cells: list[Cell] = []
     for mu, terminal_time in CUMULATIVE_CELLS:
         slope = match_cumulative_slope(mu, terminal_time)
@@ -268,49 +236,32 @@ def build_cells() -> list[Cell]:
                 log10_mean_cumulative=_log10_cumulative(slope, terminal_time),
             )
         )
-    for mu in SURVIVAL_MUS:
-        slope = match_survival_slope(mu, SURVIVAL_T)
-        birth, death = _arley(slope, SURVIVAL_T)
-        cells.append(
-            Cell(
-                mu=mu,
-                time=SURVIVAL_T,
-                slope=slope,
-                matched_on="survival",
-                constant_value=-_log_survival_probability(
-                    birth_rate=LAMBDA, death_rate=mu, time=SURVIVAL_T
-                )
-                / math.log(10),
-                arley_value=log_inverse_survival(birth, death, SURVIVAL_T)
-                / math.log(10),
-                log10_mean_cumulative=_log10_cumulative(slope, SURVIVAL_T),
-            )
-        )
     return cells
 
 
 def build_grid_cells() -> list[Cell]:
-    """Return every matched slope at every ``T`` of the constant-rate grid.
+    """Return every grid slope at every ``T`` of the constant-rate grid.
 
+    ``mu`` is the constant rate with the same mean death rate over
+    ``[0, SURVIVAL_T]`` as the slope.
     Cells that are too large to simulate stay in the list (``feasible`` is false)
-    so cell indices, and hence seeds, do not depend on the cap.
+    so cell indices do not depend on the cap.
     """
     cells: list[Cell] = []
-    for matched in build_cells():
+    for slope in GRID_SLOPES:
+        mu = round(slope * SURVIVAL_T / 2, 6)
         for terminal_time in base.TS:
-            birth, death = _arley(matched.slope, terminal_time)
+            birth, death = _arley(slope, terminal_time)
             cells.append(
                 Cell(
-                    mu=matched.mu,
+                    mu=mu,
                     time=float(terminal_time),
-                    slope=matched.slope,
-                    matched_on="grid",
+                    slope=slope,
+                    matched_on="mean-rate",
                     constant_value=math.nan,
                     arley_value=log_inverse_survival(birth, death, terminal_time)
                     / math.log(10),
-                    log10_mean_cumulative=_log10_cumulative(
-                        matched.slope, terminal_time
-                    ),
+                    log10_mean_cumulative=_log10_cumulative(slope, terminal_time),
                 )
             )
     return cells
@@ -363,9 +314,19 @@ def build_units(
 
 
 def replicate_seed(unit: Unit, replicate: int) -> int:
-    """Return a seed depending only on the cell, method and replicate."""
+    """Return a seed depending only on the cell values, method and replicate.
+
+    The cell enters by slope (in ten-thousandths) and ``T`` (in thousandths), so
+    changing the grid never changes the seeds of the cells that remain.
+    """
     sequence = np.random.SeedSequence(
-        [unit.seed_base, unit.cell_index, METHODS.index(unit.method), replicate]
+        [
+            unit.seed_base,
+            round(unit.cell.slope * 10_000),
+            round(unit.cell.time * 1000),
+            METHODS.index(unit.method),
+            replicate,
+        ]
     )
     return int(sequence.generate_state(1)[0] % (2**31 - 1))
 
@@ -534,7 +495,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--grid",
         action="store_true",
-        help="every matched slope over the whole T grid, not just the matched T",
+        help="every grid slope over the whole T grid, not just the matched cells",
     )
     parser.add_argument("--shard", type=base._parse_shard, help="run shard i/N only")  # pyright: ignore[reportPrivateUsage]
     parser.add_argument("--merge", action="store_true", help="merge shard files")
@@ -553,9 +514,14 @@ def main(argv: list[str] | None = None) -> None:
         print(slopes_frame(cells).to_string(index=False))
         return
     if args.quick:
-        cells = [c for c in cells if c.mu in QUICK_MUS]
         if args.grid:
-            cells = [c for c in cells if c.time <= QUICK_GRID_MAX_T]
+            cells = [
+                c
+                for c in cells
+                if c.slope in QUICK_SLOPES and c.time <= QUICK_GRID_MAX_T
+            ]
+        else:
+            cells = [c for c in cells if c.mu in QUICK_MUS]
     replicates = args.replicates or (
         QUICK_REPLICATES if args.quick else base.DEFAULT_REPLICATES
     )

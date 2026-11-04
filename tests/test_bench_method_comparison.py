@@ -92,6 +92,20 @@ class TestUnitsAndShards:
         assert bench.replicate_seed(a, 5) != bench.replicate_seed(a, 6)
         assert bench.replicate_seed(a, 5) != bench.replicate_seed(other_method, 5)
 
+    def test_seed_does_not_depend_on_grid_position(self) -> None:
+        a = bench.Unit("splitting", 1.5, 3.0, 2, 1, 0, 2)
+        moved = bench.Unit("splitting", 1.5, 3.0, 11, 7, 0, 2)
+        assert bench.replicate_seed(a, 5) == bench.replicate_seed(moved, 5)
+
+    def test_grids_are_rounded_and_cover_the_requested_range(self) -> None:
+        assert min(bench.MUS) == 0.6
+        assert max(bench.MUS) == 20.0
+        assert list(bench.MUS) == sorted(set(bench.MUS))
+        assert bench.TS[0] == 1.0
+        assert bench.TS[-1] == 100.0
+        assert list(bench.TS) == sorted(set(bench.TS))
+        assert all(round(t, 1) == t for t in bench.TS)
+
     def test_parse_shard(self) -> None:
         assert bench._parse_shard("3/10") == (3, 10)
         with pytest.raises(argparse.ArgumentTypeError):

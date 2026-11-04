@@ -3,28 +3,35 @@
 # benchmark cells (scripts/count_draws.py).
 #
 # The counted runs reuse the benchmark seeds, so they reproduce exactly what the
-# timed runs drew; they are untimed (the counting wrapper adds overhead).  Array
-# task i of SHARDS counts the runs whose index is i modulo SHARDS and writes
-# benchmarks/_shards_draws/draws_rows_<i>.csv.  A second job, dependent on the
-# whole array, merges the shards into benchmarks/data/draws.csv (committed, and
-# read by benchmarks/arley_comparison.qmd).
+# timed runs drew; they are untimed (the counting wrapper adds overhead).  They
+# cover the whole constant-rate grid (mu 0.6 to 20 by T 1 to 100), the whole Arley
+# slope-by-time grid (slopes 0.06 to 0.4) and the cumulative-matched Arley cells,
+# which feed the random-draw sections of benchmarks/method_comparison.qmd and
+# benchmarks/arley_comparison.qmd.  Array task i of SHARDS counts the runs whose
+# index is i modulo SHARDS and writes benchmarks/_shards_draws/draws_rows_<i>.csv.
+# A second job, dependent on the whole array, merges the shards into
+# benchmarks/data/draws.csv (committed).  It does not depend on the timed jobs, so
+# submit it at the same time.
 #
 # Usage (from the repo root, on an HPC login node):
 #   scripts/count_draws.slurm submit
 #   scripts/count_draws.slurm resubmit    # re-run only tasks with no output
-#   SHARDS=200 REPLICATES=10 scripts/count_draws.slurm submit
+#   SHARDS=1000 REPLICATES=100 scripts/count_draws.slurm submit
 #
 # Settings (environment variables, all tasks must agree):
-#   SHARDS        number of array tasks (default 100)
-#   REPLICATES    counted runs per model, method and cell (default 20)
-#   MEM           memory per task (default 16G; splitting at mu = 1 and 3 needed
-#                 more than 4G in the timed benchmark)
+#   SHARDS        number of array tasks (default 500)
+#   REPLICATES    counted runs per model, method and cell (default 50)
+#   MEM           memory per task (default 32G; splitting at mid-range mu needed
+#                 more than 4G in the timed benchmark, so this is generous)
 #
-# Sizing: 600 runs at the defaults (6 Arley cells and 9 constant-rate cells, two
-# methods, 20 replicates).  Runs are dealt out heaviest first, round-robin.  The
-# heaviest are Arley splitting at mu = 3 (several minutes each on the cluster)
-# and mu = 1, 5 and 10; contour runs take seconds.  There is no per-run time
-# budget, so give --time room for a task that draws the slowest few runs.
+# Sizing: about 59,600 runs at the defaults (36,200 constant-rate, 23,100 Arley
+# grid and 300 Arley matched, two methods, 50 replicates), about 60 CPU-hours in
+# total with the counting overhead (about 1.25x a timed run).  Runs are dealt out
+# heaviest first, round-robin, so each task gets at most about one of the slowest:
+# Arley splitting at m = 0.06, T = 100 (about 11 minutes each, more on a slow
+# node), so typical tasks take 10-20 minutes and the busiest an hour or two.  There
+# is no per-run time budget, so every requested run completes; the 12 hour limit is
+# far beyond what any task needs.  `resubmit` re-runs only tasks with no output.
 # Check the cluster's limit on array size before submitting.
 #
 # Logs land in repo-root logs/ (gitignored); submit from the repo root.
@@ -32,17 +39,17 @@
 #SBATCH --account=punim1793
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem-per-cpu=16G
-#SBATCH --time=04:00:00
-#SBATCH --array=0-99
+#SBATCH --mem-per-cpu=32G
+#SBATCH --time=12:00:00
+#SBATCH --array=0-499
 #SBATCH --output=logs/slurm-count-draws-%A_%a-%N.log
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 
-SHARDS="${SHARDS:-100}"
-REPLICATES="${REPLICATES:-20}"
-MEM="${MEM:-16G}"
+SHARDS="${SHARDS:-500}"
+REPLICATES="${REPLICATES:-50}"
+MEM="${MEM:-32G}"
 SHARDS_DIR=benchmarks/_shards_draws
 
 if [[ "${1:-}" == "submit" || "${1:-}" == "resubmit" ]]; then

@@ -1,12 +1,13 @@
 r"""Altair charts for the Arley benchmark pages.
 
-The benchmark rows come from ``bench_arley_comparison.py --grid``: every matched
+The benchmark rows come from ``bench_arley_comparison.py --grid``: every grid
 death-rate slope ``m`` (``mu(t) = m t``, birth rate 1) over the terminal-time grid.
-This module turns them into the cost-per-tree curves (median and 10th-90th
-percentile band for each method), the splitting diagnostics, and a graph of the
-birth and death rates over time.
+This module turns them into the cost-per-tree curves (mean with a 95% confidence
+interval, and median with a 10th-90th percentile band, for each method), the
+splitting diagnostics, a graph of the birth and death rates over time, and the
+random-draws-per-tree curves and charts built from ``count_draws.py``'s rows.
 It mirrors the constant-rate charts of the method-comparison page, keyed by
-``(mu, slope, T)`` where ``mu`` is the constant rate the slope was matched to.
+``(mu, slope, T)`` where ``mu`` is the constant rate the slope is paired with.
 """
 
 import altair as alt
@@ -68,6 +69,63 @@ def curves_from_rows(rows: pd.DataFrame) -> pd.DataFrame:
             _band(split_rows, "per_kept", LABEL_KEPT),
         ],
         ignore_index=True,
+    )
+
+
+def curves_from_draws(rows: pd.DataFrame) -> pd.DataFrame:
+    """Mean draws per tree with a 95% interval, one block per method label.
+
+    ``rows`` are the Arley rows of ``draws.csv``.
+    Splitting is charged per set of trees (the whole run) and per kept tree.
+    """
+    rows = rows.assign(
+        per_kept=np.where(
+            rows["n_trees"] > 0, rows["draws_total"] / rows["n_trees"], np.nan
+        )
+    )
+    contour_rows = rows[rows["method"] == "contour"]
+    split_rows = rows[rows["method"] == "splitting"]
+    return pd.concat(
+        [
+            _band(contour_rows, "draws_total", LABEL_CONTOUR),
+            _band(split_rows, "draws_total", LABEL_RUN),
+            _band(split_rows, "per_kept", LABEL_KEPT),
+        ],
+        ignore_index=True,
+    )
+
+
+def draws_chart(
+    data: pd.DataFrame,
+    x: alt.X,
+    title: str,
+    *,
+    legend_font_size: int = 14,
+    width: int = 900,
+    height: int = 380,
+) -> alt.LayerChart:
+    """Mean random numbers drawn per tree against ``x``, with a 95% interval band."""
+    y_title = "mean random numbers drawn per tree (log scale)"
+    y_scale = alt.Scale(type="log")
+    y = alt.Y("mean:Q", scale=y_scale, title=y_title)
+    tooltip = [
+        "method",
+        alt.Tooltip("slope:Q", format=".3~g", title="slope m"),
+        alt.Tooltip("mu:Q", format="g", title="paired constant μ"),
+        alt.Tooltip("T:Q", format="g"),
+        alt.Tooltip("mean:Q", format=",.0f", title="mean draws"),
+        alt.Tooltip("ci_lo:Q", format=",.0f", title="95% CI low"),
+        alt.Tooltip("ci_hi:Q", format=",.0f", title="95% CI high"),
+        "replicates",
+    ]
+    base = alt.Chart(data).encode(x=x, color=color_encoding(legend_font_size))
+    area = base.mark_area(opacity=0.15).encode(
+        y=alt.Y("ci_lo:Q", scale=y_scale, title=y_title), y2="ci_hi:Q"
+    )
+    line = base.mark_line(strokeWidth=3).encode(y=y)
+    points = base.mark_point(size=70, filled=True).encode(y=y, tooltip=tooltip)
+    return alt.layer(area, line, points).properties(
+        width=width, height=height, title=title
     )
 
 

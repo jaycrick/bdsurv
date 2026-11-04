@@ -61,8 +61,14 @@ from bdsurv import (
 from bdsurv.splitting import _log_survival_probability
 
 LAMBDA = 1.0
-MUS = (0.6, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 5.0, 10.0)
-TS = tuple(round(float(t), 3) for t in np.geomspace(1.0, 100.0, 13))
+MUS = (
+    0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 2.0,
+    2.5, 3.0, 4.0, 5.0, 7.0, 10.0, 15.0, 20.0,
+)  # fmt: skip
+TS = (
+    1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0,
+    12.0, 15.0, 20.0, 25.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0,
+)  # fmt: skip
 METHODS = ("contour", "splitting")
 MAX_EXPECTED_POPULATION = 1e5
 N_PARTICLES = 1000
@@ -71,8 +77,10 @@ N_PARTICLES = 1000
 MAX_RESTARTS = 5000
 BASE_SEED = 20260101
 DEFAULT_REPLICATES = 100
-DEFAULT_BLOCK_SIZE = 10
-DEFAULT_UNIT_SECONDS = 900.0
+DEFAULT_BLOCK_SIZE = 5
+# Splitting at mu = 20, T = 100 takes ~100 s per run on the cluster, so a block of
+# 5 replicates needs ~500 s; 1800 s leaves room for slow nodes.
+DEFAULT_UNIT_SECONDS = 1800.0
 
 QUICK_MUS = (0.6, 1.5, 3.0)
 QUICK_TS = (1.0, 3.0, 10.0)
@@ -151,12 +159,16 @@ def shard_units(units: list[Unit], shard: int, n_shards: int) -> list[Unit]:
 
 
 def replicate_seed(unit: Unit, replicate: int) -> int:
-    """Return a seed depending only on the cell, method and replicate."""
+    """Return a seed depending only on the cell values, method and replicate.
+
+    The cell enters by value (``mu`` and ``T`` in thousandths), not by position in
+    the grid, so adding grid points never changes the seeds of existing cells.
+    """
     sequence = np.random.SeedSequence(
         [
             BASE_SEED,
-            unit.mu_index,
-            unit.time_index,
+            round(unit.mu * 1000),
+            round(unit.time * 1000),
             METHODS.index(unit.method),
             replicate,
         ]
