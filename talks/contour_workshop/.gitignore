@@ -5,3 +5,8 @@ slides.html
 figures/*.svg
 .DS_Store
 fonts/
+# LaTeX build files
+figures/*.aux
+figures/*.fdb_latexmk
+figures/*.fls
+figures/*.log
