@@ -17,8 +17,8 @@ drew without putting a counting wrapper in them.
 Each row of the output has the draws by role (``contour``, ``dynamics``,
 ``seeding``) and kind, and the work counters: ``events``, ``clones``,
 ``records_copied``, ``attempts``, ``particle_steps``, ``contour_steps``,
-``spine_resets``, ``capped_levels`` and ``dropped_by_cap`` (how often, and by how many clones, the
-``n_particles`` cap pruned an enrichment).
+``spine_resets``, ``capped_levels`` and ``dropped_by_cap`` (how often, and by
+how many clones, the ``n_particles`` cap pruned an enrichment).
 Draws measure the stochastic work; ``records_copied`` and ``events`` track the
 bookkeeping a draw count does not see.
 
