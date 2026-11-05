@@ -84,7 +84,7 @@ LABEL = {
     "splitting": "Splitting, per set of trees",
 }
 KIND = ["Constant death rate", "Arley death rate"]
-PALETTE = {"Contour process": "#0072B2", "Splitting, per set of trees": "#E69F00"}
+PALETTE = {"Contour process": "#004488", "Splitting, per set of trees": "#DDAA33"}
 
 # Constant-rate timings at exactly the same (mu, T) cells.
 cells = slopes[["mu", "T"]].drop_duplicates()
@@ -496,7 +496,7 @@ if DRAWS.exists():
             y=alt.Y("draws:Q", scale=alt.Scale(type="log"), title="Median random numbers drawn per run"),
             color=alt.Color(
                 "method:N",
-                scale=alt.Scale(domain=["contour", "splitting"], range=["#0072B2", "#E69F00"]),
+                scale=alt.Scale(domain=["contour", "splitting"], range=["#004488", "#DDAA33"]),
                 legend=alt.Legend(title=None, orient="bottom", labelFontSize=14),
             ),
             shape=alt.Shape(

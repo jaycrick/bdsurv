@@ -17,9 +17,9 @@ import pandas as pd
 LABEL_CONTOUR = "Contour process (exact)"
 LABEL_RUN = "Splitting, per set of trees (one run)"
 LABEL_KEPT = "Splitting, per kept tree"
-PALETTE = {LABEL_CONTOUR: "#0072B2", LABEL_RUN: "#E69F00", LABEL_KEPT: "#D55E00"}
-BIRTH_COLOR = "#009E73"
-DEATH_COLOR = "#CC79A7"
+PALETTE = {LABEL_CONTOUR: "#004488", LABEL_RUN: "#DDAA33", LABEL_KEPT: "#BB5566"}
+BIRTH_COLOR = "#228833"
+DEATH_COLOR = "#AA3377"
 GROUP = ["mu", "slope", "T"]
 
 
