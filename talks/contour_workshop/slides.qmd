@@ -92,7 +92,7 @@ Parrot: Critically Endangered - got down to 14 birds in Feb 2017
 :::: {.columns}
 ::: {.column width="54%"}
 ::: {.algo}
-**Naive (Gillespie) simulation**
+**Naive (Doob--Gillespie) simulation**
 
 1. $t \leftarrow 0$, $n \leftarrow 1$
 2. **while** $t < T$ and $n > 0$:
@@ -127,7 +127,7 @@ Given levels $0=\tau_0 < \tau_1 < \dots < \tau_J = T$, cloning rates $r_j$ and s
 
 1. Start $N_0$ processes from the initial distribution
 2. **for** $j = 1, \dots, J$:
-    - run each process using Gillespie to level $\tau_j$
+    - run each process using Doob--Gillespie to level $\tau_j$
     - discard those that did not reach $\tau_j$
     - clone each survivor $r_j$ times
 3. **return** trees that survived to $T$ (if any)
