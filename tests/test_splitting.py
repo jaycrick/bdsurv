@@ -344,6 +344,28 @@ class TestRestarts:
         )
         assert n == 1
 
+    def test_cap_drops_are_recorded(self) -> None:
+        # A tiny cap must bind; a huge one must not.
+        def run(cap: int):
+            return simulate_subcritical_survival_splitting(
+                SplittingConfig(
+                    birth_rate=0.9,
+                    death_rate=1.0,
+                    terminal_time=40.0,
+                    n_particles=cap,
+                    random_seed=17,
+                ),
+            )
+
+        capped, free = run(5), run(1_000_000)
+        assert free.n_dropped_by_cap == 0
+        assert free.n_capped_levels == 0
+        assert capped.n_dropped_by_cap > 0
+        assert capped.n_capped_levels > 0
+        last_attempt = sum(d.n_dropped_by_cap for d in capped.level_diagnostics)
+        assert 0 < last_attempt <= capped.n_dropped_by_cap
+        assert capped.level_diagnostics[-1].n_dropped_by_cap == 0
+
     def test_max_restarts_caps_attempts(self) -> None:
         config = SplittingConfig(
             birth_rate=0.05,

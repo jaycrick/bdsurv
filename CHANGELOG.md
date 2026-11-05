@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `LevelDiagnostic.n_dropped_by_cap` and `SplittingSimulationResult.n_dropped_by_cap` /
+  `n_capped_levels`: how many clones the `n_particles` cap discarded (per level, and
+  summed over levels and attempts). `count_draws` reports them as `dropped_by_cap`
+  and `capped_levels`.
 - `simulate_linear_rate_contour_process` and `simulate_linear_survival_splitting`
   (with `LinearSplittingConfig`): the contour process and multilevel splitting for
   birth and death rates that are piecewise constant or piecewise linear in time.
