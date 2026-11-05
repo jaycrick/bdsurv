@@ -77,19 +77,32 @@ if HAVE_GRID:
     GRID_TS = sorted(float(t) for t in grid_cells["T"].unique())
     GRID_SLOPES = sorted(float(m) for m in grid_cells["slope"].unique())
     GRID_REPS = int(grid_rows.groupby(["method", "mu", "T"]).size().min())
+    GRID_MU = grid_cells.groupby("slope")["mu"].first().to_dict()
 
 LABEL = {
     "contour": "Contour process",
-    "splitting": "Splitting (one run, one independent tree)",
+    "splitting": "Splitting, per set of trees",
 }
 KIND = ["Constant death rate", "Arley death rate"]
-PALETTE = {"Contour process": "#0072B2", "Splitting (one run, one independent tree)": "#E69F00"}
+PALETTE = {"Contour process": "#004488", "Splitting, per set of trees": "#DDAA33"}
 
 # Constant-rate timings at exactly the same (mu, T) cells.
 cells = slopes[["mu", "T"]].drop_duplicates()
 const = const_rows.merge(cells, on=["mu", "T"])
 const["kind"] = KIND[0]
 arl = rows.copy()
+if HAVE_GRID:
+    # Add the grid slopes at T = 100, each against the constant rate with the same
+    # mean death rate; the cells already matched on cumulative individuals stay.
+    extra = grid_rows[grid_rows["T"] == grid_rows["T"].max()]
+    extra = extra.merge(
+        arl[["mu", "T"]].drop_duplicates(), on=["mu", "T"], how="left", indicator=True
+    )
+    extra = extra[extra["_merge"] == "left_only"].drop(columns="_merge")
+    arl = pd.concat([arl, extra], ignore_index=True)
+    cells = pd.concat([cells, extra[["mu", "T"]].drop_duplicates()], ignore_index=True)
+    const = const_rows.merge(cells.drop_duplicates(), on=["mu", "T"])
+    const["kind"] = KIND[0]
 arl["kind"] = KIND[1]
 both = pd.concat([const, arl], ignore_index=True)
 both["label"] = both["method"].map(LABEL)
@@ -126,22 +139,24 @@ if DRAFT:
 Both methods sample a tree conditioned on survival to $T$, as in the
 [constant-rate comparison](method_comparison.qmd), but the death rate is now
 $\mu(t) = m\,t$ (an Arley process) and the birth rate is $\lambda = 1$.
-The slope $m$ is chosen for each constant-rate case $(\mu, T)$ so that the two
-processes are comparable:
+The slope $m$ is tied to a constant rate $\mu$ in two ways.
 
-- **$\mu \in \{0.6, 0.8, 1\}$** (at $T$ = 21.544, 46.416, 100 of the benchmark
-  grid): $m$ is the exact root that equalises the *mean number of individuals ever
+- **Slope-by-time grid.**
+  A slope $m$ is paired with the constant rate $\mu = m T_{\max}/2$ ($T_{\max} = 100$),
+  which has the same *mean death rate over* $[0, 100]$.
+  At $T = 100$ this brings $1/\Pr(Z_T > 0)$ within 0.2% of the constant-rate value.
+  The slopes are round numbers from $0.06$ (paired with $\mu = 3$) to $0.4$
+  (paired with $\mu = 20$), and every one is run over the whole horizon grid
+  ($T$ from 1 to 100), so the constant-rate grid is the reference at each $T$.
+  Slower slopes are not used: an Arley process is supercritical until $t = 1/m$,
+  so $m = 0.05$ or less grows past $10^5$ individuals ever born before it dies back.
+- **Matched cells ($\mu \in \{0.6, 0.8, 1\}$, at $T$ = 20, 40, 100).**
+  $m$ is the exact root that equalises the *mean number of individuals ever
   born* by $T$, $1 + \int_0^T e^{\Gamma(\tau)}\lambda(\tau)\,d\tau$ (with
   $\Gamma(\tau) = \int_0^\tau (\lambda - \mu)$).
   For constant rates this is $(\mu - \lambda\bar n_T)/(\mu - \lambda)$ with
   $\bar n_T = e^{(\lambda - \mu)T}$, and $1 + \lambda T$ at criticality.
-- **$\mu \in \{1.2, 1.5, 2, 3, 5, 10\}$** (at $T = 100$): $m$ is the candidate
-  slope that brings $1/\Pr(Z_T > 0)$ closest to the constant-rate value,
-  measured by absolute distance (computed in logs).
-  Candidates step by 0.01 below 0.1, by 0.1 up to 2, and by 1 beyond.
-  For $\mu = 1.2$ the slope is pinned to 0.025.
-  Survival is used rather than extinction because $1/\Pr(\text{extinction})$ is
-  about 1 for every subcritical case and could not tell the slopes apart.
+  This is the only matching that works for supercritical and critical $\mu$.
 
 ```{python}
 #| label: slopes
@@ -160,13 +175,11 @@ display(table.style.hide(axis="index").format(precision=4))
 ```
 
 An Arley process is supercritical until $t = 1/m$, so a slow slope grows
-enormous before it dies back: at $\mu = 1.2$ ($m = 0.025$) the process has about
-$10^{10}$ individuals ever born, against about $10^2$ to $10^5$ elsewhere.
-Cells above $10^5$ (`run = False`) are skipped, as the constant-rate comparison
-skips cells with a mean population above $10^5$; they would need terabytes for
-splitting and minutes per contour tree.
-A conditioned tree at $\mu = 3$ already has about $10^5$ individuals and takes
-splitting a minute and about 2 GB.
+enormous before it dies back.
+Cells above $10^5$ individuals ever born (`run = False`) are skipped, as the
+constant-rate comparison skips cells with a mean population above $10^5$; they
+would need terabytes for splitting and minutes per contour tree.
+The matched cells above are all under the cap.
 
 ```{python}
 #| output: asis
@@ -177,22 +190,45 @@ print(
 )
 ```
 
-Two further sections run every slope over the whole horizon grid
+Two further sections run every grid slope over the whole horizon grid
 ($T$ = 1 to 100) so that cost can be read against $T$ for each slope and
 against slope at each $T$.
+The table pairs each slope with its constant rate and gives the size of its trees at
+$T = 100$.
+
+```{python}
+#| label: grid-slopes
+if HAVE_GRID:
+    pairs = grid_cells[grid_cells["T"] == grid_cells["T"].max()].sort_values("slope")
+    display(
+        pairs[["slope", "mu", "log10_mean_cumulative", "feasible"]]
+        .rename(
+            columns={
+                "slope": "Arley slope m",
+                "mu": "paired constant μ",
+                "log10_mean_cumulative": "log10 mean individuals ever born",
+                "feasible": "run",
+            }
+        )
+        .style.hide(axis="index")
+        .format(precision=4)
+    )
+```
 
 ## Time per tree
 
 ```{python}
 #| label: timings
 #| fig-height: 6
-medians = (
+means = (
     both.groupby(["cell", "mu", "T", "kind", "label"])["seconds"]
-    .agg(median="median", q1=lambda s: s.quantile(0.25), q3=lambda s: s.quantile(0.75))
+    .agg(mean="mean", sem=lambda s: s.std() / np.sqrt(s.count()))
     .reset_index()
 )
+means["ci_lo"] = (means["mean"] - 1.96 * means["sem"]).clip(lower=0)
+means["ci_hi"] = means["mean"] + 1.96 * means["sem"]
 order = list(cells.sort_values(["T", "mu"]).apply(lambda r: f"μ={r['mu']:g}, T={r['T']:g}", axis=1))
-base_chart = alt.Chart(medians).encode(
+base_chart = alt.Chart(means).encode(
     x=alt.X("cell:N", sort=order, title=None, axis=alt.Axis(labelAngle=-40)),
     color=alt.Color(
         "label:N",
@@ -202,24 +238,24 @@ base_chart = alt.Chart(medians).encode(
     xOffset="label:N",
 )
 points = base_chart.mark_point(filled=True, size=90).encode(
-    y=alt.Y("median:Q", scale=alt.Scale(type="log"), title="Median seconds per tree"),
+    y=alt.Y("mean:Q", scale=alt.Scale(type="log"), title="mean sec per tree (log scale)"),
     shape=alt.Shape("kind:N", legend=alt.Legend(title=None, orient="bottom", labelFontSize=14)),
-    tooltip=["cell", "kind", "label", alt.Tooltip("median:Q", format=".3g")],
+    tooltip=["cell", "kind", "label", alt.Tooltip("mean:Q", format=".3g")],
 )
-bars = base_chart.mark_rule().encode(y="q1:Q", y2="q3:Q")
+bars = base_chart.mark_rule().encode(y="ci_lo:Q", y2="ci_hi:Q")
 display((points + bars).properties(width=900, height=420))
 ```
 
-Points show the median over replicates and the rules the interquartile range;
+Points show the mean over replicates and the rules a 95% confidence interval for the mean;
 circles are the constant death rate and squares the Arley death rate.
 
 ```{python}
 #| label: ratio-table
-wide = medians.pivot_table(
-    index=["mu", "T", "kind"], columns="label", values="median"
+wide = means.pivot_table(
+    index=["mu", "T", "kind"], columns="label", values="mean"
 ).reset_index()
 wide["splitting / contour"] = (
-    wide["Splitting (one run, one independent tree)"] / wide["Contour process"]
+    wide["Splitting, per set of trees"] / wide["Contour process"]
 )
 wide = wide.sort_values(["T", "mu", "kind"])
 wide.columns.name = None
@@ -247,13 +283,14 @@ if not HAVE_GRID:
 The matched cells above give one horizon per slope.
 Here each slope $m$ is run over the whole horizon grid ($T$ from 1 to 100), so each
 tab shows how the cost of one slope grows with $T$.
-Click through the tabs to step from the slowest slope (matched to a constant
-$\mu = 0.6$) to the steepest (matched to $\mu = 10$).
+Click through the tabs to step from the shallowest slope to the steepest; each tab
+names the constant $\mu$ it is paired with (the same mean death rate over
+$[0, 100]$).
 Each tab starts with the birth and death rates over time: $\lambda = 1$ is
 constant and $\mu(t) = m\,t$ starts at zero, so the process is supercritical until
 the two cross at $t = 1/m$ and subcritical afterwards.
 A cell is skipped when its Arley process has more than $10^5$ individuals ever born
-(the slowest slopes, $m \le 0.04$, stop at $T = 10$ to $15$), and under each
+(any skipped horizons are noted in the tab), and under each
 cost chart the three small panels show how splitting behaved: the trees kept per
 run, the attempts per run (above 1 means some attempts died out and were
 restarted) and the number of levels (1 means nothing was split).
@@ -284,8 +321,8 @@ def show_slope(mu: float) -> None:
     )
     display(
         Markdown(
-            f"$\\lambda = 1$ and $\\mu(t) = {slope:.3g}\\,t$, matched to the constant "
-            f"$\\mu = {mu:g}$. The process is supercritical until $t = {1 / slope:.3g}$ "
+            f"$\\lambda = 1$ and $\\mu(t) = {slope:.3g}\\,t$, paired with the constant "
+            f"$\\mu = {mu:g}$ (the same mean death rate over $[0, 100]$). The process is supercritical until $t = {1 / slope:.3g}$ "
             f"and subcritical after. Benchmarked up to $T = {top:.3g}$.{note}"
         )
     )
@@ -305,58 +342,15 @@ def show_slope(mu: float) -> None:
 
 ::: {.panel-tabset}
 
-### m = 0.0684 (μ = 0.6)
-
 ```{python}
-show_slope(0.6)
-```
-
-### m = 0.0585 (μ = 0.8)
-
-```{python}
-show_slope(0.8)
-```
-
-### m = 0.177 (μ = 1)
-
-```{python}
-show_slope(1.0)
-```
-
-### m = 0.025 (μ = 1.2)
-
-```{python}
-show_slope(1.2)
-```
-
-### m = 0.03 (μ = 1.5)
-
-```{python}
-show_slope(1.5)
-```
-
-### m = 0.04 (μ = 2)
-
-```{python}
-show_slope(2.0)
-```
-
-### m = 0.06 (μ = 3)
-
-```{python}
-show_slope(3.0)
-```
-
-### m = 0.1 (μ = 5)
-
-```{python}
-show_slope(5.0)
-```
-
-### m = 0.2 (μ = 10)
-
-```{python}
-show_slope(10.0)
+#| output: asis
+if HAVE_GRID:
+    for slope in GRID_SLOPES:
+        mu = GRID_MU[slope]
+        display(Markdown(f"### m = {slope:.3g} (μ = {mu:g})"))
+        show_slope(mu)
+else:
+    display(Markdown(NO_GRID))
 ```
 
 :::
@@ -365,9 +359,8 @@ show_slope(10.0)
 
 The same grid, cut the other way: each tab fixes the horizon $T$ and shows how the
 cost changes with the slope $m$ (log scale, as is the cost axis).
-Hover a point to see the constant $\mu$ each slope was matched to.
-At long horizons the slowest slopes are skipped (see above), so those tabs
-start at a steeper slope.
+Hover a point to see the constant $\mu$ each slope is paired with.
+Any skipped slopes at a horizon are noted in the tab.
 
 ```{python}
 #| label: by-time
@@ -400,82 +393,14 @@ def show_t(t: float) -> None:
 
 ::: {.panel-tabset}
 
-### T = 1
-
 ```{python}
-show_t(1.0)
-```
-
-### T = 1.47
-
-```{python}
-show_t(1.468)
-```
-
-### T = 2.15
-
-```{python}
-show_t(2.154)
-```
-
-### T = 3.16
-
-```{python}
-show_t(3.162)
-```
-
-### T = 4.64
-
-```{python}
-show_t(4.642)
-```
-
-### T = 6.81
-
-```{python}
-show_t(6.813)
-```
-
-### T = 10
-
-```{python}
-show_t(10.0)
-```
-
-### T = 14.7
-
-```{python}
-show_t(14.678)
-```
-
-### T = 21.5
-
-```{python}
-show_t(21.544)
-```
-
-### T = 31.6
-
-```{python}
-show_t(31.623)
-```
-
-### T = 46.4
-
-```{python}
-show_t(46.416)
-```
-
-### T = 68.1
-
-```{python}
-show_t(68.129)
-```
-
-### T = 100
-
-```{python}
-show_t(100.0)
+#| output: asis
+if HAVE_GRID:
+    for t in GRID_TS:
+        display(Markdown(f"### T = {t:g}"))
+        show_t(t)
+else:
+    display(Markdown(NO_GRID))
 ```
 
 :::
@@ -488,12 +413,13 @@ requested replicates.
 
 ```{python}
 #| label: budget
-cut = units[units["status"] != "ok"]
+all_units = pd.concat([units, grid_units] if HAVE_GRID else [units], ignore_index=True)
+cut = all_units[all_units["status"] != "ok"]
 if cut.empty:
     display(Markdown("No block ran out of budget."))
 else:
     summary = (
-        cut.groupby(["method", "mu", "T"])
+        cut.groupby(["method", "slope", "mu", "T"])
         .agg(blocks_cut=("status", "size"), replicates_done=("replicates_done", "sum"),
              replicates_requested=("replicates_requested", "sum"))
         .reset_index()
@@ -534,6 +460,10 @@ if not DRAWS.exists():
     )
 else:
     draws = pd.read_csv(DRAWS)
+    if "cell_set" in draws.columns:
+        # The table and chart below are the matched cells; the grid has its own sections.
+        draws = draws[(draws["model"] == "constant") | (draws["cell_set"] == "matched")]
+    draws = draws.merge(slopes[["mu", "T"]].drop_duplicates(), on=["mu", "T"])
     draws["kept"] = draws["n_trees"].clip(lower=1)
     per_run = (
         draws.groupby(["mu", "T", "model", "method"])
@@ -566,7 +496,7 @@ if DRAWS.exists():
             y=alt.Y("draws:Q", scale=alt.Scale(type="log"), title="Median random numbers drawn per run"),
             color=alt.Color(
                 "method:N",
-                scale=alt.Scale(domain=["contour", "splitting"], range=["#0072B2", "#E69F00"]),
+                scale=alt.Scale(domain=["contour", "splitting"], range=["#004488", "#DDAA33"]),
                 legend=alt.Legend(title=None, orient="bottom", labelFontSize=14),
             ),
             shape=alt.Shape(
@@ -582,3 +512,76 @@ if DRAWS.exists():
 For the contour process, `spine_resets` counts how often the spine excursion
 reached $T$ and restarted; `contour_steps` is the number of jumps in total.
 For splitting, `attempts` includes failed restarts, whose work is discarded.
+
+```{python}
+#| label: draws-grid
+HAVE_DRAW_GRID = False
+if DRAWS.exists():
+    all_draws = pd.read_csv(DRAWS)
+    if "cell_set" in all_draws.columns:
+        grid_draws = all_draws[
+            (all_draws["model"] == "arley") & (all_draws["cell_set"] == "grid")
+        ]
+        HAVE_DRAW_GRID = not grid_draws.empty
+if HAVE_DRAW_GRID:
+    draw_curves = charts.curves_from_draws(grid_draws)
+    DRAW_TS = sorted(float(t) for t in draw_curves["T"].unique())
+    DRAW_SLOPES = sorted(float(m) for m in draw_curves["slope"].unique())
+    DRAW_MU = draw_curves.groupby("slope")["mu"].first().to_dict()
+else:
+    display(
+        Markdown(
+            "No Arley slope-by-time draw counts yet: run "
+            "`scripts/count_draws.slurm submit` (see `benchmarks/README.md`)."
+        )
+    )
+```
+
+## Random draws per tree over time, by slope
+
+Each tab fixes a slope $m$ and shows how the mean number of random numbers drawn per
+tree grows with the horizon $T$, with a 95% confidence interval for the mean
+(normal approximation).
+Both axes are logarithmic.
+
+::: {.panel-tabset}
+
+```{python}
+#| output: asis
+if HAVE_DRAW_GRID:
+    for slope in DRAW_SLOPES:
+        mu = DRAW_MU[slope]
+        display(Markdown(f"### m = {slope:.3g} (μ = {mu:g})"))
+        display(
+            charts.draws_chart(
+                draw_curves[draw_curves["slope"] == slope],
+                charts.x_by_t(DRAW_TS),
+                f"m = {slope:.3g}, paired with μ = {mu:g}",
+            )
+        )
+```
+
+:::
+
+## Random draws per tree over death-rate slope, by time
+
+Each tab fixes the horizon $T$ and shows how the mean draws per tree change with the
+slope $m$.
+
+::: {.panel-tabset}
+
+```{python}
+#| output: asis
+if HAVE_DRAW_GRID:
+    for t in DRAW_TS:
+        display(Markdown(f"### T = {t:g}"))
+        display(
+            charts.draws_chart(
+                draw_curves[np.isclose(draw_curves["T"], t)],
+                charts.x_by_slope(DRAW_SLOPES),
+                f"T = {t:g}",
+            )
+        )
+```
+
+:::

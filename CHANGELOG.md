@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `LevelDiagnostic.n_dropped_by_cap` and `SplittingSimulationResult.n_dropped_by_cap` /
+  `n_capped_levels`: how many clones the `n_particles` cap discarded (per level, and
+  summed over levels and attempts). `count_draws` reports them as `dropped_by_cap`
+  and `capped_levels`.
 - `simulate_linear_rate_contour_process` and `simulate_linear_survival_splitting`
   (with `LinearSplittingConfig`): the contour process and multilevel splitting for
   birth and death rates that are piecewise constant or piecewise linear in time.
@@ -36,6 +40,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Benchmark grids: the constant-rate benchmark now covers 18 death rates (0.6 to 20)
+  and 21 rounded horizons (1 to 100), up from 9 rates (0.6 to 10) and 13 unrounded
+  horizons. Seeds now come from the `mu` and `T` values rather than their position in
+  the grid, so grid edits no longer reshuffle them. Default block size 5 and unit
+  budget 1800 s; 100 tasks.
+- Arley benchmark: the slope-by-time grid is 11 round slopes (0.06 to 0.4), each paired
+  with the constant rate that has the same mean death rate over `[0, 100]`
+  (`mu = 50 m`, 3 to 20). The cumulative-matched cells move to `T` = 20, 40 and 100; the
+  survival-matched cells come from the grid. Unit budget 7200 s and 32G per task (three m = 0.06 blocks were OOM-killed at 16G).
+- `scripts/count_draws.py` counts draws over the whole constant-rate grid and the whole
+  Arley grid (default 50 replicates), with a `cell_set` column and a `--quick` mode;
+  `scripts/count_draws.slurm` runs 250 tasks with 32G and 6 h, sized from the first cluster run. The cost charts on the
+  benchmark pages now show the mean with a 95% confidence interval. The method comparison
+  and Arley pages gain random-draws-per-tree sections over time (by death rate or slope)
+  and over death rate or slope (by time). Tabs are generated from the data.
 - Speed-ups that leave every seeded result unchanged: `numpy.isclose` replaced by
   an inline comparison in the contour and trace code; splitting particles share
   immutable record dicts (copy-on-write), so cloning is one shallow copy; scalar

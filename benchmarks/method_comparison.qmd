@@ -43,6 +43,12 @@ _spec = importlib.util.spec_from_file_location(
 bench = importlib.util.module_from_spec(_spec)
 sys.modules["bench_method_comparison"] = bench
 _spec.loader.exec_module(bench)
+_spec = importlib.util.spec_from_file_location(
+    "method_comparison_charts", ROOT / "scripts" / "method_comparison_charts.py"
+)
+charts = importlib.util.module_from_spec(_spec)
+sys.modules["method_comparison_charts"] = charts
+_spec.loader.exec_module(charts)
 
 LAMBDA = bench.LAMBDA
 DATA = ROOT / "benchmarks" / "data"
@@ -59,35 +65,14 @@ rows = pd.read_csv(DATA / bench.ROWS_FILE)
 units = pd.read_csv(DATA / bench.UNITS_FILE)
 env = json.loads((DATA / bench.ENV_FILE).read_text())
 
-LABEL_CONTOUR = "Contour process (exact)"
-LABEL_RUN = "Splitting, per independent tree (one run)"
-LABEL_KEPT = "Splitting, per kept tree"
-PALETTE = {LABEL_CONTOUR: "#0072B2", LABEL_RUN: "#E69F00", LABEL_KEPT: "#D55E00"}
-COLOR = alt.Color(
-    "method:N",
-    scale=alt.Scale(domain=list(PALETTE), range=list(PALETTE.values())),
-    legend=alt.Legend(title=None, orient="bottom", labelFontSize=14),
-)
+LABEL_CONTOUR = charts.LABEL_CONTOUR
+LABEL_RUN = charts.LABEL_RUN
+LABEL_KEPT = charts.LABEL_KEPT
+PALETTE = charts.PALETTE
 MUS = sorted(rows["mu"].unique())
 TS = sorted(rows["T"].unique())
 N_REPS = int(rows.groupby(["method", "mu", "T"]).size().min())
 N_CELLS = rows.groupby(["mu", "T"]).ngroups
-
-@alt.theme.register("bdsurv", enable=True)
-def _bdsurv_theme() -> alt.theme.ThemeConfig:
-    return alt.theme.ThemeConfig(
-        {
-            "config": {
-                "view": {"stroke": "transparent"},
-                "axis": {
-                    "labelFontSize": 14,
-                    "titleFontSize": 16,
-                    "gridColor": "#e6e6e6",
-                },
-                "title": {"fontSize": 18, "anchor": "start"},
-            }
-        }
-    )
 ```
 
 ```{python}
@@ -110,7 +95,9 @@ if DRAFT:
 
 Both methods sample a birth-death tree that **survives to time $T$**.
 The birth rate is fixed at $\lambda = 1$ and the death rate $\mu$ runs from
-$0.6$ (supercritical) through $1$ (critical) to $10$ (highly subcritical).
+$0.6$ (supercritical) through $1$ (critical) to $20$ (highly subcritical), on a
+grid of `{python} len(MUS)` rates; the terminal time $T$ runs from $1$ to $100$ on a
+grid of `{python} len(TS)` values.
 
 - **Contour process** builds one tree that survives by construction.
   It is exact and works for any rates.
@@ -128,9 +115,9 @@ price when independence matters.
 *Per kept tree* divides the run by the number of trees it kept, which is the
 optimistic view.
 
-Each point is the **median** over independent replicates (at least
+Each point is the **mean** over independent replicates (at least
 `{python} N_REPS` per method and cell, across `{python} N_CELLS` cells), and the
-shaded band is the 10th to 90th percentile.
+shaded band is a 95% confidence interval for the mean (normal approximation).
 Both axes of the cost charts are logarithmic.
 Click a legend entry to show only that method (shift-click to add more,
 double-click to reset).
@@ -146,32 +133,8 @@ for $\mu < 1$.
 ```{python}
 #| label: curves
 rows["per_kept"] = np.where(rows["n_trees"] > 0, rows["seconds"] / rows["n_trees"], np.nan)
-
-
-def band(frame: pd.DataFrame, column: str, label: str) -> pd.DataFrame:
-    grouped = frame.groupby(["mu", "T"])[column]
-    out = pd.DataFrame(
-        {
-            "median": grouped.median(),
-            "lo": grouped.quantile(0.1),
-            "hi": grouped.quantile(0.9),
-            "replicates": grouped.count(),
-        }
-    ).reset_index()
-    out["method"] = label
-    return out.dropna(subset=["median"])
-
-
-contour_rows = rows[rows["method"] == "contour"]
 split_rows = rows[rows["method"] == "splitting"]
-curves = pd.concat(
-    [
-        band(contour_rows, "seconds", LABEL_CONTOUR),
-        band(split_rows, "seconds", LABEL_RUN),
-        band(split_rows, "per_kept", LABEL_KEPT),
-    ],
-    ignore_index=True,
-)
+curves = charts.curves_from_rows(rows)
 
 
 def regime(mu: float) -> str:
@@ -185,47 +148,12 @@ def regime(mu: float) -> str:
     return "subcritical: survival to large $T$ is rare"
 
 
-def cost_chart(mu: float) -> alt.Chart:
-    data = curves[curves["mu"] == mu]
-    x = alt.X(
-        "T:Q",
-        scale=alt.Scale(type="log"),
-        title="terminal time T (log scale)",
-        axis=alt.Axis(values=[float(t) for t in TS], format="g", labelOverlap=True),
-    )
-    y_scale = alt.Scale(type="log")
-    y_title = "seconds per tree (log scale)"
-    y = alt.Y("median:Q", scale=y_scale, title=y_title)
-    # Clicking a legend entry shows that method and fades the rest;
-    # shift-click adds more, double-click resets.
-    selection = alt.selection_point(fields=["method"], bind="legend")
+X_BY_T = charts.x_by_t(TS)
+X_BY_MU = charts.x_by_mu(MUS)
 
-    def fade(shown: float, hidden: float) -> alt.Opacity:
-        return alt.condition(selection, alt.value(shown), alt.value(hidden))
 
-    tooltip = [
-        "method",
-        alt.Tooltip("T:Q", format="g"),
-        alt.Tooltip("median:Q", format=".3g", title="median s"),
-        alt.Tooltip("lo:Q", format=".3g", title="10th pct"),
-        alt.Tooltip("hi:Q", format=".3g", title="90th pct"),
-        "replicates",
-    ]
-    base = alt.Chart(data).encode(x=x, color=COLOR)
-    area = base.mark_area().encode(
-        y=alt.Y("lo:Q", scale=y_scale, title=y_title),
-        y2="hi:Q",
-        opacity=fade(0.15, 0.02),
-    )
-    line = base.mark_line(strokeWidth=3).encode(y=y, opacity=fade(1.0, 0.08))
-    points = base.mark_point(size=70, filled=True).encode(
-        y=y, tooltip=tooltip, opacity=fade(1.0, 0.08)
-    )
-    return (
-        alt.layer(area, line, points)
-        .add_params(selection)
-        .properties(width=900, height=380)
-    )
+def cost_chart(data: pd.DataFrame, x: alt.X, **kwargs) -> alt.Chart:
+    return charts.cost_chart(data, x, lam=LAMBDA, statistic="mean", **kwargs)
 
 
 diagnostics = (
@@ -277,9 +205,23 @@ def show_mu(mu: float) -> None:
             f"Benchmarked up to $T = {top_t:.3g}$."
         )
     )
-    display(cost_chart(mu))
+    display(cost_chart(curves[curves["mu"] == mu], X_BY_T))
     display(Markdown("**How splitting behaved**"))
     display(diagnostic_chart(mu))
+
+
+def show_t(t: float) -> None:
+    data = curves[np.isclose(curves["T"], t)]
+    if data.empty:
+        display(Markdown(f"No data for $T = {t:g}$ in this results file."))
+        return
+    display(
+        Markdown(
+            f"$\\lambda = 1$, $T = {t:g}$. "
+            f"Benchmarked $\\mu$ from {data['mu'].min():g} to {data['mu'].max():g}."
+        )
+    )
+    display(cost_chart(data, X_BY_MU, mark_critical=True))
 ```
 
 ## Cost per tree over time, by death rate
@@ -291,58 +233,31 @@ and were restarted), and the number of levels (1 means nothing was split).
 
 ::: {.panel-tabset}
 
-### μ = 0.6
-
 ```{python}
-show_mu(0.6)
+#| output: asis
+for mu in MUS:
+    display(Markdown(f"### μ = {mu:g}"))
+    show_mu(mu)
 ```
 
-### μ = 0.8
+:::
+
+## Cost per tree over death rate, by time
+
+Click through the tabs to step the horizon $T$ from 1 to 100.
+The x axis is now the death rate $\mu$ (on a log scale, as is the cost axis), so each chart shows how cost changes
+from supercritical to highly subcritical at a fixed horizon.
+The dashed line marks the critical rate $\mu = \lambda$.
+At long horizons the supercritical cells are skipped (see the note above),
+so those tabs start at a higher $\mu$.
+
+::: {.panel-tabset}
 
 ```{python}
-show_mu(0.8)
-```
-
-### μ = 1.0
-
-```{python}
-show_mu(1.0)
-```
-
-### μ = 1.2
-
-```{python}
-show_mu(1.2)
-```
-
-### μ = 1.5
-
-```{python}
-show_mu(1.5)
-```
-
-### μ = 2
-
-```{python}
-show_mu(2.0)
-```
-
-### μ = 3
-
-```{python}
-show_mu(3.0)
-```
-
-### μ = 5
-
-```{python}
-show_mu(5.0)
-```
-
-### μ = 10
-
-```{python}
-show_mu(10.0)
+#| output: asis
+for t in TS:
+    display(Markdown(f"### T = {t:g}"))
+    show_t(t)
 ```
 
 :::
@@ -355,7 +270,7 @@ Above 1 the contour process is cheaper.
 
 ```{python}
 #| label: ratio
-wide = curves.pivot_table(index=["mu", "T"], columns="method", values="median").reset_index()
+wide = curves.pivot_table(index=["mu", "T"], columns="method", values="mean").reset_index()
 wide["ratio"] = wide[LABEL_RUN] / wide[LABEL_CONTOUR]
 heat = wide.dropna(subset=["ratio"]).copy()
 heat["T_label"] = heat["T"].map(lambda t: f"{t:g}")
@@ -381,9 +296,130 @@ heat["T_label"] = heat["T"].map(lambda t: f"{t:g}")
             alt.Tooltip("ratio:Q", format=".3g"),
         ],
     )
-    .properties(width=900, height=330)
+    .properties(width=900, height=460)
 )
 ```
+
+## Random numbers drawn
+
+Time depends on the machine and on bookkeeping.
+A machine-independent measure of the stochastic work is the number of random
+numbers drawn, counted by `bdsurv.count_draws` in an untimed pass
+(`scripts/count_draws.py`) that reuses the benchmark seeds.
+Counted runs produce the same trees as the timed ones.
+Splitting also copies every particle's records when it clones it; that costs
+time but no draws, so draws understate its cost.
+The draw counts cover the same constant-rate grid as the timings, with fewer replicates.
+
+```{python}
+#| label: draws
+DRAWS = DATA / "draws.csv"
+HAVE_DRAWS = DRAWS.exists()
+if not HAVE_DRAWS:
+    display(
+        Markdown(
+            "No draw counts yet: run `uv run python scripts/count_draws.py` "
+            "(or shard it with `--shard i/N`, then `--merge`)."
+        )
+    )
+else:
+    draws = pd.read_csv(DRAWS)
+    draws = draws[draws["model"] == "constant"]
+    draw_curves = charts.curves_from_draws(draws)
+    draw_mus = sorted(draw_curves["mu"].unique())
+    draw_ts = sorted(draw_curves["T"].unique())
+
+    def draws_chart(data: pd.DataFrame, x: alt.X, title: str, *, critical: bool) -> alt.Chart:
+        base = alt.Chart(data).encode(x=x, color=charts.color_encoding())
+        y_title = "mean random numbers drawn per tree (log scale)"
+        y = alt.Y("mean:Q", scale=alt.Scale(type="log"), title=y_title)
+        tooltip = [
+            "method",
+            alt.Tooltip(x.shorthand, format="g"),
+            alt.Tooltip("mean:Q", format=",.0f", title="mean draws"),
+            alt.Tooltip("ci_lo:Q", format=",.0f", title="95% CI low"),
+            alt.Tooltip("ci_hi:Q", format=",.0f", title="95% CI high"),
+            "replicates",
+        ]
+        area = base.mark_area(opacity=0.15).encode(
+            y=alt.Y("ci_lo:Q", scale=alt.Scale(type="log"), title=y_title), y2="ci_hi:Q"
+        )
+        line = base.mark_line(strokeWidth=3).encode(y=y)
+        points = base.mark_point(size=70, filled=True).encode(y=y, tooltip=tooltip)
+        layers = [area, line, points]
+        if critical:
+            layers.append(
+                alt.Chart(pd.DataFrame({"mu": [LAMBDA]}))
+                .mark_rule(strokeDash=[6, 4], color="#888888")
+                .encode(x="mu:Q")
+            )
+        return alt.layer(*layers).properties(width=900, height=380, title=title)
+
+    X_DRAWS_BY_MU = alt.X(
+        "mu:Q",
+        scale=alt.Scale(type="log", nice=False, padding=12),
+        title="death rate μ (log scale)",
+        axis=alt.Axis(values=[float(m) for m in draw_mus], format="g", labelOverlap=True),
+    )
+    X_DRAWS_BY_T = alt.X(
+        "T:Q",
+        scale=alt.Scale(type="log", nice=False, padding=12),
+        title="terminal time T (log scale)",
+        axis=alt.Axis(values=[float(t) for t in draw_ts], format="g", labelOverlap=True),
+    )
+```
+
+Points are the mean over replicates and the band is a 95% confidence interval for
+the mean.
+Both axes are logarithmic.
+
+## Random draws per tree over time, by death rate
+
+Click through the tabs to step the death rate $\mu$ from supercritical to highly
+subcritical.
+
+::: {.panel-tabset}
+
+```{python}
+#| output: asis
+if HAVE_DRAWS:
+    for mu in draw_mus:
+        display(Markdown(f"### $\\mu = {mu:g}$"))
+        display(
+            draws_chart(
+                draw_curves[draw_curves["mu"] == mu],
+                X_DRAWS_BY_T,
+                f"μ = {mu:g}",
+                critical=False,
+            )
+        )
+```
+
+:::
+
+## Random draws per tree over death rate, by time
+
+Click through the tabs to step the horizon $T$ from 21.5 to 100.
+The dashed line marks the critical rate $\mu = \lambda$.
+
+::: {.panel-tabset}
+
+```{python}
+#| output: asis
+if HAVE_DRAWS:
+    for t in draw_ts:
+        display(Markdown(f"### T = {t:g}"))
+        display(
+            draws_chart(
+                draw_curves[draw_curves["T"] == t],
+                X_DRAWS_BY_MU,
+                f"T = {t:g}",
+                critical=True,
+            )
+        )
+```
+
+:::
 
 ## Are the trees right?
 
@@ -608,28 +644,28 @@ c = curves[curves["method"] == LABEL_CONTOUR]
 k = curves[curves["method"] == LABEL_KEPT]
 
 lines_out = []
-fastest, slowest = c.loc[c["median"].idxmin()], c.loc[c["median"].idxmax()]
+fastest, slowest = c.loc[c["mean"].idxmin()], c.loc[c["mean"].idxmax()]
 lines_out.append(
-    f"- **Contour process:** median cost per tree runs from "
-    f"{fastest['median'] * 1e3:.2g} ms (μ = {fastest['mu']:g}, T = {fastest['T']:g}) "
-    f"to {slowest['median']:.2g} s (μ = {slowest['mu']:g}, T = {slowest['T']:g})."
+    f"- **Contour process:** mean cost per tree runs from "
+    f"{fastest['mean'] * 1e3:.2g} ms (μ = {fastest['mu']:g}, T = {fastest['T']:g}) "
+    f"to {slowest['mean']:.2g} s (μ = {slowest['mu']:g}, T = {slowest['T']:g})."
 )
 if not heat.empty:
     lo, hi = heat.loc[heat["ratio"].idxmin()], heat.loc[heat["ratio"].idxmax()]
     share = float((heat["ratio"] > 1).mean())
     lines_out.append(
-        f"- **Splitting, per independent tree** costs between {lo['ratio']:.2g}× "
+        f"- **Splitting, per set of trees** costs between {lo['ratio']:.2g}× "
         f"(μ = {lo['mu']:g}, T = {lo['T']:g}) and {hi['ratio']:.2g}× "
         f"(μ = {hi['mu']:g}, T = {hi['T']:g}) the contour process; the contour "
         f"process is cheaper in {share:.0%} of the {len(heat)} cells."
     )
     merged = pd.merge(
-        k[["mu", "T", "median"]],
-        c[["mu", "T", "median"]],
+        k[["mu", "T", "mean"]],
+        c[["mu", "T", "mean"]],
         on=["mu", "T"],
         suffixes=("_kept", "_contour"),
     )
-    cheaper = float((merged["median_kept"] < merged["median_contour"]).mean())
+    cheaper = float((merged["mean_kept"] < merged["mean_contour"]).mean())
     lines_out.append(
         f"- **Splitting, per kept tree** is cheaper than the contour process in "
         f"{cheaper:.0%} of cells, but those trees are correlated."

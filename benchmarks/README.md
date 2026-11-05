@@ -23,9 +23,11 @@ directly from the age distributions, live in `bdpinf` (`qmd_scripts/validation/`
 ## `arley_comparison.qmd`
 
 The same comparison for Arley processes (`lambda = 1`, `mu(t) = m t`) with the linear-rate
-simulators, each slope `m` matched to a constant-rate cell (see
-`scripts/bench_arley_comparison.py`).
-Cells whose Arley trees would be too large (`mu` = 1.2, 1.5, 2) are listed but not run.
+simulators (see `scripts/bench_arley_comparison.py`).
+The default run is three cells matched to constant-rate cells on mean cumulative
+individuals (`mu` = 0.6, 0.8 and 1 at `T` = 20, 40 and 100).
+Cells whose Arley trees would be too large (over 1e5 individuals ever born) are listed
+but not run.
 Data: `benchmarks/data/arley_comparison.csv`, `arley_comparison_units.csv`,
 `arley_slopes.csv` and `arley_environment.json`.
 Produce it locally with
@@ -35,10 +37,17 @@ or on a cluster with `scripts/bench_arley_comparison.slurm submit`.
 The two tabbed sections (cost per tree over time for each slope, with a graph of the birth
 and death rates, and over slope at each time) need every slope run over the whole `T`
 grid: `bench_arley_comparison.py --grid`, or on a cluster `scripts/bench_arley_grid.slurm submit`
-(300 tasks, 100 replicates, `resubmit` to re-run failed tasks).
+(400 tasks, 100 replicates, 7200 s block budget, 32G; `resubmit` to re-run failed tasks, with
+`MEM=64G` if the m = 0.06 blocks at T = 100 are killed again; about 55-60 CPU-hours).
+The slopes are `GRID_SLOPES` (0.06, 0.07, 0.08, 0.1, 0.12, 0.14, 0.17, 0.2, 0.25, 0.3, 0.4).
+Each is paired with the constant rate `mu = 50 m` (3 to 20), which has the same mean
+death rate over `[0, 100]` and so nearly the same survival probability at `T = 100`
+(within 0.2%).
+The slowest slope is 0.06: below about 0.055 the mean individuals ever born exceeds the
+1e5 size cap before the process dies back.
 It writes `benchmarks/data/arley_grid.csv`, `arley_grid_units.csv`, `arley_grid_cells.csv` and
-`arley_grid_environment.json`; cells above the size cap (slopes 0.025, 0.03 and 0.04 at long
-horizons) are listed in `arley_grid_cells.csv` with `feasible = False` and not run.
+`arley_grid_environment.json`; cells above the size cap are listed in
+`arley_grid_cells.csv` with `feasible = False` and not run (none at the current slopes).
 Until those files exist the two sections show a "no grid data" note;
 `uv run python scripts/bench_arley_comparison.py --grid --quick` makes a tiny draft.
 
@@ -46,12 +55,17 @@ Both comparisons also have an untimed *draw count* (`scripts/count_draws.py`, wr
 `benchmarks/data/draws.csv`): it re-runs the benchmark seeds inside `bdsurv.count_draws`
 and records the random numbers each method draws, plus events, clones and records
 copied.
+It covers every feasible cell of the constant-rate grid, every cell of the Arley
+slope-by-time grid, and the cumulative-matched Arley cells (the `model` and `cell_set`
+columns tell them apart), and feeds the random-draws sections of both pages.
 Counts are deterministic and counted runs give identical trees, so this reproduces
 the timed runs without a wrapper in them.
-On a cluster use `scripts/count_draws.slurm submit` (100 tasks, 20 replicates, 16G; then
-`resubmit` re-runs any task that wrote nothing), which merges into `benchmarks/data/draws.csv`.
-Locally, shard it with `--shard i/N` (one replicate of all cells takes about 8 minutes
-serially), then `--merge`.
+On a cluster use `scripts/count_draws.slurm submit` (250 tasks, 50 replicates, 32G, 6 h:
+59,600 runs and about 40 CPU-hours; then `resubmit` re-runs any task that wrote nothing),
+which merges into `benchmarks/data/draws.csv`.
+It does not depend on the timed jobs, so submit all three together.
+Locally, `--quick --replicates 2` makes a tiny draft; the full set is too big to run
+serially, so shard it with `--shard i/N`, then `--merge`.
 
 Run both timed benchmarks on the same code version before comparing them: the
 speed-ups to the shared splitting and contour code (inline `isclose`, copy-on-write
@@ -60,11 +74,13 @@ and `arley_comparison.qmd` reads `method_comparison.csv` for the constant-rate s
 
 ## `method_comparison.qmd`
 
-Compares the contour process with multilevel splitting over a grid of death rates
-`mu` (0.6 to 10, with `lambda = 1`) and horizons `T` (1 to 100).
+Compares the contour process with multilevel splitting over a grid of 18 death rates
+`mu` (0.6 to 20, with `lambda = 1`) and 21 horizons `T` (1 to 100, rounded).
 It shows one tab per `mu` with cost per tree against `T` (log-log axes,
-with a clickable legend), a splitting-versus-contour ratio map, and a Kolmogorov–Smirnov check of
+with a clickable legend), one tab per `T` against `mu`, a splitting-versus-contour ratio
+map, random draws per tree on the same two axes, and a Kolmogorov–Smirnov check of
 the simulated population at `T` against its exact geometric law.
+The cost and draw charts show the mean with a 95% confidence interval.
 
 The page reads `benchmarks/data/method_comparison.csv` (raw timings, one row per
 call or run), `method_comparison_units.csv` and `environment.json`.
@@ -116,8 +132,9 @@ one CPU each) and a merge job that depends on the whole array.
 Shards go to `benchmarks/_shards/` (git-ignored), logs to `logs/`, and the merged
 files to `benchmarks/data/`.
 Edit `--account` in the script for your allocation; it is set to `punim1793`.
-An earlier 100-replicate laptop run (before the speed-ups) took about 4.7 CPU-hours
-in total (most cells take milliseconds), so 200 tasks should finish quickly.
+The 100-replicate cluster run on the 18 by 21 grid up to `mu` = 20 took 17 CPU-hours (the
+worst cell, `mu` = 20 at `T` = 100, is about 100 s per splitting run), and the busiest of
+200 tasks took under half an hour, so the script now defaults to 100 tasks.
 Raise `REPLICATES` for tighter bands.
 Timings from different nodes scatter, so the notebook lists the hosts used and
 shows percentile bands.

@@ -24,7 +24,8 @@ kinds
     the number of items requested.
 
 Other work counters (``events``, ``clones``, ``records_copied``, ``attempts``,
-``particle_steps``, ``contour_steps``, ``spine_resets``) are recorded with
+``particle_steps``, ``contour_steps``, ``spine_resets``, ``capped_levels``,
+``dropped_by_cap``) are recorded with
 :func:`bump`.
 The state is module-global, so counting is not thread-safe.
 """
@@ -77,6 +78,8 @@ class DrawCounts:
             "particle_steps",
             "contour_steps",
             "spine_resets",
+            "capped_levels",
+            "dropped_by_cap",
         ):
             row[name] = self.extras.get(name, 0)
         return row

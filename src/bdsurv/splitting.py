@@ -19,7 +19,7 @@ from __future__ import annotations
 import math
 import warnings
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -157,6 +157,10 @@ class LevelDiagnostic:
         Ensemble mean population size at the level boundary.
     entering_count : int | None, optional
         Number of particles that entered this level interval.
+    n_dropped_by_cap : int, optional
+        Clones discarded when enriching the survivors of this level, because
+        ``replicates * survivors`` exceeded ``n_particles``.  Zero when the cap
+        did not bind and after the last level, which is not enriched.
 
     """
 
@@ -165,6 +169,7 @@ class LevelDiagnostic:
     survivor_count: int
     mean_population: float
     entering_count: int | None = None
+    n_dropped_by_cap: int = 0
 
 
 @dataclass(frozen=True)
@@ -221,6 +226,11 @@ class SplittingSimulationResult:
         Number of attempts made (1 + number of restarts used).
     max_restarts : int | None
         Maximum number of attempts allowed, or ``None`` if unbounded.
+    n_dropped_by_cap : int
+        Clones discarded by the ``n_particles`` cap, summed over all levels and
+        all attempts (``level_diagnostics`` covers the last attempt only).
+    n_capped_levels : int
+        Number of (attempt, level) enrichments where the cap bound.
 
     """
 
@@ -237,6 +247,8 @@ class SplittingSimulationResult:
     initial_particle_count: int = 1
     n_attempts: int = 1
     max_restarts: int | None = 1
+    n_dropped_by_cap: int = 0
+    n_capped_levels: int = 0
 
 
 @dataclass
@@ -919,7 +931,7 @@ def _enrich_survivors(
     level_index: int,
     target_time: float,
     lineage_rows: list[dict[str, Any]],
-) -> tuple[list[_ParticleState], int]:
+) -> tuple[list[_ParticleState], int, int]:
     """Clone survivors R-fold; subsample to cap if needed.
 
     Parameters
@@ -945,12 +957,14 @@ def _enrich_survivors(
 
     Returns
     -------
-    tuple[list[_ParticleState], int]
-        The enriched particle list and the updated ``particle_id_counter``.
+    tuple[list[_ParticleState], int, int]
+        The enriched particle list, the updated ``particle_id_counter`` and the
+        number of clones dropped by the cap (0 if it did not bind).
 
     """
     target_count = splitting_factor * int(survivors.size)
-    if target_count <= n_particles_cap:
+    n_dropped = max(0, target_count - n_particles_cap)
+    if n_dropped == 0:
         selected_slots = np.repeat(survivors, splitting_factor)
     else:
         selected_slots = seed_rng.choice(survivors, size=n_particles_cap, replace=True)
@@ -976,7 +990,7 @@ def _enrich_survivors(
                 "parent_particle_id": parent_particle.particle_id,
             },
         )
-    return next_particles, particle_id_counter
+    return next_particles, particle_id_counter, n_dropped
 
 
 @dataclass
@@ -988,6 +1002,8 @@ class _AttemptOutcome:
     mean_populations: list[float]
     lineage_rows: list[dict[str, Any]]
     n_initial: int
+    n_dropped_by_cap: int = 0
+    n_capped_levels: int = 0
 
 
 def _run_attempt(
@@ -1009,6 +1025,8 @@ def _run_attempt(
     mean_populations: list[float] = [1.0]
     lineage_rows: list[dict[str, Any]] = []
     particle_id_counter = n_initial
+    n_dropped_by_cap = 0
+    n_capped_levels = 0
 
     for level_index in range(1, len(levels)):
         target_time = float(levels[level_index])
@@ -1042,7 +1060,7 @@ def _run_attempt(
 
         # Enrich for the next interval; nothing to enrich after the last one.
         if level_index < len(levels) - 1:
-            particles, particle_id_counter = _enrich_survivors(
+            particles, particle_id_counter, n_dropped = _enrich_survivors(
                 survivors=survivors,
                 particles=particles,
                 splitting_factor=int(replicates[level_index]),
@@ -1053,6 +1071,12 @@ def _run_attempt(
                 target_time=target_time,
                 lineage_rows=lineage_rows,
             )
+            if n_dropped:
+                diagnostics[-1] = replace(diagnostics[-1], n_dropped_by_cap=n_dropped)
+                n_dropped_by_cap += n_dropped
+                n_capped_levels += 1
+                bump("dropped_by_cap", n_dropped)
+                bump("capped_levels")
 
     return _AttemptOutcome(
         particles=particles,
@@ -1060,6 +1084,8 @@ def _run_attempt(
         mean_populations=mean_populations,
         lineage_rows=lineage_rows,
         n_initial=n_initial,
+        n_dropped_by_cap=n_dropped_by_cap,
+        n_capped_levels=n_capped_levels,
     )
 
 
@@ -1308,6 +1334,8 @@ def _run_splitting(
     seed_rng = make_rng(config.random_seed, "seeding")
 
     n_attempts = 0
+    total_dropped = 0
+    total_capped_levels = 0
     outcome: _AttemptOutcome
     while True:
         outcome = _run_attempt(
@@ -1318,6 +1346,8 @@ def _run_splitting(
             dynamics=dynamics,
         )
         n_attempts += 1
+        total_dropped += outcome.n_dropped_by_cap
+        total_capped_levels += outcome.n_capped_levels
         if outcome.particles or (
             max_restarts is not None and n_attempts >= max_restarts
         ):
@@ -1365,4 +1395,6 @@ def _run_splitting(
         initial_particle_count=outcome.n_initial,
         n_attempts=n_attempts,
         max_restarts=max_restarts,
+        n_dropped_by_cap=total_dropped,
+        n_capped_levels=total_capped_levels,
     )

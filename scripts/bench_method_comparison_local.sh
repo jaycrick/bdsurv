@@ -14,7 +14,7 @@
 #   SHARDS        parallel processes (default: cores - 2, at least 1)
 #   REPLICATES    timed replicates per method and (mu, T) cell (default 100)
 #   UNIT_SECONDS  stop starting replicates in a block after this many seconds
-#                 (default 900); blocks cut short are flagged in the units CSV
+#                 (default 1800); blocks cut short are flagged in the units CSV
 #
 # Leave a few cores free and keep the machine otherwise idle: the timings are
 # wall-clock, so a busy or throttled CPU adds noise.  Per-shard logs go to
@@ -27,7 +27,7 @@ cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)
 default_shards=$((cores > 2 ? cores - 2 : 1))
 SHARDS="${SHARDS:-${default_shards}}"
 REPLICATES="${REPLICATES:-100}"
-UNIT_SECONDS="${UNIT_SECONDS:-900}"
+UNIT_SECONDS="${UNIT_SECONDS:-1800}"
 SCRIPT="${SCRIPT:-scripts/bench_method_comparison.py}"
 case "${SCRIPT}" in
     *arley*) SHARDS_DIR="${SHARDS_DIR:-benchmarks/_shards_arley}" ;;
