@@ -104,7 +104,7 @@ Parrot: Critically Endangered - got down to 14 birds in Feb 2017
 :::
 
 ::: {.column width="46%"}
-- For $\mu > \lambda$: $\Pr(\text{Non-Extinct})$ grows exponentially small with $T$.
+- For $\mu > \lambda$: $\Pr(\text{Non-Extinct})$ grows exponentially small with $T$
 - Runs needed per survivor: $1 / \Pr(\text{Non-Extinct})$
 - $\lambda = 1$, $\mu = 2$, $T = 10$: about **44,000** runs
 :::
@@ -135,22 +135,22 @@ Given levels $0=\tau_0 < \tau_1 < \dots < \tau_J = T$, cloning rates $r_j$ and s
 :::
 
 ::: {.column width="44%"}
-- Multilevel splitting made for **unbiased estimators** of rare-event probabilities:
+- Made for **unbiased estimators** of rare-event probabilities:
 $$\hat{p} = \frac{\text{\# surviving trees}}{N_0 \prod_{j=1}^{J} r_j},$$
 and
 $$\mathbb{E}\bigl(\hat p\bigr) = \Pr(Z_T > 0)$$
 - Set of trees **highly correlated** (shared ancestry)
-- Ensemble capped at $N$ processes: if cloning gives more than $N$, subsample uniformly down to $N$
 :::
 ::::
 
 ::: notes
 - draw levels and tree on blackboard
-- $N$ (`n_particles`) is a cap on the ensemble size, not the number of trees returned.
-  The starting size $N_0$ is $R_1$, the cloning number of the first level, capped at $N$.
-  After each cloning step, if more than $N$ processes remain,
-  they are subsampled uniformly back down to $N$.
-  The benchmarks use $N = 1000$.
+:::
+
+::: {.refs}
+Glasserman, Heidelberger, Shahabuddin & Zajic (1999). Multilevel splitting for estimating rare event probabilities. *Operations Research* 47(4), 585--600. [doi:10.1287/opre.47.4.585](https://doi.org/10.1287/opre.47.4.585)
+
+Braunsteins, Hautphenne & Minuesa (2022). Parameter estimation in branching processes with almost sure extinction. *Bernoulli* 28(1), 33--63. [doi:10.3150/21-BEJ1332](https://doi.org/10.3150/21-BEJ1332)
 :::
 
 ## A tree is encoded by its contour

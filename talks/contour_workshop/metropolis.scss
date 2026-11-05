@@ -99,6 +99,23 @@ $presentation-title-slide-text-align: left;
   }
 }
 
+// Small citations pinned to the bottom of a slide, above the footer.
+.reveal .refs {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 1.2em;
+  font-size: 0.4em;
+  color: lighten($mDarkTeal, 25%);
+  text-align: left;
+  p {
+    margin: 0.2em 0;
+  }
+  a {
+    color: inherit;
+  }
+}
+
 // Columns: centre the text against the picture.
 .reveal .columns {
   align-items: center;
@@ -109,7 +126,7 @@ $presentation-title-slide-text-align: left;
   border: 2px solid $mDarkTeal;
   border-radius: 6px;
   padding: 0.4em 0.7em;
-  font-size: 0.72em;
+  font-size: 0.65em;
   line-height: 1.3;
   background: #fff;
   ol, ul {
