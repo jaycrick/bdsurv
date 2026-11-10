@@ -1,0 +1,640 @@
+---
+title: "Statistical validation of the conditioned contour simulators"
+subtitle: "Trees conditioned on the number alive at T, and on the ages of the survivors"
+execute:
+  echo: false
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    page-layout: full
+---
+
+This page checks the two simulators in `src/bdsurv/contour_conditioned.py`
+(see [the method page](../docs/contour_conditioned.md)) against independent references:
+
+- `simulate_contour_given_population` (**ALG1**): a tree conditioned on exactly $n$ individuals alive at $T$;
+- `simulate_contour_given_ages` (**ALG2**): a tree conditioned on the ages of the survivors at $T$.
+
+Every comparison draws fresh samples with fixed seeds, shows the two empirical distributions,
+and records a p-value.
+The last section collects all the p-values.
+The same checks run as slow tests in `tests/test_contour_conditioned.py`.
+
+```{python}
+#| label: setup
+import math
+
+import altair as alt
+import numpy as np
+import pandas as pd
+from IPython.display import Markdown, display
+from scipy import stats
+
+from bdsurv import (
+    PiecewiseConstant,
+    PiecewiseLinear,
+    simulate_birth_death_linear,
+    simulate_birth_death_process,
+    simulate_contour_given_ages,
+    simulate_contour_given_population,
+)
+from bdsurv import _linear_math as lm
+from bdsurv.contour_conditioned import _log_spine_weights, _log_survival_pair
+
+N = 2000  # draws per sample
+T = 3.0
+ALPHA = 1e-3
+
+REFERENCE = "Reference"
+SIMULATOR = "Contour simulator"
+PALETTE = {REFERENCE: "#004488", SIMULATOR: "#BB5566"}
+
+
+alt.data_transformers.disable_max_rows()  # the faceted CDFs have a few thousand rows
+
+
+@alt.theme.register("bdsurv", enable=True)
+def _bdsurv_theme() -> alt.theme.ThemeConfig:
+    return alt.theme.ThemeConfig(
+        {
+            "config": {
+                "view": {"stroke": "transparent"},
+                "axis": {"labelFontSize": 12, "titleFontSize": 13, "gridColor": "#e6e6e6"},
+                "header": {"labelFontSize": 13, "titleFontSize": 13},
+                "title": {"fontSize": 16, "anchor": "start"},
+            }
+        }
+    )
+
+
+def const(value: float, end: float = T) -> PiecewiseConstant:
+    return PiecewiseConstant(np.array([value]), np.array([end]))
+
+
+def line(start: float, end_value: float, end: float = T) -> PiecewiseLinear:
+    return PiecewiseLinear(np.array([start]), np.array([end_value]), np.array([end]))
+
+
+# name -> (birth, death, description); floats are constant rates.
+CASES = {
+    "Subcritical": (0.8, 1.1, "λ = 0.8, μ = 1.1"),
+    "Supercritical": (1.2, 0.7, "λ = 1.2, μ = 0.7"),
+    "Linear birth": (line(1.5, 0.8), const(0.6), "λ(t) from 1.5 to 0.8, μ = 0.6"),
+}
+
+
+def rate_pair(case: str) -> tuple[lm.Rate, lm.Rate]:
+    birth, death, _ = CASES[case]
+    wrap = lambda r: lm.as_rate(const(r) if isinstance(r, float) else r)  # noqa: E731
+    return wrap(birth), wrap(death)
+
+
+def summary(records: pd.DataFrame) -> dict:
+    alive = records[records["survived"]]
+    ages = (T - alive["creation_time"]).to_numpy(dtype=float)
+    spine = alive[alive["is_spine"]]
+    return {
+        "total": len(records),
+        "ages": ages,
+        "spine_age": float(T - spine["creation_time"].iloc[0]) if len(spine) else np.nan,
+    }
+
+
+def alg1(case: str, n: int, seed0: int, n_draws: int = N, direction: str = "auto") -> list[dict]:
+    birth, death, _ = CASES[case]
+    tt = T if isinstance(birth, float) else None
+    return [
+        summary(
+            simulate_contour_given_population(
+                birth, death, n, terminal_time=tt, random_seed=seed0 + i, direction=direction
+            ).records
+        )
+        for i in range(n_draws)
+    ]
+
+
+def alg2(case: str, ages, seed: int, direction: str = "auto", spine_index=None) -> dict:
+    birth, death, _ = CASES[case]
+    tt = T if isinstance(birth, float) else None
+    return summary(
+        simulate_contour_given_ages(
+            birth, death, list(ages), terminal_time=tt, spine_index=spine_index,
+            random_seed=seed, direction=direction,
+        ).records
+    )
+
+
+def forward_by_population(case: str, n_values: list[int], seed0: int) -> dict[int, list[dict]]:
+    """Forward simulation, kept by number alive at T until each n has N runs."""
+    birth, death, _ = CASES[case]
+    out: dict[int, list[dict]] = {n: [] for n in n_values}
+    runs = 0
+    while any(len(v) < N for v in out.values()):
+        seed = seed0 + runs
+        runs += 1
+        if isinstance(birth, float):
+            records = simulate_birth_death_process(birth, death, T, random_seed=seed).records
+        else:
+            records = simulate_birth_death_linear(birth, death, random_seed=seed).records
+        n = int(records["survived"].sum())
+        if n in out and len(out[n]) < N:
+            s = summary(records)
+            s["spine_age"] = np.nan  # forward runs do not mark a spine
+            out[n].append(s)
+    out["runs"] = runs  # type: ignore[index]
+    return out
+
+
+def ecdf(values, **labels) -> pd.DataFrame:
+    """Empirical CDF as a step function, thinned to at most 201 points."""
+    v = np.sort(np.asarray(values, dtype=float))
+    x, counts = np.unique(v, return_counts=True)
+    y = np.cumsum(counts) / v.size
+    if x.size > 200:
+        y = np.linspace(0.0, 1.0, 201)
+        x = np.quantile(v, y)
+    return pd.DataFrame({"x": x, "cdf": y, **labels})
+
+
+def ecdf_chart(frame: pd.DataFrame, x_title: str, row: str, column: str = "case") -> alt.Chart:
+    sources = [s for s in PALETTE if s in set(frame["source"])] or sorted(frame["source"].unique())
+    colours = [PALETTE.get(s, c) for s, c in zip(sources, PALETTE.values())]
+    return (
+        alt.Chart(frame)
+        .mark_line(interpolate="step-after", strokeWidth=2)
+        .encode(
+            x=alt.X("x:Q", title=x_title),
+            y=alt.Y("cdf:Q", title="Cumulative probability"),
+            color=alt.Color(
+                "source:N",
+                scale=alt.Scale(domain=sources, range=colours),
+                legend=alt.Legend(title=None, orient="bottom", labelFontSize=13),
+            ),
+            strokeDash=alt.StrokeDash(
+                "source:N", scale=alt.Scale(domain=sources, range=[[1, 0], [5, 3]]), legend=None
+            ),
+            tooltip=["source", alt.Tooltip("x:Q", format=".3f"), alt.Tooltip("cdf:Q", format=".3f")],
+        )
+        .properties(width=250, height=150)
+        .facet(row=alt.Row(f"{row}:N", title=None), column=alt.Column(f"{column}:N", title=None))
+        .resolve_scale(x="independent")
+    )
+
+
+PVALUES: list[dict] = []
+
+
+def record(check: str, case: str, detail: str, p: float) -> float:
+    PVALUES.append({"check": check, "case": case, "comparison": detail, "p": float(p)})
+    return float(p)
+
+
+def show(frame: pd.DataFrame, **formats) -> None:
+    display(Markdown(frame.to_markdown(index=False, floatfmt=".4g", **formats)))
+
+
+display(
+    Markdown(
+        f"Each sample has **{N}** draws, the terminal time is $T = {T:g}$, and the three rate cases are:\n\n"
+        + "\n".join(f"- **{name}**: {desc}" for name, (_, _, desc) in CASES.items())
+    )
+)
+```
+
+## Extinction probabilities forwards and backwards
+
+The end pieces of the contour are generated from whichever end is cheaper.
+The rule compares the survival probability $S_\mathrm{fwd}$ of the process
+with that of the time-reversed process, $S_\mathrm{rev}$
+(birth rate $\mu(T - t)$, death rate $\lambda(T - t)$).
+The code uses the identity $S_\mathrm{rev} = S_\mathrm{fwd}\,e^{-\Gamma(T)}$, $\Gamma(T) = \int_0^T (\lambda - \mu)$.
+The table compares it with the survival probability computed directly from explicitly reversed rates.
+
+```{python}
+#| label: reversal-identity
+def reverse_rate(rate, horizon: float):
+    ends = np.atleast_1d(np.asarray(rate.epoch_end_times, dtype=float))
+    new_ends = horizon - np.concatenate([[0.0], ends[:-1]])[::-1]
+    if hasattr(rate, "values"):
+        return PiecewiseConstant(np.asarray(rate.values)[::-1].copy(), new_ends)
+    return PiecewiseLinear(
+        np.asarray(rate.end_values)[::-1].copy(),
+        np.asarray(rate.start_values)[::-1].copy(),
+        new_ends,
+    )
+
+
+identity_cases = {
+    **{name: (b, d) for name, (b, d, _) in CASES.items()},
+    "Arley (μ(t) = 0.8 t)": (const(1.0), line(0.0, 0.8 * T)),
+    "Several segments": (
+        PiecewiseConstant(np.array([1.5, 0.4, 1.1]), np.array([1.0, 2.2, T])),
+        PiecewiseLinear(np.array([0.3, 1.2]), np.array([0.9, 0.2]), np.array([1.7, T])),
+    ),
+}
+rows = []
+for name, (b, d) in identity_cases.items():
+    b_like = const(b) if isinstance(b, float) else b
+    d_like = const(d) if isinstance(d, float) else d
+    fwd, rev = _log_survival_pair(lm.as_rate(b_like), lm.as_rate(d_like), T)
+    direct = lm.log_survival_probability(
+        lm.as_rate(reverse_rate(d_like, T)), lm.as_rate(reverse_rate(b_like, T)), T
+    )
+    rows.append(
+        {
+            "Rates": name,
+            "S forwards": math.exp(fwd),
+            "S reversed (identity)": math.exp(rev),
+            "S reversed (direct)": math.exp(direct),
+            "Relative difference": abs(math.expm1(rev - direct)),
+            "End pieces from": "top" if rev > fwd else "bottom",
+        }
+    )
+show(pd.DataFrame(rows))
+```
+
+## ALG1 against forward simulation
+
+The reference is plain forward simulation, keeping the runs with exactly $n$ individuals alive at $T$.
+Three summaries are compared with a two-sample Kolmogorov–Smirnov test:
+the total number of individuals ever born, the ages of the survivors (pooled over trees),
+and the age of the oldest survivor.
+
+```{python}
+#| label: alg1-forward
+N_VALUES = [1, 2, 3]
+forward = {
+    case: forward_by_population(case, N_VALUES, 10**7 * (k + 1))
+    for k, case in enumerate(CASES)
+}
+contour = {
+    (case, n): alg1(case, n, 10**5 * (10 * k + n))
+    for k, case in enumerate(CASES)
+    for n in N_VALUES
+}
+
+STATS = {
+    "Total individuals ever born": lambda s: [float(s["total"])],
+    "Survivor ages (pooled)": lambda s: list(s["ages"]),
+    "Oldest survivor age": lambda s: [float(np.max(s["ages"]))],
+}
+frames = {name: [] for name in STATS}
+for case in CASES:
+    for n in N_VALUES:
+        for name, pick in STATS.items():
+            ref = [x for s in forward[case][n] for x in pick(s)]
+            sim = [x for s in contour[(case, n)] for x in pick(s)]
+            record("ALG1 against forward simulation", case, f"n = {n}: {name}", stats.ks_2samp(ref, sim).pvalue)
+            frames[name].append(ecdf(ref, source=REFERENCE, case=case, n=f"n = {n}"))
+            frames[name].append(ecdf(sim, source=SIMULATOR, case=case, n=f"n = {n}"))
+
+show(
+    pd.DataFrame(
+        [
+            {
+                "Case": case,
+                "Forward runs needed": forward[case]["runs"],
+                **{f"Accepted, n = {n}": len(forward[case][n]) for n in N_VALUES},
+            }
+            for case in CASES
+        ]
+    )
+)
+```
+
+::: {.panel-tabset}
+
+### Total individuals
+
+```{python}
+#| label: alg1-total-chart
+ecdf_chart(pd.concat(frames["Total individuals ever born"]), "Total individuals ever born", "n")
+```
+
+### Survivor ages
+
+```{python}
+#| label: alg1-ages-chart
+ecdf_chart(pd.concat(frames["Survivor ages (pooled)"]), "Age of a survivor at T", "n")
+```
+
+### Oldest survivor
+
+```{python}
+#| label: alg1-oldest-chart
+ecdf_chart(pd.concat(frames["Oldest survivor age"]), "Age of the oldest survivor at T", "n")
+```
+
+:::
+
+The reference is forward simulation with rejection; the solid line is the reference and the dashed line the contour simulator.
+Survivor ages within one tree are dependent, so the pooled-age p-values are approximate.
+
+## Age laws of the spine and of the other survivors
+
+The spine is the survivor that ends the first piece of the contour.
+With $b = T - a$, $I(t) = \int_0^t \mu(s) e^{-\Gamma(s)}\,ds$ and $u(b) = (1 + I(b)) / (1 + I(T))$,
+its age has density proportional to $\lambda(b)\,e^{-(\Lambda(T) - \Lambda(b))}\,(1 - u(b))$ on $(0, T)$,
+with an atom at $a = T$ (the root survived) of unnormalised mass $e^{-\Lambda(T)}$.
+Every other survivor has age density proportional to $\lambda(b)\,e^{-(\Lambda(T) - \Lambda(b))}\,u(b)$.
+These are the age laws in `bdpinf`.
+The total mass of the spine law should equal $S_\mathrm{rev}$, which the table checks.
+
+```{python}
+#| label: age-laws
+GRID = 2001
+
+
+def age_laws(case: str) -> dict:
+    birth, death = rate_pair(case)
+    b = np.linspace(0.0, T, GRID)
+    big_i = np.array(
+        [math.exp(lm._log_integral(death, birth, death, float(x), sign=-1.0)) for x in b]
+    )
+    u = (1.0 + big_i) / (1.0 + big_i[-1])
+    base = lm.value(birth, b) * np.exp(-(lm.cumulative(birth, T) - lm.cumulative(birth, b)))
+    spine, other = base * (1.0 - u), base * u
+
+    def cdf_in_age(density: np.ndarray) -> np.ndarray:
+        # age a = T - b, so integrate the density from b = T downwards.
+        steps = 0.5 * (density[1:] + density[:-1]) * np.diff(b)
+        mass = np.concatenate([[0.0], np.cumsum(steps[::-1])])
+        return mass / mass[-1]
+
+    atom = math.exp(-float(lm.cumulative(birth, T)))
+    spine_mass = float(np.sum(0.5 * (spine[1:] + spine[:-1]) * np.diff(b)))
+    return {
+        "age": T - b[::-1],
+        "spine_cdf": cdf_in_age(spine),
+        "other_cdf": cdf_in_age(other),
+        "atom": atom / (atom + spine_mass),
+        "mass": atom + spine_mass,
+        "s_rev": math.exp(_log_survival_pair(birth, death, T)[1]),
+    }
+
+
+laws = {case: age_laws(case) for case in CASES}
+spine_frames, other_frames, atom_rows = [], [], []
+for case in CASES:
+    law = laws[case]
+    draws = contour[(case, 3)]
+    spine_ages = np.array([s["spine_age"] for s in draws])
+    at_top = np.isclose(spine_ages, T)
+    hits = int(at_top.sum())
+    test = stats.binomtest(hits, len(draws), law["atom"])
+    record("Spine age law", case, "P(spine age = T)", test.pvalue)
+    interval = test.proportion_ci(0.95, method="wilson")
+    atom_rows.append(
+        {
+            "Case": case,
+            "Total mass of spine law": law["mass"],
+            "S reversed": law["s_rev"],
+            "P(spine age = T), law": law["atom"],
+            "Observed": hits / len(draws),
+            "95% interval": f"{interval.low:.4f} to {interval.high:.4f}",
+        }
+    )
+    younger = spine_ages[~at_top]
+    p = stats.kstest(younger, lambda a, law=law: np.interp(a, law["age"], law["spine_cdf"])).pvalue
+    record("Spine age law", case, "Spine age given age < T", p)
+    spine_frames.append(ecdf(younger, source=SIMULATOR, case=case, kind="Spine, age < T"))
+    spine_frames.append(
+        pd.DataFrame({"x": law["age"][::10], "cdf": law["spine_cdf"][::10], "source": REFERENCE,
+                      "case": case, "kind": "Spine, age < T"})
+    )
+    others = np.concatenate(
+        [np.delete(s["ages"], np.argmin(np.abs(s["ages"] - s["spine_age"]))) for s in draws]
+    )
+    p = stats.kstest(others, lambda a, law=law: np.interp(a, law["age"], law["other_cdf"])).pvalue
+    record("Non-spine age law", case, "Ages of the other survivors (n = 3)", p)
+    other_frames.append(ecdf(others, source=SIMULATOR, case=case, kind="Other survivors"))
+    other_frames.append(
+        pd.DataFrame({"x": law["age"][::10], "cdf": law["other_cdf"][::10], "source": REFERENCE,
+                      "case": case, "kind": "Other survivors"})
+    )
+
+show(pd.DataFrame(atom_rows))
+```
+
+```{python}
+#| label: age-laws-chart
+ecdf_chart(pd.concat(spine_frames + other_frames), "Age at T", "kind")
+```
+
+The reference here is the law computed by quadrature; the samples are ALG1 trees with $n = 3$.
+The two non-spine survivors of a tree are independent, so the test of their ages is exact.
+
+## Generating from the top or from the bottom
+
+Both simulators can build the end pieces from the $T$ end (`"top"`) or from the $0$ end (`"bottom"`).
+For ALG2 these use different constructions of the spine piece:
+a direct start from $(T, T - a)$, or a cut at the last down-crossing of level $T - a$.
+The two must give the same distribution.
+
+```{python}
+#| label: direction
+TOP, BOTTOM = "Top", "Bottom"
+dir_frames, dir_rows = [], []
+
+
+def compare_directions(label: str, case: str, draw) -> None:
+    top = [draw("top", i)["total"] for i in range(N)]
+    bottom = [draw("bottom", 10**6 + i)["total"] for i in range(N)]
+    p = record("Top against bottom", case, label, stats.ks_2samp(top, bottom).pvalue)
+    dir_rows.append({"Case": case, "Setting": f"{label}: {SETTING_DETAIL[label]}", "Mean total, top": np.mean(top),
+                     "Mean total, bottom": np.mean(bottom), "KS p-value": p})
+    dir_frames.append(ecdf(top, source=TOP, case=case, setting=label))
+    dir_frames.append(ecdf(bottom, source=BOTTOM, case=case, setting=label))
+
+
+SETTING_DETAIL = {
+    "ALG1 (a)": "n = 1",
+    "ALG1 (b)": "n = 3",
+    "ALG2 (c)": "ages 1.0 and 2.5, spine sampled",
+    "ALG2 (d)": "ages 0.7, 1.9 and 2.6, spine is the 1.9",
+    "ALG2 (e)": "ages 1.0 and T, so the root survived",
+}
+SETTINGS = {
+    "ALG1 (a)": lambda case: lambda d, i: alg1(case, 1, 3 * 10**7 + i, 1, d)[0],
+    "ALG1 (b)": lambda case: lambda d, i: alg1(case, 3, 4 * 10**7 + i, 1, d)[0],
+    "ALG2 (c)": lambda case: lambda d, i: alg2(
+        case, (1.0, 2.5), 5 * 10**7 + i, d
+    ),
+    "ALG2 (d)": lambda case: lambda d, i: alg2(
+        case, (0.7, 1.9, 2.6), 6 * 10**7 + i, d, 1
+    ),
+    "ALG2 (e)": lambda case: lambda d, i: alg2(
+        case, (1.0, T), 7 * 10**7 + i, d
+    ),
+}
+for case in CASES:
+    for label, make in SETTINGS.items():
+        compare_directions(label, case, make(case))
+
+PALETTE.update({TOP: "#004488", BOTTOM: "#BB5566"})
+ecdf_chart(pd.concat(dir_frames), "Total individuals ever born", "setting")
+```
+
+The rows are: (a) ALG1 with $n = 1$; (b) ALG1 with $n = 3$; (c) ALG2 with ages 1.0 and 2.5 and the spine sampled; (d) ALG2 with ages 0.7, 1.9 and 2.6 and the 1.9 given as the spine; (e) ALG2 with ages 1.0 and $T$, so the root survived.
+
+```{python}
+#| label: direction-table
+show(pd.DataFrame(dir_rows))
+```
+
+## Composition of the two simulators
+
+If the ages of the survivors of an ALG1 tree are shuffled and passed to ALG2 with no spine given,
+the resulting tree must again be a draw from ALG1's distribution.
+This exercises the spine-choice weights and every piece of ALG2 together.
+
+```{python}
+#| label: composition
+comp_frames, comp_rows = [], []
+shuffler = np.random.default_rng(2026)
+for k, case in enumerate(CASES):
+    for n in (2, 3):
+        composed, reference = [], []
+        for i in range(N):
+            ages = alg1(case, n, 8 * 10**7 + 10**6 * (2 * k + n) + i, 1)[0]["ages"].copy()
+            shuffler.shuffle(ages)
+            composed.append(alg2(case, ages, 9 * 10**7 + i)["total"])
+        reference = [s["total"] for s in contour[(case, n)]]
+        p = record("Composition", case, f"n = {n}: total individuals", stats.ks_2samp(composed, reference).pvalue)
+        comp_rows.append({"Case": case, "n": n, "Mean total, ALG1": np.mean(reference),
+                          "Mean total, ALG1 then ALG2": np.mean(composed), "KS p-value": p})
+        comp_frames.append(ecdf(reference, source=REFERENCE, case=case, n=f"n = {n}"))
+        comp_frames.append(ecdf(composed, source=SIMULATOR, case=case, n=f"n = {n}"))
+
+ecdf_chart(pd.concat(comp_frames), "Total individuals ever born", "n")
+```
+
+Here the reference is ALG1 alone, and the dashed line is ALG1 followed by ALG2.
+
+```{python}
+#| label: composition-table
+show(pd.DataFrame(comp_rows))
+```
+
+## Choice of the spine
+
+Given two ages, ALG2 picks the spine with probability proportional to
+$w_i = (I(T) - I(b_i)) / (1 + I(b_i))$.
+The chart compares how often the first age was chosen with that probability.
+
+```{python}
+#| label: spine-choice
+AGE_PAIRS = [(1.0, 2.5), (0.5, 2.8), (2.7, 0.4)]
+choice_rows = []
+for k, case in enumerate(CASES):
+    birth, death = rate_pair(case)
+    for j, ages in enumerate(AGE_PAIRS):
+        log_w = _log_spine_weights(birth, death, T, ages)
+        expected = float(np.exp(log_w[0] - np.logaddexp.reduce(log_w)))
+        seed0 = 10**8 + 10**6 * (3 * k + j)
+        hits = sum(
+            math.isclose(alg2(case, ages, seed0 + i)["spine_age"], ages[0]) for i in range(N)
+        )
+        test = stats.binomtest(hits, N, expected)
+        record("Spine choice", case, f"ages {ages[0]} and {ages[1]}", test.pvalue)
+        interval = test.proportion_ci(0.95, method="wilson")
+        choice_rows.append(
+            {"case": case, "ages": f"{ages[0]} and {ages[1]}", "expected": expected,
+             "observed": hits / N, "low": interval.low, "high": interval.high, "p": test.pvalue}
+        )
+choice = pd.DataFrame(choice_rows)
+
+base = alt.Chart(choice).encode(y=alt.Y("ages:N", title="Ages (first, second)"))
+interval = base.mark_rule(strokeWidth=2, color=PALETTE[SIMULATOR]).encode(
+    x=alt.X("low:Q", title="Probability that the first age is the spine", scale=alt.Scale(domain=[0, 1])),
+    x2="high:Q",
+)
+observed = base.mark_point(size=80, filled=True, color=PALETTE[SIMULATOR]).encode(
+    x="observed:Q",
+    tooltip=["case", "ages", alt.Tooltip("observed:Q", format=".4f"),
+             alt.Tooltip("expected:Q", format=".4f"), alt.Tooltip("p:Q", format=".3f")],
+)
+expected_mark = base.mark_tick(thickness=3, size=26, color=PALETTE[REFERENCE]).encode(x="expected:Q")
+(interval + expected_mark + observed).properties(width=250, height=110).facet(
+    column=alt.Column("case:N", title=None)
+)
+```
+
+The blue tick is the probability from the weights; the red point is the observed frequency with its 95% interval.
+
+```{python}
+#| label: spine-choice-table
+show(
+    choice.rename(
+        columns={"case": "Case", "ages": "Ages", "expected": "Expected", "observed": "Observed",
+                 "low": "95% low", "high": "95% high", "p": "Binomial p-value"}
+    )
+)
+```
+
+## All p-values
+
+If the simulators are exact, the p-values behave like uniform draws on $(0, 1)$
+(the tests on counts are slightly conservative, and they are not all independent).
+A wrong simulator would put several of them near zero.
+
+```{python}
+#| label: all-pvalues
+pvalues = pd.DataFrame(PVALUES).sort_values("p").reset_index(drop=True)
+m = len(pvalues)
+pvalues["expected"] = (np.arange(1, m + 1) - 0.5) / m
+smallest = pvalues.iloc[0]
+display(
+    Markdown(
+        f"There are **{m}** p-values. The smallest is **{smallest['p']:.4f}** "
+        f"({smallest['check']}, {smallest['case']}, {smallest['comparison']}); "
+        f"with {m} uniform draws the smallest is below that value with probability "
+        f"{1 - (1 - smallest['p']) ** m:.2f}. "
+        f"**{int((pvalues['p'] < ALPHA).sum())}** fall below the test level {ALPHA:g}, "
+        f"and {int((pvalues['p'] < 0.05).sum())} fall below 0.05 "
+        f"(about {0.05 * m:.1f} expected)."
+    )
+)
+
+points = (
+    alt.Chart(pvalues)
+    .mark_point(size=50, filled=True, color=PALETTE[SIMULATOR], opacity=0.8)
+    .encode(
+        x=alt.X("expected:Q", title="Uniform quantile", scale=alt.Scale(domain=[0, 1])),
+        y=alt.Y("p:Q", title="Observed p-value", scale=alt.Scale(domain=[0, 1])),
+        tooltip=["check", "case", "comparison", alt.Tooltip("p:Q", format=".4f")],
+    )
+)
+diagonal = (
+    alt.Chart(pd.DataFrame({"x": [0.0, 1.0], "y": [0.0, 1.0]}))
+    .mark_line(color=PALETTE[REFERENCE], strokeWidth=1.5, strokeDash=[5, 3])
+    .encode(x="x:Q", y="y:Q")
+)
+(diagonal + points).properties(width=420, height=420, title="Sorted p-values against uniform quantiles")
+```
+
+```{python}
+#| label: pvalue-summary
+by_check = (
+    pvalues.groupby("check")["p"]
+    .agg(count="count", smallest="min", median="median")
+    .reset_index()
+    .rename(columns={"check": "Check", "count": "p-values", "smallest": "Smallest", "median": "Median"})
+)
+show(by_check)
+```
+
+::: {.callout-note collapse="true"}
+## Every p-value
+
+```{python}
+#| label: pvalue-table
+show(
+    pvalues[["check", "case", "comparison", "p"]].rename(
+        columns={"check": "Check", "case": "Case", "comparison": "Comparison", "p": "p-value"}
+    )
+)
+```
+:::

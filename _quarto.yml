@@ -5,6 +5,7 @@ project:
     - benchmarks/method_comparison.qmd
     - benchmarks/arley_comparison.qmd
     - benchmarks/simulator_speed.qmd
+    - benchmarks/contour_conditioned_validation.qmd
     - docs/*.md
 
 website:
@@ -23,10 +24,14 @@ website:
             file: benchmarks/arley_comparison.qmd
           - text: "Simulator speed"
             file: benchmarks/simulator_speed.qmd
+          - text: "Conditioned contour simulators: validation"
+            file: benchmarks/contour_conditioned_validation.qmd
       - text: "Methods"
         menu:
           - text: "Contour process"
             file: docs/contour_process.md
+          - text: "Contour process given population or ages"
+            file: docs/contour_conditioned.md
           - text: "Multilevel splitting"
             file: docs/splitting.md
           - text: "Lifespan-at-birth engine"

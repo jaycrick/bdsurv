@@ -20,6 +20,16 @@ Times every `bdsurv` simulator once, on a laptop-sized workload.
 Exact-versus-theory validation of the simulated ages, and the timing of sampling
 directly from the age distributions, live in `bdpinf` (`qmd_scripts/validation/`).
 
+## `contour_conditioned_validation.qmd`
+
+Statistical validation of `simulate_contour_given_population` and
+`simulate_contour_given_ages` (`docs/contour_conditioned.md`).
+It draws its own samples with fixed seeds (2000 per comparison, about four minutes)
+and needs no data files:
+forward simulation with rejection, the spine and non-spine age laws,
+top against bottom generation, composition of the two simulators and the spine choice,
+with every p-value collected at the end.
+
 ## `arley_comparison.qmd`
 
 The same comparison for Arley processes (`lambda = 1`, `mu(t) = m t`) with the linear-rate
