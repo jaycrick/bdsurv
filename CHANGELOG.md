@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `simulate_contour_given_population`: exact contour simulator for a birth-death
+  tree conditioned on exactly `n` individuals alive at `T`, for scalar or
+  piecewise constant / linear rates (`docs/contour_conditioned.md`).
+- `simulate_contour_given_ages`: exact contour simulator conditioned on the ages
+  of the survivors at `T`, with the spine sampled from its exact weights or given.
 - `LevelDiagnostic.n_dropped_by_cap` and `SplittingSimulationResult.n_dropped_by_cap` /
   `n_capped_levels`: how many clones the `n_particles` cap discarded (per level, and
   summed over levels and attempts). `count_draws` reports them as `dropped_by_cap`

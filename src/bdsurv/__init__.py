@@ -24,6 +24,12 @@ Unconditioned forward simulators return a ``SimulatedProcess``:
 - ``simulate_birth_death_lifespans`` — JIT-compiled lifespan-at-birth engine.
 - ``simulate_birth_death_linear`` — exact, piecewise-linear rates.
 - ``sample_conditioned_survival_process`` — era-conditioned multilevel splitting.
+
+Exact contour simulators conditioned on the population alive at ``T``
+(see ``docs/contour_conditioned.md``), returning a ``SimulatedTree``:
+
+- ``simulate_contour_given_population`` — exactly ``n`` individuals alive at ``T``.
+- ``simulate_contour_given_ages`` — survivors at ``T`` with the given ages.
 """
 
 import os
@@ -41,6 +47,10 @@ from bdsurv._rng_counter import DrawCounts, count_draws  # noqa: E402
 from bdsurv.contour import (  # noqa: E402
     simulate_birth_death_process_from_contour_process,
     simulate_linear_rate_contour_process,
+)
+from bdsurv.contour_conditioned import (  # noqa: E402
+    simulate_contour_given_ages,
+    simulate_contour_given_population,
 )
 from bdsurv.era_conditioning import (  # noqa: E402
     ConditionedSurvivalResult,
@@ -109,6 +119,8 @@ __all__ = [
     "simulate_birth_death_linear",
     "simulate_birth_death_process",
     "simulate_birth_death_process_from_contour_process",
+    "simulate_contour_given_ages",
+    "simulate_contour_given_population",
     "simulate_linear_rate_contour_process",
     "simulate_linear_survival_splitting",
     "simulate_subcritical_survival_splitting",
