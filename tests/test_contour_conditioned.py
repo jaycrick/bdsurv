@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import pytest
+from scipy import stats
 from scipy.integrate import quad
 
 from bdsurv import _linear_math as lm
@@ -24,7 +25,12 @@ from bdsurv.contour_conditioned import (
     simulate_contour_given_ages,
     simulate_contour_given_population,
 )
-from bdsurv.linear_rates import PiecewiseConstant, PiecewiseLinear
+from bdsurv.gillespie import simulate_birth_death_process
+from bdsurv.linear_rates import (
+    PiecewiseConstant,
+    PiecewiseLinear,
+    simulate_birth_death_linear,
+)
 
 T = 4.0
 N_SEEDS = 200
@@ -539,6 +545,13 @@ class TestAgesInputErrors:
         with pytest.raises(ValueError, match="all spine weights"):
             simulate_contour_given_ages(1.0, 0.0, [1.0, 2.0], T, random_seed=0)
 
+    @pytest.mark.parametrize("direction", ["auto", "top", "bottom"])
+    def test_given_spine_with_zero_weight(self, direction: Any) -> None:
+        with pytest.raises(ValueError, match="zero spine weight"):
+            simulate_contour_given_ages(
+                1.0, 0.0, [1.0, 2.0], T, spine_index=0, direction=direction
+            )
+
     @pytest.mark.parametrize("birth", [0.0, _const(0.0)])
     def test_zero_birth_rate(self, birth: Any) -> None:
         tt = T if isinstance(birth, float) else None
@@ -575,3 +588,269 @@ class TestAgesInputErrors:
                 T,
                 direction="sideways",  # type: ignore[arg-type]
             )
+
+
+# ---------------------------------------------------------------------------
+# T3: statistical tests (slow, fixed seeds, significance level 1e-3)
+# ---------------------------------------------------------------------------
+
+ALPHA = 1e-3
+T_SHORT = 3.0
+
+
+def _reverse_rate(rate: Any, horizon: float) -> Any:
+    """Return the rate-like ``t -> rate(horizon - t)``."""
+    ends = np.atleast_1d(np.asarray(rate.epoch_end_times, dtype=np.float64))
+    new_ends = horizon - np.concatenate([[0.0], ends[:-1]])[::-1]
+    if hasattr(rate, "values"):
+        return PiecewiseConstant(np.asarray(rate.values)[::-1].copy(), new_ends)
+    return PiecewiseLinear(
+        np.asarray(rate.end_values)[::-1].copy(),
+        np.asarray(rate.start_values)[::-1].copy(),
+        new_ends,
+    )
+
+
+def _multi_segment() -> tuple[Any, Any]:
+    birth = PiecewiseConstant(np.array([1.5, 0.4, 1.1]), np.array([1.0, 2.5, T]))
+    death = PiecewiseLinear(
+        np.array([0.3, 1.2]), np.array([0.9, 0.2]), np.array([1.7, T])
+    )
+    return birth, death
+
+
+@pytest.mark.slow
+class TestSurvivalReversalIdentity:
+    """T3.1: ``log_S_fwd - Gamma(T)`` is the survival of the reversed rates."""
+
+    @pytest.mark.parametrize(
+        "rates",
+        [
+            (_const(0.8), _const(1.1)),
+            (_const(1.2), _const(0.7)),
+            (_line(2.0, 0.5), _const(1.0)),
+            ARLEY,
+            _multi_segment(),
+        ],
+        ids=["const_sub", "const_super", "linear_birth", "arley", "multi_segment"],
+    )
+    def test_matches_explicit_reversal(self, rates: tuple[Any, Any]) -> None:
+        birth, death = (lm.as_rate(r) for r in rates)
+        _, log_s_rev = _log_survival_pair(birth, death, T)
+        rev_birth = lm.as_rate(_reverse_rate(rates[1], T))
+        rev_death = lm.as_rate(_reverse_rate(rates[0], T))
+        expected = lm.log_survival_probability(rev_birth, rev_death, T)
+        assert log_s_rev == pytest.approx(expected, rel=1e-9, abs=1e-10)
+
+
+def _forward_run(birth: Any, death: Any, horizon: float, seed: int) -> Any:
+    if isinstance(birth, float):
+        return simulate_birth_death_process(birth, death, horizon, random_seed=seed)
+    return simulate_birth_death_linear(birth, death, random_seed=seed)
+
+
+def _tree_summary(records: pd.DataFrame, horizon: float) -> tuple[int, list[float]]:
+    alive = records[records["survived"]]
+    return len(records), [float(horizon - c) for c in alive["creation_time"]]
+
+
+def _rejection_reference(
+    birth: Any, death: Any, horizon: float, n: int, n_accept: int, seed0: int
+) -> list[tuple[int, list[float]]]:
+    out: list[tuple[int, list[float]]] = []
+    seed = seed0
+    while len(out) < n_accept:
+        process = _forward_run(birth, death, horizon, seed)
+        seed += 1
+        if int(process.records["survived"].sum()) == n:
+            out.append(_tree_summary(process.records, horizon))
+    return out
+
+
+def _alg1_summaries(
+    birth: Any, death: Any, horizon: float, n: int, n_draws: int, seed0: int, **kw: Any
+) -> list[tuple[int, list[float]]]:
+    terminal_time = horizon if isinstance(birth, float) else None
+    return [
+        _tree_summary(
+            simulate_contour_given_population(
+                birth,
+                death,
+                n,
+                terminal_time=terminal_time,
+                random_seed=seed0 + i,
+                **kw,
+            ).records,
+            horizon,
+        )
+        for i in range(n_draws)
+    ]
+
+
+FORWARD_CASES = {
+    "sub": (0.8, 1.1, T_SHORT),
+    "super": (1.2, 0.7, T_SHORT),
+    "linear": (_line(1.5, 0.8, T_SHORT), _const(0.6, T_SHORT), T_SHORT),
+}
+
+
+@pytest.mark.slow
+class TestAgainstRejection:
+    """T3.2: ALG1 matches forward simulation conditioned on ``Z_T == n``."""
+
+    @pytest.mark.parametrize("n", [1, 2, 3])
+    @pytest.mark.parametrize("case", list(FORWARD_CASES))
+    def test_matches_forward(self, case: str, n: int) -> None:
+        birth, death, horizon = FORWARD_CASES[case]
+        n_samples = 2500
+        reference = _rejection_reference(
+            birth, death, horizon, n, n_samples, 10**6 * (n + 1)
+        )
+        draws = _alg1_summaries(birth, death, horizon, n, n_samples, 7_000 * n)
+        for name, pick in [
+            ("total", lambda s: [float(s[0])]),
+            ("ages", lambda s: s[1]),
+            ("oldest", lambda s: [max(s[1])]),
+        ]:
+            a = [x for s in reference for x in pick(s)]
+            b = [x for s in draws for x in pick(s)]
+            p = stats.ks_2samp(a, b).pvalue
+            assert p > ALPHA, (case, n, name, p, np.mean(a), np.mean(b))
+
+
+@pytest.mark.slow
+class TestDirectionEquivalence:
+    """T3.3: forcing the end pieces from the top or the bottom agrees."""
+
+    @pytest.mark.parametrize("regime", ["subcritical", "supercritical", "arley"])
+    @pytest.mark.parametrize("n", [1, 3])
+    def test_population(self, regime: str, n: int) -> None:
+        n_draws = 1500
+        sizes = {}
+        for direction in DIRECTIONS:
+            offset = 0 if direction == "top" else 10**5
+            sizes[direction] = [
+                len(_tree(regime, n, offset + i, direction).records)
+                for i in range(n_draws)
+            ]
+        for transform in (lambda x: x, lambda x: x - n):  # total, extinct
+            a = [transform(x) for x in sizes["top"]]
+            b = [transform(x) for x in sizes["bottom"]]
+            assert stats.ks_2samp(a, b).pvalue > ALPHA, (regime, n)
+
+    @pytest.mark.parametrize("regime", ["subcritical", "supercritical", "arley"])
+    @pytest.mark.parametrize(
+        ("ages", "spine_index"),
+        [((1.0, 2.5), None), ((1.0, 2.5), 0), ((0.7, 1.9, 3.2), 1), ((1.0, T), None)],
+    )
+    def test_given_ages(
+        self, regime: str, ages: tuple[float, ...], spine_index: int | None
+    ) -> None:
+        n_draws = 1200
+        sizes = {}
+        for direction in DIRECTIONS:
+            offset = 0 if direction == "top" else 10**5
+            sizes[direction] = [
+                len(
+                    _ages_tree(regime, ages, offset + i, direction, spine_index).records
+                )
+                for i in range(n_draws)
+            ]
+        n = len(ages)
+        for transform in (lambda x: x, lambda x: x - n):
+            a = [transform(x) for x in sizes["top"]]
+            b = [transform(x) for x in sizes["bottom"]]
+            assert stats.ks_2samp(a, b).pvalue > ALPHA, (regime, ages, spine_index)
+
+
+@pytest.mark.slow
+class TestComposition:
+    """T3.4: ages of an ALG1 tree fed to ALG2 reproduce ALG1's total size."""
+
+    @pytest.mark.parametrize("regime", ["subcritical", "supercritical", "arley"])
+    @pytest.mark.parametrize("n", [2, 3])
+    def test_total_individuals(self, regime: str, n: int) -> None:
+        n_draws = 1500
+        shuffler = np.random.default_rng(2024)
+        composed: list[int] = []
+        for i in range(n_draws):
+            ages = _survivor_ages(_tree(regime, n, i))
+            shuffler.shuffle(ages)
+            composed.append(len(_ages_tree(regime, tuple(ages), 10**5 + i).records))
+        reference = [
+            len(_tree(regime, n, 2 * 10**5 + i).records) for i in range(n_draws)
+        ]
+        assert stats.ks_2samp(composed, reference).pvalue > ALPHA, (regime, n)
+
+
+@pytest.mark.slow
+class TestSpineChoiceFrequency:
+    """T3.5: the spine is chosen with the normalised spine weights."""
+
+    @pytest.mark.parametrize("regime", ["subcritical", "supercritical", "arley"])
+    @pytest.mark.parametrize("ages", [(1.0, 2.5), (0.5, 3.0), (3.5, 0.4)])
+    def test_frequency(self, regime: str, ages: tuple[float, ...]) -> None:
+        n_draws = 4000
+        birth, death = REGIMES[regime]
+        rates = _resolve_rates(birth, death, _terminal_time(birth))
+        log_w = _log_spine_weights(rates.birth, rates.death, T, ages)
+        probs = np.exp(log_w - np.logaddexp.reduce(log_w))
+        picks = [_ages_contour_of(regime, ages, i, "auto")[1] for i in range(n_draws)]
+        hits = sum(1 for k in picks if k == 0)
+        result = stats.binomtest(hits, n_draws, float(probs[0]))
+        assert result.pvalue > ALPHA, (regime, ages, hits / n_draws, probs[0])
+
+
+def _spine_law(regime: str, n_grid: int = 4001) -> tuple[np.ndarray, np.ndarray, float]:
+    """Return ``(age grid, CDF of the continuous part, atom probability at T)``."""
+    birth, death = REGIMES[regime]
+    b_like = _const(birth) if isinstance(birth, float) else birth
+    d_like = _const(death) if isinstance(death, float) else death
+    b, d = lm.as_rate(b_like), lm.as_rate(d_like)
+
+    def mu_term(s: float) -> float:
+        gam = float(lm.cumulative(b, s) - lm.cumulative(d, s))
+        return float(lm.value(d, np.array([s]))[0]) * np.exp(-gam)
+
+    grid = np.linspace(0.0, T, n_grid)
+    pieces = [
+        quad(mu_term, x0, x1, epsabs=1e-13, epsrel=1e-13)[0]
+        for x0, x1 in zip(grid[:-1], grid[1:], strict=True)
+    ]
+    i_of = np.concatenate([[0.0], np.cumsum(pieces)])
+    u = (1.0 + i_of) / (1.0 + i_of[-1])
+    lam = lm.value(b, grid)
+    lam_t = float(lm.cumulative(b, T))
+    lam_b = np.array([float(lm.cumulative(b, x)) for x in grid])
+    density_b = lam * np.exp(-(lam_t - lam_b)) * (1.0 - u)
+    mass_b = np.concatenate(
+        [[0.0], np.cumsum(0.5 * (density_b[1:] + density_b[:-1]) * np.diff(grid))]
+    )
+    atom = float(np.exp(-lam_t))
+    total = mass_b[-1] + atom
+    # age a = T - b: CDF in a of the continuous part, conditional on a < T
+    ages_grid = T - grid[::-1]
+    cdf_a = (mass_b[-1] - mass_b[::-1]) / mass_b[-1]
+    return ages_grid, cdf_a, atom / total
+
+
+@pytest.mark.slow
+class TestSpineAgeLaw:
+    """T3.6: the ALG1 spine age follows the spine law of the plan, section 5."""
+
+    @pytest.mark.parametrize("regime", ["subcritical", "supercritical", "arley"])
+    @pytest.mark.parametrize("n", [1, 2])
+    def test_spine_age(self, regime: str, n: int) -> None:
+        n_draws = 4000
+        spine_ages = np.array([_spine_age(_tree(regime, n, i)) for i in range(n_draws)])
+        ages_grid, cdf_a, atom = _spine_law(regime)
+        at_top = spine_ages >= T - 1e-9
+        assert stats.binomtest(int(at_top.sum()), n_draws, atom).pvalue > ALPHA, (
+            regime,
+            n,
+            at_top.mean(),
+            atom,
+        )
+        continuous = spine_ages[~at_top]
+        result = stats.kstest(continuous, lambda x: np.interp(x, ages_grid, cdf_a))
+        assert result.pvalue > ALPHA, (regime, n, result.pvalue)

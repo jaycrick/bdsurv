@@ -42,6 +42,16 @@ quadrature (`docs/contour_process.md`, `docs/splitting.md`).
 Both return a `SimulatedTree`: a plain dataclass wrapping the individual-level
 records table plus the rates and terminal time used to generate it.
 
+Two further exact contour simulators condition on the population alive at `T`
+(`docs/contour_conditioned.md`):
+
+| Function                           | Conditioning                               |
+| ---------------------------------- | ------------------------------------------ |
+| `simulate_contour_given_population` | exactly `n` individuals alive at `T`       |
+| `simulate_contour_given_ages`       | survivors at `T` with the given ages       |
+
+They return a `SimulatedTree` as well.
+
 ## Forward simulation of general processes
 
 These are not conditioned on survival, and the rates may vary by epoch.

@@ -462,8 +462,9 @@ def simulate_contour_given_ages(  # noqa: PLR0913
     ValueError
         If ``ages`` is empty or has a value outside ``(0, T]``, more than one
         age equals ``T``, ``spine_index`` is out of range or inconsistent with
-        an age equal to ``T``, all spine weights vanish, the birth rate is
-        identically zero while an age is below ``T``, or the rates,
+        an age equal to ``T``, all spine weights vanish (or that of
+        ``spine_index``), the birth rate is identically zero while an age is
+        below ``T``, or the rates,
         ``terminal_time`` or ``direction`` are invalid.
 
     """
@@ -493,6 +494,14 @@ def simulate_contour_given_ages(  # noqa: PLR0913
     ):
         msg = "birth_rate must not be identically zero when an age is below T"
         raise ValueError(msg)
+    if spine_index is not None and not at_top:
+        # A spine born after 0 needs a death below T; otherwise no piece exists.
+        log_w = _log_spine_weights(
+            rates.birth, rates.death, horizon, [age_list[spine_index]]
+        )
+        if not np.isfinite(log_w[0]):
+            msg = "the age at spine_index has zero spine weight"
+            raise ValueError(msg)
     walker = _Walker(rates.birth, rates.death, horizon, _seeded_rng(random_seed))
     contour, _ = _ages_contour(walker, age_list, spine_index, prefer_top=prefer_top)
     return _contour_process_list_to_tree(contour, **rates.tree_args)  # pyright: ignore[reportArgumentType]
