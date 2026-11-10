@@ -87,7 +87,7 @@ from bdsurv.splitting import (  # noqa: E402
 )
 from bdsurv.tree import SimulatedProcess, SimulatedTree  # noqa: E402
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __author__ = "Jacob Cumming"
 
 __all__ = [
