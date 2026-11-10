@@ -10,6 +10,7 @@ downward jumps driven by the birth rate and upward jumps by the death rate.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -297,4 +298,201 @@ def simulate_contour_given_population(
         rates.birth, rates.death, rates.terminal_time, _seeded_rng(random_seed)
     )
     contour = _population_contour(walker, n_alive, prefer_top=prefer_top)
+    return _contour_process_list_to_tree(contour, **rates.tree_args)  # pyright: ignore[reportArgumentType]
+
+
+def _spine_levels(ages: Sequence[float], terminal_time: float) -> list[float]:
+    """Return levels ``b_i = T - a_i``, exactly ``0`` for ages close to ``T``."""
+    return [0.0 if close(a, terminal_time) else terminal_time - a for a in ages]
+
+
+def _log_spine_weights(
+    birth: Rate, death: Rate, terminal_time: float, ages: Sequence[float]
+) -> np.ndarray:
+    r"""Return $\ln w_i$ with $w_i = (I(T) - I(b_i)) / (1 + I(b_i))$, $b_i = T - a_i$.
+
+    Here $I(t) = \int_0^t \mu(s) e^{-\Gamma(s)} ds$; ``-inf`` entries are allowed.
+    """
+    log_i_t = _linear_math._log_integral(  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        death, birth, death, terminal_time, sign=-1.0
+    )
+    out = np.full(len(ages), -np.inf)
+    if log_i_t == -np.inf:
+        return out
+    for i, b in enumerate(_spine_levels(ages, terminal_time)):
+        log_i_b = _linear_math._log_integral(  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+            death, birth, death, b, sign=-1.0
+        )
+        with np.errstate(divide="ignore"):
+            log_num = log_i_t + np.log(-np.expm1(min(log_i_b - log_i_t, 0.0)))
+        out[i] = log_num - np.logaddexp(0.0, log_i_b)
+    return out
+
+
+def _cut_at_last_downcrossing(path: list[float], level: float) -> list[float] | None:
+    """Cut ``path`` at its last down-crossing of ``level``, ending ``[..., level, T]``.
+
+    A down-crossing is an odd ``j < len(path) - 1`` with
+    ``path[j] > level > path[j + 1]``. Return ``None`` when there is none.
+    """
+    crossings = [j for j in range(1, len(path) - 1, 2) if path[j] > level > path[j + 1]]
+    if not crossings:
+        return None
+    return [*path[: max(crossings) + 1], level, path[-1]]
+
+
+def _ages_contour(
+    walker: _Walker,
+    ages: Sequence[float],
+    spine_index: int | None,
+    *,
+    prefer_top: bool,
+) -> tuple[list[float], int]:
+    """Generate the contour of a tree with survivors of the given ``ages``.
+
+    Return the contour and the index of the age assigned to the spine.
+    """
+    terminal_time = walker.terminal_time
+    levels = _spine_levels(ages, terminal_time)
+    if spine_index is None:
+        forced = [i for i, b in enumerate(levels) if b == 0.0]
+        if forced:
+            spine_index = forced[0]
+        else:
+            log_w = _log_spine_weights(walker.birth, walker.death, terminal_time, ages)
+            if not np.any(np.isfinite(log_w)):
+                msg = "all spine weights are zero"
+                raise ValueError(msg)
+            weights = np.exp(log_w - np.max(log_w))
+            spine_index = int(walker.rng.choice(len(ages), p=weights / weights.sum()))
+    spine_level = levels[spine_index]
+
+    excursions: list[list[float]] = []
+    for i, b in enumerate(levels):
+        if i == spine_index:
+            continue
+        while True:
+            piece = walker.run([b], "up")
+            if piece[-1] == terminal_time:
+                break
+        excursions.append([*piece[::-1], terminal_time])
+
+    if spine_level == 0.0:
+        spine_piece = [0.0, terminal_time]
+    elif prefer_top:
+        while True:
+            piece = walker.run([terminal_time, spine_level], "up")
+            if piece[-1] == 0.0:
+                break
+        spine_piece = piece[::-1]
+    else:
+        while True:
+            piece = walker.bottom_excursion()
+            if piece[-1] != terminal_time:
+                continue
+            cut = _cut_at_last_downcrossing(piece, spine_level)
+            if cut is not None:
+                break
+        spine_piece = cut
+
+    if prefer_top:
+        while True:
+            last = walker.top_excursion()
+            if last[-1] == 0.0:
+                break
+    else:
+        while True:
+            piece = walker.bottom_excursion()
+            if piece[-1] == terminal_time:
+                break
+        last = piece[::-1]
+
+    order = walker.rng.permutation(len(excursions))
+    contour = _join_pieces(spine_piece, [excursions[int(k)] for k in order], last)
+    _validate_contour_process_list(contour)
+    if contour.count(terminal_time) != len(ages):
+        msg = "contour does not have one visit to the terminal time per age"
+        raise AssertionError(msg)
+    return contour, spine_index
+
+
+def simulate_contour_given_ages(  # noqa: PLR0913
+    birth_rate: RateInput,
+    death_rate: RateInput,
+    ages: Sequence[float],
+    terminal_time: float | None = None,
+    spine_index: int | None = None,
+    random_seed: int | None = None,
+    direction: Direction = "auto",
+) -> SimulatedTree:
+    r"""Simulate a birth-death tree whose survivors at ``T`` have the given ``ages``.
+
+    Each non-spine survivor of age ``a`` contributes a ``T`` to ``T`` excursion
+    ending at the valley ``T - a``; the spine survivor contributes the end of
+    the ``0`` to ``T`` piece. The spine is chosen among the ages with
+    probability proportional to $(I(T) - I(b)) / (1 + I(b))$,
+    $b = T - a$, $I(t) = \int_0^t \mu e^{-\Gamma}$, unless ``spine_index`` is
+    given or an age equals ``T`` (the root survived, which forces the spine).
+
+    Parameters
+    ----------
+    birth_rate, death_rate
+        Per-individual rates: floats (then ``terminal_time`` is required) or
+        piecewise constant / linear rate-likes over ``[0, T]``.
+    ages
+        Ages at ``T`` of the survivors, each in ``(0, T]``.
+    terminal_time
+        The time ``T``. For rate-like inputs it must be ``None`` or equal to
+        their common end time.
+    spine_index
+        Index in ``ages`` of the spine survivor; sampled when ``None``.
+    random_seed
+        Seed for reproducibility.
+    direction
+        ``"auto"`` chooses the end of the end pieces; ``"top"`` or ``"bottom"``
+        force it. All give the same distribution.
+
+    Returns
+    -------
+    SimulatedTree
+        As :func:`simulate_contour_given_population`.
+
+    Raises
+    ------
+    ValueError
+        If ``ages`` is empty or has a value outside ``(0, T]``, more than one
+        age equals ``T``, ``spine_index`` is out of range or inconsistent with
+        an age equal to ``T``, all spine weights vanish, the birth rate is
+        identically zero while an age is below ``T``, or the rates,
+        ``terminal_time`` or ``direction`` are invalid.
+
+    """
+    rates = _resolve_rates(birth_rate, death_rate, terminal_time)
+    horizon = rates.terminal_time
+    prefer_top = _prefer_top(rates.birth, rates.death, horizon, direction)
+    age_list = [float(a) for a in ages]
+    if not age_list:
+        msg = "ages must not be empty"
+        raise ValueError(msg)
+    if not all(a > 0.0 and (a <= horizon or close(a, horizon)) for a in age_list):
+        msg = "ages must lie in (0, T]"
+        raise ValueError(msg)
+    at_top = [i for i, a in enumerate(age_list) if close(a, horizon)]
+    if len(at_top) > 1:
+        msg = "at most one age may equal T"
+        raise ValueError(msg)
+    if spine_index is not None:
+        if not 0 <= spine_index < len(age_list):
+            msg = "spine_index is out of range"
+            raise ValueError(msg)
+        if at_top and spine_index != at_top[0]:
+            msg = "an age equal to T exists, so spine_index must point to it"
+            raise ValueError(msg)
+    if len(age_list) > len(at_top) and (
+        _linear_math.cumulative(rates.birth, horizon) <= 0.0
+    ):
+        msg = "birth_rate must not be identically zero when an age is below T"
+        raise ValueError(msg)
+    walker = _Walker(rates.birth, rates.death, horizon, _seeded_rng(random_seed))
+    contour, _ = _ages_contour(walker, age_list, spine_index, prefer_top=prefer_top)
     return _contour_process_list_to_tree(contour, **rates.tree_args)  # pyright: ignore[reportArgumentType]
