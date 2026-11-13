@@ -49,6 +49,24 @@ _spec = importlib.util.spec_from_file_location(
 charts = importlib.util.module_from_spec(_spec)
 sys.modules["method_comparison_charts"] = charts
 _spec.loader.exec_module(charts)
+_spec = importlib.util.spec_from_file_location(
+    "figure_export", ROOT / "scripts" / "figure_export.py"
+)
+figure_export = importlib.util.module_from_spec(_spec)
+sys.modules["figure_export"] = figure_export
+_spec.loader.exec_module(figure_export)
+
+FIG_DIR = ROOT / "figures" / "benchmarks"
+
+
+def tag(value: float) -> str:
+    return f"{value:g}".replace(".", "p")
+
+
+def save_fig(chart, stem: str) -> None:
+    """Save a displayed chart as a PDF in figures/benchmarks/."""
+    figure_export.save_chart(chart, f"mc_{stem}", output_dir=FIG_DIR)
+
 
 LAMBDA = bench.LAMBDA
 DATA = ROOT / "benchmarks" / "data"
@@ -205,9 +223,13 @@ def show_mu(mu: float) -> None:
             f"Benchmarked up to $T = {top_t:.3g}$."
         )
     )
-    display(cost_chart(curves[curves["mu"] == mu], X_BY_T))
+    cost = cost_chart(curves[curves["mu"] == mu], X_BY_T)
+    save_fig(cost, f"cost_by_t_mu{tag(mu)}")
+    display(cost)
     display(Markdown("**How splitting behaved**"))
-    display(diagnostic_chart(mu))
+    diagnostics_panel = diagnostic_chart(mu)
+    save_fig(diagnostics_panel, f"diagnostics_mu{tag(mu)}")
+    display(diagnostics_panel)
 
 
 def show_t(t: float) -> None:
@@ -221,7 +243,9 @@ def show_t(t: float) -> None:
             f"Benchmarked $\\mu$ from {data['mu'].min():g} to {data['mu'].max():g}."
         )
     )
-    display(cost_chart(data, X_BY_MU, mark_critical=True))
+    cost = cost_chart(data, X_BY_MU, mark_critical=True)
+    save_fig(cost, f"cost_by_mu_T{tag(t)}")
+    display(cost)
 ```
 
 ## Cost per tree over time, by death rate
@@ -274,7 +298,7 @@ wide = curves.pivot_table(index=["mu", "T"], columns="method", values="mean").re
 wide["ratio"] = wide[LABEL_RUN] / wide[LABEL_CONTOUR]
 heat = wide.dropna(subset=["ratio"]).copy()
 heat["T_label"] = heat["T"].map(lambda t: f"{t:g}")
-(
+ratio_chart = (
     alt.Chart(heat)
     .mark_rect()
     .encode(
@@ -298,6 +322,8 @@ heat["T_label"] = heat["T"].map(lambda t: f"{t:g}")
     )
     .properties(width=900, height=460)
 )
+save_fig(ratio_chart, "ratio_heatmap")
+ratio_chart
 ```
 
 ## Random numbers drawn
@@ -385,14 +411,14 @@ subcritical.
 if HAVE_DRAWS:
     for mu in draw_mus:
         display(Markdown(f"### $\\mu = {mu:g}$"))
-        display(
-            draws_chart(
-                draw_curves[draw_curves["mu"] == mu],
-                X_DRAWS_BY_T,
-                f"μ = {mu:g}",
-                critical=False,
-            )
+        draws_fig = draws_chart(
+            draw_curves[draw_curves["mu"] == mu],
+            X_DRAWS_BY_T,
+            f"μ = {mu:g}",
+            critical=False,
         )
+        save_fig(draws_fig, f"draws_by_t_mu{tag(mu)}")
+        display(draws_fig)
 ```
 
 :::
@@ -409,14 +435,14 @@ The dashed line marks the critical rate $\mu = \lambda$.
 if HAVE_DRAWS:
     for t in draw_ts:
         display(Markdown(f"### T = {t:g}"))
-        display(
-            draws_chart(
-                draw_curves[draw_curves["T"] == t],
-                X_DRAWS_BY_MU,
-                f"T = {t:g}",
-                critical=True,
-            )
+        draws_fig = draws_chart(
+            draw_curves[draw_curves["T"] == t],
+            X_DRAWS_BY_MU,
+            f"T = {t:g}",
+            critical=True,
         )
+        save_fig(draws_fig, f"draws_by_mu_T{tag(t)}")
+        display(draws_fig)
 ```
 
 :::
@@ -502,7 +528,7 @@ threshold = (
     .mark_line(color="#888888", strokeDash=[5, 4])
     .encode(x=x_axis, y="critical:Q")
 )
-(
+agreement_chart = (
     alt.layer(lines, threshold, data=agreement)
     .properties(width=260, height=190)
     .facet(
@@ -510,6 +536,8 @@ threshold = (
         columns=3,
     )
 )
+save_fig(agreement_chart, "ks_agreement")
+agreement_chart
 ```
 
 The dashed line is the 5% critical value $1.36/\sqrt{n}$ for a continuous law;

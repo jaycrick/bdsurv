@@ -24,7 +24,10 @@ The same checks run as slow tests in `tests/test_contour_conditioned.py`.
 
 ```{python}
 #| label: setup
+import importlib.util
 import math
+import sys
+from pathlib import Path
 
 import altair as alt
 import numpy as np
@@ -42,6 +45,33 @@ from bdsurv import (
 )
 from bdsurv import _linear_math as lm
 from bdsurv.contour_conditioned import _log_spine_weights, _log_survival_pair
+
+
+
+def find_root() -> Path:
+    here = Path.cwd().resolve()
+    for candidate in (here, *here.parents):
+        if (candidate / "_quarto.yml").exists():
+            return candidate
+    msg = "Run from inside the bdsurv project (no _quarto.yml found)."
+    raise FileNotFoundError(msg)
+
+
+ROOT = find_root()
+_spec = importlib.util.spec_from_file_location(
+    "figure_export", ROOT / "scripts" / "figure_export.py"
+)
+figure_export = importlib.util.module_from_spec(_spec)
+sys.modules["figure_export"] = figure_export
+_spec.loader.exec_module(figure_export)
+
+FIG_DIR = ROOT / "figures" / "benchmarks"
+
+
+def save_fig(chart, stem: str) -> None:
+    """Save a displayed chart as a PDF in figures/benchmarks/."""
+    figure_export.save_chart(chart, f"ccv_{stem}", output_dir=FIG_DIR)
+
 
 N = 2000  # draws per sample
 T = 3.0
@@ -310,21 +340,27 @@ show(
 
 ```{python}
 #| label: alg1-total-chart
-ecdf_chart(pd.concat(frames["Total individuals ever born"]), "Total individuals ever born", "n")
+figure = ecdf_chart(pd.concat(frames["Total individuals ever born"]), "Total individuals ever born", "n")
+save_fig(figure, "alg1_total_individuals")
+figure
 ```
 
 ### Survivor ages
 
 ```{python}
 #| label: alg1-ages-chart
-ecdf_chart(pd.concat(frames["Survivor ages (pooled)"]), "Age of a survivor at T", "n")
+figure = ecdf_chart(pd.concat(frames["Survivor ages (pooled)"]), "Age of a survivor at T", "n")
+save_fig(figure, "alg1_survivor_ages")
+figure
 ```
 
 ### Oldest survivor
 
 ```{python}
 #| label: alg1-oldest-chart
-ecdf_chart(pd.concat(frames["Oldest survivor age"]), "Age of the oldest survivor at T", "n")
+figure = ecdf_chart(pd.concat(frames["Oldest survivor age"]), "Age of the oldest survivor at T", "n")
+save_fig(figure, "alg1_oldest_survivor")
+figure
 ```
 
 :::
@@ -420,7 +456,9 @@ show(pd.DataFrame(atom_rows))
 
 ```{python}
 #| label: age-laws-chart
-ecdf_chart(pd.concat(spine_frames + other_frames), "Age at T", "kind")
+figure = ecdf_chart(pd.concat(spine_frames + other_frames), "Age at T", "kind")
+save_fig(figure, "age_laws")
+figure
 ```
 
 The reference here is the law computed by quadrature; the samples are ALG1 trees with $n = 3$.
@@ -474,7 +512,9 @@ for case in CASES:
         compare_directions(label, case, make(case))
 
 PALETTE.update({TOP: "#004488", BOTTOM: "#BB5566"})
-ecdf_chart(pd.concat(dir_frames), "Total individuals ever born", "setting")
+figure = ecdf_chart(pd.concat(dir_frames), "Total individuals ever born", "setting")
+save_fig(figure, "direction_top_bottom")
+figure
 ```
 
 The rows are: (a) ALG1 with $n = 1$; (b) ALG1 with $n = 3$; (c) ALG2 with ages 1.0 and 2.5 and the spine sampled; (d) ALG2 with ages 0.7, 1.9 and 2.6 and the 1.9 given as the spine; (e) ALG2 with ages 1.0 and $T$, so the root survived.
@@ -508,7 +548,9 @@ for k, case in enumerate(CASES):
         comp_frames.append(ecdf(reference, source=REFERENCE, case=case, n=f"n = {n}"))
         comp_frames.append(ecdf(composed, source=SIMULATOR, case=case, n=f"n = {n}"))
 
-ecdf_chart(pd.concat(comp_frames), "Total individuals ever born", "n")
+figure = ecdf_chart(pd.concat(comp_frames), "Total individuals ever born", "n")
+save_fig(figure, "composition")
+figure
 ```
 
 Here the reference is ALG1 alone, and the dashed line is ALG1 followed by ALG2.
@@ -557,9 +599,11 @@ observed = base.mark_point(size=80, filled=True, color=PALETTE[SIMULATOR]).encod
              alt.Tooltip("expected:Q", format=".4f"), alt.Tooltip("p:Q", format=".3f")],
 )
 expected_mark = base.mark_tick(thickness=3, size=26, color=PALETTE[REFERENCE]).encode(x="expected:Q")
-(interval + expected_mark + observed).properties(width=250, height=110).facet(
+figure = (interval + expected_mark + observed).properties(width=250, height=110).facet(
     column=alt.Column("case:N", title=None)
 )
+save_fig(figure, "spine_choice")
+figure
 ```
 
 The blue tick is the probability from the weights; the red point is the observed frequency with its 95% interval.
@@ -612,7 +656,11 @@ diagonal = (
     .mark_line(color=PALETTE[REFERENCE], strokeWidth=1.5, strokeDash=[5, 3])
     .encode(x="x:Q", y="y:Q")
 )
-(diagonal + points).properties(width=420, height=420, title="Sorted p-values against uniform quantiles")
+figure = (diagonal + points).properties(
+    width=420, height=420, title="Sorted p-values against uniform quantiles"
+)
+save_fig(figure, "pvalue_qq")
+figure
 ```
 
 ```{python}

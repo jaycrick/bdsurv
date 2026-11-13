@@ -58,3 +58,6 @@ logs/*
 !logs/.gitkeep
 
 **/*.quarto_ipynb
+
+# Figures exported by the benchmark notebooks
+figures/

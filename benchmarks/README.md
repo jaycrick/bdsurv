@@ -14,6 +14,24 @@ Quarto, Jupyter and Altair live in the `bench` dependency group; they are tools
 you run, not dependencies of the package.
 Always use `uv run quarto`, since a bare `quarto` uses the system Python.
 
+### Figures
+
+Executing a notebook also saves every Altair chart it displays as a PDF in the
+git-ignored `figures/benchmarks/` (stems start `mc_`, `arley_` and `ccv_`;
+`simulator_speed.qmd` has no charts), through `scripts/figure_export.py`
+(the vl-convert engine, in the `bench` group).
+Each file is recorded in `figures/benchmarks/.figure_manifest/<notebook>.txt`, which is
+rewritten on each execution, so it lists exactly the figures of that notebook's last run.
+Figures left over from renamed or removed charts are reported, and with `--apply`
+deleted, by
+
+```sh
+scripts/prune_figures.sh            # dry run
+scripts/prune_figures.sh --apply    # delete stale figures and orphan manifests
+```
+
+Files in a directory with no manifest are only touched with `--include-unmanaged`.
+
 ## `simulator_speed.qmd`
 
 Times every `bdsurv` simulator once, on a laptop-sized workload.

@@ -66,6 +66,25 @@ const_rows = (
 
 import arley_charts as charts  # noqa: E402  (scripts/ is on sys.path)
 
+_spec = importlib.util.spec_from_file_location(
+    "figure_export", ROOT / "scripts" / "figure_export.py"
+)
+figure_export = importlib.util.module_from_spec(_spec)
+sys.modules["figure_export"] = figure_export
+_spec.loader.exec_module(figure_export)
+
+FIG_DIR = ROOT / "figures" / "benchmarks"
+
+
+def tag(value: float) -> str:
+    return f"{value:g}".replace(".", "p")
+
+
+def save_fig(chart, stem: str) -> None:
+    """Save a displayed chart as a PDF in figures/benchmarks/."""
+    figure_export.save_chart(chart, f"arley_{stem}", output_dir=FIG_DIR)
+
+
 GRID = arley.GRID
 HAVE_GRID = (DATA / GRID.rows).exists()
 if HAVE_GRID:
@@ -243,7 +262,9 @@ points = base_chart.mark_point(filled=True, size=90).encode(
     tooltip=["cell", "kind", "label", alt.Tooltip("mean:Q", format=".3g")],
 )
 bars = base_chart.mark_rule().encode(y="ci_lo:Q", y2="ci_hi:Q")
-display((points + bars).properties(width=900, height=420))
+timings_chart = (points + bars).properties(width=900, height=420)
+save_fig(timings_chart, "time_per_tree")
+display(timings_chart)
 ```
 
 Points show the mean over replicates and the rules a 95% confidence interval for the mean;
@@ -327,7 +348,9 @@ def show_slope(mu: float) -> None:
         )
     )
     display(Markdown("**Birth and death rates over time**"))
-    display(charts.rate_chart(slope))
+    rates_fig = charts.rate_chart(slope)
+    save_fig(rates_fig, f"rates_m{tag(slope)}")
+    display(rates_fig)
     display(
         Markdown(
             "The death rate keeps rising beyond the plotted range "
@@ -335,9 +358,13 @@ def show_slope(mu: float) -> None:
         )
     )
     display(Markdown("**Cost per tree**"))
-    display(charts.cost_chart(data, charts.x_by_t(GRID_TS)))
+    cost = charts.cost_chart(data, charts.x_by_t(GRID_TS))
+    save_fig(cost, f"cost_by_t_m{tag(slope)}")
+    display(cost)
     display(Markdown("**How splitting behaved**"))
-    display(charts.diagnostic_chart(grid_diag[grid_diag["mu"] == mu]))
+    diagnostics_panel = charts.diagnostic_chart(grid_diag[grid_diag["mu"] == mu])
+    save_fig(diagnostics_panel, f"diagnostics_m{tag(slope)}")
+    display(diagnostics_panel)
 ```
 
 ::: {.panel-tabset}
@@ -388,7 +415,9 @@ def show_t(t: float) -> None:
             f"{data['slope'].min():.3g} to {data['slope'].max():.3g}.{note}"
         )
     )
-    display(charts.cost_chart(data, charts.x_by_slope(GRID_SLOPES)))
+    cost = charts.cost_chart(data, charts.x_by_slope(GRID_SLOPES))
+    save_fig(cost, f"cost_by_m_T{tag(t)}")
+    display(cost)
 ```
 
 ::: {.panel-tabset}
@@ -506,6 +535,7 @@ if DRAWS.exists():
         )
         .properties(width=900, height=420)
     )
+    save_fig(chart, "draws_per_run")
     display(chart)
 ```
 
@@ -552,13 +582,13 @@ if HAVE_DRAW_GRID:
     for slope in DRAW_SLOPES:
         mu = DRAW_MU[slope]
         display(Markdown(f"### m = {slope:.3g} (μ = {mu:g})"))
-        display(
-            charts.draws_chart(
-                draw_curves[draw_curves["slope"] == slope],
-                charts.x_by_t(DRAW_TS),
-                f"m = {slope:.3g}, paired with μ = {mu:g}",
-            )
+        draws_fig = charts.draws_chart(
+            draw_curves[draw_curves["slope"] == slope],
+            charts.x_by_t(DRAW_TS),
+            f"m = {slope:.3g}, paired with μ = {mu:g}",
         )
+        save_fig(draws_fig, f"draws_by_t_m{tag(slope)}")
+        display(draws_fig)
 ```
 
 :::
@@ -575,13 +605,13 @@ slope $m$.
 if HAVE_DRAW_GRID:
     for t in DRAW_TS:
         display(Markdown(f"### T = {t:g}"))
-        display(
-            charts.draws_chart(
-                draw_curves[np.isclose(draw_curves["T"], t)],
-                charts.x_by_slope(DRAW_SLOPES),
-                f"T = {t:g}",
-            )
+        draws_fig = charts.draws_chart(
+            draw_curves[np.isclose(draw_curves["T"], t)],
+            charts.x_by_slope(DRAW_SLOPES),
+            f"T = {t:g}",
         )
+        save_fig(draws_fig, f"draws_by_m_T{tag(t)}")
+        display(draws_fig)
 ```
 
 :::

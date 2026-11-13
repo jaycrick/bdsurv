@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/figure_export.py`: `save_chart` (Altair via vl-convert) writes a figure and
+  records it in a per-source manifest; `prune` (and `scripts/prune_figures.sh`) lists or
+  deletes figures no manifest lists. The benchmark notebooks now save each chart they
+  display as a PDF in `figures/benchmarks/` (git-ignored); `vl-convert-python` joins the
+  `bench` dependency group.
+
 ## [0.4.0] - 2026-11-11
 
 ### Added
