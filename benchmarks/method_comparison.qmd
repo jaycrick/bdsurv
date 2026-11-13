@@ -286,6 +286,39 @@ for t in TS:
 
 :::
 
+### Talk-sized figure
+
+```{python}
+#| label: cost-by-mu-talk
+T_TALK = 60.0
+at_t = curves[np.isclose(curves["T"], T_TALK)]
+talk_chart = cost_chart(
+    at_t,
+    charts.x_by_mu(sorted(at_t["mu"].unique())),
+    mark_critical=True,
+    legend_font_size=9,
+    width=330,
+    height=190,
+)
+# Legend below the plot keeps the natural width inside the slide column.
+talk_chart = talk_chart.configure_legend(orient="bottom", columns=1)
+save_fig(talk_chart, "cost_by_mu_T60_talk")
+display(talk_chart)
+
+mean = at_t.pivot_table(index="mu", columns="method", values="mean")
+mu_top = mean.index.max()
+ratio_run = float(mean.loc[mu_top, LABEL_RUN] / mean.loc[mu_top, LABEL_CONTOUR])
+ratio_kept = float(mean.loc[mu_top, LABEL_KEPT] / mean.loc[mu_top, LABEL_CONTOUR])
+display(
+    Markdown(
+        f"At $\\mu = {mu_top:g}$, $T = {T_TALK:g}$: splitting per run is "
+        f"{ratio_run:.1f}x the contour process's cost per tree, and splitting per "
+        f"kept tree is {ratio_kept:.1f}x.\n\n"
+        f"(exact: run/contour = {ratio_run!r}, kept/contour = {ratio_kept!r})"
+    )
+)
+```
+
 ## Where does each method win?
 
 The ratio of splitting (per independent tree) to the contour process, for every
