@@ -13,9 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   deletes figures no manifest lists. The benchmark notebooks now save each chart they
   display as a PDF in `figures/benchmarks/` (git-ignored); `vl-convert-python` joins the
   `bench` dependency group.
-- `benchmarks/method_comparison.qmd`: a talk-sized cost-per-tree chart over death rate at
-  `T = 60` (saved as `mc_cost_by_mu_T60_talk.pdf`), with the splitting-to-contour cost
-  ratios at the largest `mu`.
+- `benchmarks/method_comparison.qmd`: a talk-sized random-draws-per-tree chart over death
+  rate at `T = 60` (saved as `mc_draws_by_mu_T60_talk.pdf`), with the splitting-to-contour
+  draw ratios at the largest `mu`.
 
 ## [0.4.0] - 2026-11-11
 
