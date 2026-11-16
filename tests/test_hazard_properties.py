@@ -42,7 +42,7 @@ LOWER_BAND = math.exp(-2.0)
 
 
 @st.composite
-def piecewise_linear_rates(draw: st.DrawFn) -> Rate:
+def random_piecewise_linear(draw: st.DrawFn) -> Rate:
     """Draw a piecewise-linear rate on one to three epochs of length 0.1 to 5."""
     n_epochs = draw(st.integers(min_value=1, max_value=3))
     lengths = draw(
@@ -96,7 +96,7 @@ def test_next_event_offset_solves_the_quadratic(a: float, b: float, e: float) ->
 
 @PROPERTY_SETTINGS
 @given(
-    rate=piecewise_linear_rates(),
+    rate=random_piecewise_linear(),
     start_fraction=st.floats(min_value=0.0, max_value=1.0),
     e=st.floats(min_value=0.01, max_value=10.0),
 )
@@ -128,7 +128,7 @@ def test_forward_hazard_time_inverts_cumulative(
 
 @PROPERTY_SETTINGS
 @given(
-    rate=piecewise_linear_rates(),
+    rate=random_piecewise_linear(),
     start_fraction=st.floats(min_value=0.0, max_value=1.0),
     e=st.floats(min_value=0.01, max_value=10.0),
 )

@@ -5,15 +5,12 @@ import numpy as np
 import pytest
 
 from bdsurv import (
-    LinearSplittingConfig,
     PiecewiseConstant,
     PiecewiseLinear,
     SplittingConfig,
     count_draws,
-    simulate_birth_death_process_from_contour_process,
-    simulate_linear_rate_contour_process,
-    simulate_linear_survival_splitting,
-    simulate_subcritical_survival_splitting,
+    simulate_contour_given_survival,
+    simulate_survival_splitting,
 )
 from bdsurv._seeding import (
     CountingGenerator,
@@ -88,22 +85,18 @@ class TestContext:
 
 class TestCountedRunsAreUnchanged:
     def test_constant_contour(self) -> None:
-        plain = simulate_birth_death_process_from_contour_process(
-            0.9, 1.0, 15.0, random_seed=3
-        )
+        plain = simulate_contour_given_survival(0.9, 1.0, 15.0, random_seed=3)
         with count_draws() as counts:
-            counted = simulate_birth_death_process_from_contour_process(
-                0.9, 1.0, 15.0, random_seed=3
-            )
+            counted = simulate_contour_given_survival(0.9, 1.0, 15.0, random_seed=3)
         assert plain.records.equals(counted.records)
         assert counts.by_role("seeding") == 0
         assert counts.by_role("contour") > 0
         assert counts.extras["contour_steps"] > 0
 
     def test_linear_contour_counts_resets(self) -> None:
-        plain = simulate_linear_rate_contour_process(BIRTH, DEATH, random_seed=4)
+        plain = simulate_contour_given_survival(BIRTH, DEATH, random_seed=4)
         with count_draws() as counts:
-            counted = simulate_linear_rate_contour_process(BIRTH, DEATH, random_seed=4)
+            counted = simulate_contour_given_survival(BIRTH, DEATH, random_seed=4)
         assert plain.records.equals(counted.records)
         # Each step draws a down-jump exponential, and most also an up-jump.
         assert counts.by_kind("exponential") >= counts.extras["contour_steps"]
@@ -111,11 +104,16 @@ class TestCountedRunsAreUnchanged:
 
     def test_constant_splitting(self) -> None:
         config = SplittingConfig(
-            1.0, 2.0, 8.0, n_particles=100, random_seed=1, max_restarts=500
+            birth_rate=1.0,
+            death_rate=2.0,
+            terminal_time=8.0,
+            n_particles=100,
+            random_seed=1,
+            max_restarts=500,
         )
-        plain = simulate_subcritical_survival_splitting(config)
+        plain = simulate_survival_splitting(config)
         with count_draws() as counts:
-            counted = simulate_subcritical_survival_splitting(config)
+            counted = simulate_survival_splitting(config)
         assert plain.final_survivor_count == counted.final_survivor_count
         assert plain.n_attempts == counted.n_attempts == counts.extras["attempts"]
         assert plain.conditioned_trajectories[0].process.records.equals(
@@ -129,12 +127,16 @@ class TestCountedRunsAreUnchanged:
         assert counts.extras["particle_steps"] > 0
 
     def test_linear_splitting(self) -> None:
-        config = LinearSplittingConfig(
-            BIRTH, DEATH, n_particles=100, random_seed=2, max_restarts=500
+        config = SplittingConfig(
+            birth_rate=BIRTH,
+            death_rate=DEATH,
+            n_particles=100,
+            random_seed=2,
+            max_restarts=500,
         )
-        plain = simulate_linear_survival_splitting(config)
+        plain = simulate_survival_splitting(config)
         with count_draws() as counts:
-            counted = simulate_linear_survival_splitting(config)
+            counted = simulate_survival_splitting(config)
         assert plain.n_attempts == counted.n_attempts
         assert counts.total_draws > 0
         # one exponential per event hazard draw, one uniform per event type

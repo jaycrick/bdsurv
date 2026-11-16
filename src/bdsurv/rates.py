@@ -15,6 +15,8 @@ Every one of these enters through this module, which is the only place rates
 - :func:`check_positive_rates` and :func:`check_terminal_time` are the checks of
   the constant-rate entry points, which require strictly positive rates.
   Rate-likes may be zero.
+- :func:`as_rate_like` stores a float rate as a one-epoch rate-like, which is
+  how a :class:`~bdsurv.tree.SimulatedTree` records the rates it was built with.
 - :func:`merged_segments` splits ``[0, T]`` at the epoch ends of both rates.
 """
 
@@ -297,6 +299,19 @@ def resolve_rates(
         finish(death_rate, parsed[1]),
         horizon,
     )
+
+
+def as_rate_like(
+    rate: RateInput, terminal_time: float
+) -> ConstantRateLike | LinearRateLike:
+    """Return ``rate`` as a rate-like, storing a float as one constant epoch.
+
+    A rate-like is returned as given; a float ``v`` becomes
+    ``PiecewiseConstant([v], [terminal_time])``.
+    """
+    if _is_scalar(rate):
+        return PiecewiseConstant([float(rate)], [terminal_time])  # pyright: ignore[reportArgumentType]
+    return rate  # pyright: ignore[reportReturnType]
 
 
 def merged_segments(

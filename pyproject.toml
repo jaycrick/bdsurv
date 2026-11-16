@@ -1,6 +1,6 @@
 [project]
 name = "bdsurv"
-version = "0.4.0"
+version = "0.5.0"
 description = "Simulation of birth-death processes, focused on survival-conditioned subcritical processes: exact contour-process reconstruction, multilevel (RESTART) splitting, and forward simulators for time-varying rates."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -107,8 +107,6 @@ convention = "numpy"
   "SLF001" # tests exercise private kernels directly
 ]
 
-# TEMPORARY: removed by step S9
-"src/bdsurv/__init__.py" = ["RUF022"]
 # TEMPORARY: removed by step S11
 "scripts/arley_charts.py" = ["PLR0913"]
 "scripts/bench_arley_comparison.py" = ["PERF401", "SLF001"]

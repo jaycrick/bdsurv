@@ -5,10 +5,10 @@ For every death rate ``mu`` and horizon ``T`` the script times independent
 replicates of
 
 ``contour``
-    ``simulate_birth_death_process_from_contour_process``: one exact tree per
+    ``simulate_contour_given_survival``: one exact tree per
     call.
 ``splitting``
-    ``simulate_subcritical_survival_splitting``: one run returns several kept
+    ``simulate_survival_splitting``: one run returns several kept
     trees, which are correlated because they share ancestry.
 
 Each replicate is one row of raw data, so the notebook can show medians and
@@ -55,8 +55,8 @@ import pandas as pd
 
 from bdsurv import (
     SplittingConfig,
-    simulate_birth_death_process_from_contour_process,
-    simulate_subcritical_survival_splitting,
+    simulate_contour_given_survival,
+    simulate_survival_splitting,
 )
 from bdsurv._hazard import log_survival_probability_constant
 
@@ -178,7 +178,7 @@ def replicate_seed(unit: Unit, replicate: int) -> int:
 
 def _run_contour(unit: Unit, seed: int) -> dict[str, Any]:
     start = time.perf_counter()
-    tree = simulate_birth_death_process_from_contour_process(
+    tree = simulate_contour_given_survival(
         birth_rate=LAMBDA,
         death_rate=unit.mu,
         terminal_time=unit.time,
@@ -207,7 +207,7 @@ def _run_splitting(unit: Unit, seed: int) -> dict[str, Any]:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         start = time.perf_counter()
-        result = simulate_subcritical_survival_splitting(config)
+        result = simulate_survival_splitting(config)
         seconds = time.perf_counter() - start
     kept = result.conditioned_trajectories
     row: dict[str, Any] = {

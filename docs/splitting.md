@@ -4,7 +4,7 @@
 
 This document describes the multilevel-splitting simulator in
 `src/bdsurv/splitting.py`, which samples trajectories of a birth-death process
-(any positive rates) that survive to time `T`. It keeps the
+(finite, non-negative rates, floats or functions of time) that survive to time `T`. It keeps the
 particles alive at `T` and does not estimate the survival probability.
 
 Unlike the contour-process method, this is an **approximate**, simulation-based
@@ -41,7 +41,7 @@ Write `Pr(t) = P(Z_t > 0)` for a single individual started at time 0, and
    single individual at time 0.
 4. **Each level `k = 1, ..., K`:**
    - **Evolve.** Every particle advances from `t_{k-1}` to `t_k` under exact
-     Gillespie dynamics (`_simulate_to_level`).
+     Gillespie dynamics (`_advance_particle`).
    - **Cull.** Particles with no live individual at `t_k` are dropped.
    - **Enrich.** Each survivor is cloned `R_{k+1}` times (none after the last
      level). If that exceeds `n_particles`, the ensemble is subsampled uniformly
@@ -115,7 +115,7 @@ exactly as given, with no band adjustment.
 ## Conditioned trajectories and genealogy
 
 Every particle carries its own individual-level event records
-(`_ParticleState.records`) and a population trace (`trace_times`,
+(`_ParticleState.forward`) and a population trace (`trace_times`,
 `trace_populations`). At the end of the run, up to
 `config.n_conditioned_trajectories` surviving particles are converted to
 `SimulatedTree` objects (`_particle_to_tree`) — the spine is the individual
@@ -125,8 +125,8 @@ elsewhere. Parent-child lineage across enrichment steps is recorded in
 
 ## Linear (time-varying) rates
 
-`simulate_linear_survival_splitting(LinearSplittingConfig(...))` runs the same
-algorithm for piecewise-constant or piecewise-linear rates.
+`simulate_survival_splitting(SplittingConfig(...))` runs the same algorithm for
+piecewise-constant or piecewise-linear rate objects, as well as for floats.
 Two ingredients change; the levels, replicates, enrichment and restarts are
 shared with the constant-rate code.
 
@@ -138,7 +138,8 @@ shared with the constant-rate code.
   $I$ is computed in log space by Gauss-Legendre quadrature on panels short
   enough that the exponent changes by at most a few units, so cases with
   $1/\Pr$ of order $10^{300}$ stay accurate.
-  This replaces the closed form in the level grid, `R_i` and the restart cap.
+  It drives the level grid, `R_i` and the restart cap; for constant rates the
+  closed form is used instead.
 - **Dynamics.** Within a segment where both rates are linear, the next event
   among $n$ individuals solves $a s + b s^2/2 = E$ with
   $a = n(\lambda + \mu)$, $b = n(\lambda' + \mu')$.
@@ -149,19 +150,19 @@ shared with the constant-rate code.
 ## Reproducibility and RNG
 
 A single master `np.random.default_rng(config.random_seed)` seeds every
-particle's own child `Generator` (`_make_child_rng`), including clones
+particle's own child `Generator` (`_seeding.spawn`), including clones
 created during enrichment, so a run is fully reproducible from
 `config.random_seed` alone.
 
 ## Usage
 
 ```python
-from bdsurv import SplittingConfig, simulate_subcritical_survival_splitting
+from bdsurv import SplittingConfig, simulate_survival_splitting
 
 config = SplittingConfig(
     birth_rate=0.9, death_rate=1.0, terminal_time=100.0, n_particles=1000
 )
-result = simulate_subcritical_survival_splitting(config)
+result = simulate_survival_splitting(config)
 print(len(result.conditioned_trajectories))
 ```
 

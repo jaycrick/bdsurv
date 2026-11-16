@@ -8,8 +8,10 @@ reconstructed on the host from the stored per-individual birth/death times.
 Entry points:
 
 - :func:`simulate_birth_death_lifespans_arrays` — raw per-individual arrays.
-- :func:`simulate_birth_death_lifespans` — full :class:`~bdsurv.tree.SimulatedProcess`
-  with genealogy (same API as :func:`bdsurv.gillespie.simulate_birth_death_process`).
+- :func:`simulate_birth_death_lifespans` — full :class:`~bdsurv.tree.SimulatedTree`
+  with genealogy, for per-epoch constant rates (the same process as
+  :func:`bdsurv.forward.simulate_birth_death` with
+  :class:`~bdsurv.rates.PiecewiseConstant` rates).
 """
 
 # JAX's jit/while_loop wrappers are untyped, which strict mode reports as
@@ -30,8 +32,8 @@ from numpy.typing import NDArray
 
 from bdsurv._forward import retry_until_survival
 from bdsurv._seeding import jax_key, root_rng
-from bdsurv.rates import epoch_rates
-from bdsurv.tree import SimulatedProcess, build_records
+from bdsurv.rates import PiecewiseConstant, epoch_rates
+from bdsurv.tree import SimulatedTree, build_records
 
 # An event within this of an epoch end counts as the epoch end.
 TIE_TOLERANCE: float = 1e-12
@@ -326,7 +328,7 @@ def _reconstruct_genealogy(
     """Replay the event stream to assign parent IDs and spine.
 
     Replicates the random-insert genealogy convention of
-    :func:`bdsurv.gillespie.simulate_birth_death_process`: new individuals are
+    :func:`bdsurv.forward.simulate_birth_death`: new individuals are
     inserted at position
     ``1 + floor(u * n_alive)`` (clamped to ``n_alive``) in the ordered
     alive-list, with their parent being the individual at ``insert_pos - 1``.
@@ -481,7 +483,7 @@ def simulate_birth_death_lifespans_arrays(
     returned arrays.
 
     This is the low-level entry point intended for downstream analysis such
-    as multilevel splitting.  For a full :class:`~bdsurv.tree.SimulatedProcess` with
+    as multilevel splitting.  For a full :class:`~bdsurv.tree.SimulatedTree` with
     genealogy use :func:`simulate_birth_death_lifespans` instead.
 
     Parameters
@@ -555,20 +557,24 @@ def simulate_birth_death_lifespans(  # noqa: PLR0913  # public signature
     ensure_non_extinct: bool = False,
     max_retries: int = 100,
     max_population: int = 200_000,
-) -> SimulatedProcess:
+) -> SimulatedTree:
     """Simulate a birth-death process using the lifespan-at-birth algorithm.
 
-    A JIT-compiled alternative to
-    :func:`bdsurv.gillespie.simulate_birth_death_process` with
-    the same public API.  Each individual's entire lifespan is decided at
+    A JIT-compiled alternative to :func:`bdsurv.forward.simulate_birth_death`
+    for rates that are constant within each epoch, which are given as arrays.
+    Each individual's entire lifespan is decided at
     birth from a piecewise-exponential distribution.  The numeric core runs
     inside ``jax.lax.while_loop``; parent-ID genealogy and spine assignment
     are reconstructed on the host from the stored per-individual birth/death
     times and insertion uniforms.
 
-    The returned :class:`~bdsurv.tree.SimulatedProcess` has an
+    The returned :class:`~bdsurv.tree.SimulatedTree` has an
     additional ``birth_epoch`` column in its ``records`` table,
     recording the epoch in which each individual was born.
+    Its rates are :class:`~bdsurv.rates.PiecewiseConstant` objects with the
+    arrays given here, so ``tree.birth_rate.values``,
+    ``tree.death_rate.values`` and ``tree.birth_rate.epoch_end_times`` recover
+    the epoch rates and end times.
 
     Parameters
     ----------
@@ -592,7 +598,7 @@ def simulate_birth_death_lifespans(  # noqa: PLR0913  # public signature
 
     Returns
     -------
-    SimulatedProcess
+    SimulatedTree
         Simulated process with full genealogy and spine assignment.
 
     Raises
@@ -611,7 +617,7 @@ def simulate_birth_death_lifespans(  # noqa: PLR0913  # public signature
     terminal_time = float(times_arr[-1])
     rng = root_rng(random_seed, "seeding")
 
-    def attempt() -> SimulatedProcess | None:
+    def attempt() -> SimulatedTree | None:
         final_state = _run(
             birth_rates_arr,
             death_rates_arr,
@@ -632,11 +638,11 @@ def simulate_birth_death_lifespans(  # noqa: PLR0913  # public signature
             n_alive_at_birth=np.asarray(final_state.n_alive_at_birth_buf[:n_born]),
             terminal_time=terminal_time,
         )
-        return SimulatedProcess(
+        return SimulatedTree(
             records=records,
-            birth_rates=birth_rates_arr,
-            death_rates=death_rates_arr,
-            epoch_end_times=times_arr,
+            birth_rate=PiecewiseConstant(birth_rates_arr, times_arr),
+            death_rate=PiecewiseConstant(death_rates_arr, times_arr),
+            terminal_time=terminal_time,
         )
 
     return retry_until_survival(

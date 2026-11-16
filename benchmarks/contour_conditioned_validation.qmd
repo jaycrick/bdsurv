@@ -38,8 +38,7 @@ from scipy import stats
 from bdsurv import (
     PiecewiseConstant,
     PiecewiseLinear,
-    simulate_birth_death_linear,
-    simulate_birth_death_process,
+    simulate_birth_death,
     simulate_contour_given_ages,
     simulate_contour_given_population,
 )
@@ -165,10 +164,8 @@ def forward_by_population(case: str, n_values: list[int], seed0: int) -> dict[in
     while any(len(v) < N for v in out.values()):
         seed = seed0 + runs
         runs += 1
-        if isinstance(birth, float):
-            records = simulate_birth_death_process(birth, death, T, random_seed=seed).records
-        else:
-            records = simulate_birth_death_linear(birth, death, random_seed=seed).records
+        tt = T if isinstance(birth, float) else None
+        records = simulate_birth_death(birth, death, tt, random_seed=seed).records
         n = int(records["survived"].sum())
         if n in out and len(out[n]) < N:
             s = summary(records)

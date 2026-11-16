@@ -126,7 +126,9 @@ death = PiecewiseLinear([0.0], [3.2], [4.0])
 tree = simulate_contour_given_ages(birth, death, ages=[1.0, 2.5], random_seed=0)
 ```
 
-Both return a `SimulatedTree`, with NaN scalar rates and `*_rate_function` set for rate-like inputs.
+Both return a `SimulatedTree` whose `birth_rate` and `death_rate` are rate
+objects (a float rate as a one-epoch `PiecewiseConstant`).
+`direction` and `spine_index` are keyword-only.
 
 ## Tests
 

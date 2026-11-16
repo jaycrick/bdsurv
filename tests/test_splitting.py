@@ -5,7 +5,7 @@ import itertools
 import numpy as np
 import pytest
 
-from bdsurv._extinction import pr_extinction
+from bdsurv import PiecewiseConstant, PiecewiseLinear
 from bdsurv._hazard import log_survival_probability_constant
 from bdsurv.splitting import (
     _BAND_LOWER,
@@ -15,7 +15,7 @@ from bdsurv.splitting import (
     compute_level_replicates,
     default_max_restarts,
     select_level_times_for_band,
-    simulate_subcritical_survival_splitting,
+    simulate_survival_splitting,
 )
 from bdsurv.tree import SimulatedTree
 
@@ -33,7 +33,7 @@ class TestSplittingSimulation:
             random_seed=17,
         )
 
-        result = simulate_subcritical_survival_splitting(config)
+        result = simulate_survival_splitting(config)
 
         # n_levels is ignored when level_times is None; levels are auto-selected
         n_levels_used = len(result.level_times) - 1
@@ -51,8 +51,8 @@ class TestSplittingSimulation:
             random_seed=2026,
         )
 
-        first = simulate_subcritical_survival_splitting(config)
-        second = simulate_subcritical_survival_splitting(config)
+        first = simulate_survival_splitting(config)
+        second = simulate_survival_splitting(config)
 
         assert first.final_survivor_count == second.final_survivor_count
         assert np.allclose(first.level_mean_populations, second.level_mean_populations)
@@ -70,7 +70,7 @@ class TestSplittingSimulation:
             random_seed=11,
         )
 
-        result = simulate_subcritical_survival_splitting(config)
+        result = simulate_survival_splitting(config)
 
         assert len(result.conditioned_trajectories) == result.final_survivor_count
 
@@ -96,7 +96,7 @@ class TestSplittingSimulation:
         )
 
         with pytest.warns(RuntimeWarning):
-            result = simulate_subcritical_survival_splitting(config)
+            result = simulate_survival_splitting(config)
 
         # Core invariant: always one more boundary than level diagnostics.
         assert len(result.level_times) == len(result.level_diagnostics) + 1
@@ -117,7 +117,7 @@ class TestSplittingSimulation:
             random_seed=77,
         )
 
-        result = simulate_subcritical_survival_splitting(config)
+        result = simulate_survival_splitting(config)
 
         assert len(result.conditioned_trajectories) > 0, "expected non-zero survivors"
         for traj in result.conditioned_trajectories:
@@ -179,9 +179,11 @@ def _reference_grid(
 class TestLevelGrid:
     """Adaptive level-grid selection."""
 
-    def test_log_survival_matches_pr_extinction(self) -> None:
+    def test_log_survival_matches_analytic_survival(self) -> None:
+        # Pr(Z_t > 0) = (lam - mu) / (lam - mu * exp(-(lam - mu) * t)).
+        lam, mu = 0.9, 1.0
         for t in (0.1, 1.0, 20.0):
-            expected = 1.0 - pr_extinction(0.9, 1.0, t)
+            expected = (lam - mu) / (lam - mu * np.exp(-(lam - mu) * t))
             got = np.exp(
                 log_survival_probability_constant(
                     birth_rate=0.9, death_rate=1.0, time=t
@@ -357,7 +359,7 @@ class TestRestarts:
     def test_cap_drops_are_recorded(self) -> None:
         # A tiny cap must bind; a huge one must not.
         def run(cap: int):
-            return simulate_subcritical_survival_splitting(
+            return simulate_survival_splitting(
                 SplittingConfig(
                     birth_rate=0.9,
                     death_rate=1.0,
@@ -386,7 +388,7 @@ class TestRestarts:
             max_restarts=3,
         )
         with pytest.warns(RuntimeWarning):
-            result = simulate_subcritical_survival_splitting(config)
+            result = simulate_survival_splitting(config)
         assert result.n_attempts <= 3
         assert result.max_restarts == 3
 
@@ -399,7 +401,7 @@ class TestRestarts:
             max_restarts=0,
         )
         with pytest.raises(ValueError, match="max_restarts"):
-            simulate_subcritical_survival_splitting(config)
+            simulate_survival_splitting(config)
 
     def test_restarts_happen_and_succeed(self) -> None:
         # With R_1 small attempts often fail; some seed needs a restart.
@@ -412,7 +414,7 @@ class TestRestarts:
                 n_particles=200,
                 random_seed=seed,
             )
-            result = simulate_subcritical_survival_splitting(config)
+            result = simulate_survival_splitting(config)
             attempts.append(result.n_attempts)
             assert result.n_attempts <= result.max_restarts
             if result.n_attempts < result.max_restarts or result.final_survivor_count:
@@ -435,7 +437,7 @@ class TestOverrides:
             max_restarts=100,
         )
         with pytest.warns(RuntimeWarning, match="No particle survived"):
-            result = simulate_subcritical_survival_splitting(config)
+            result = simulate_survival_splitting(config)
         assert result.replicates.tolist() == [2]
         assert result.level_times.tolist() == [0.0, 20.0]
         assert len(result.conditioned_trajectories) == result.final_survivor_count
@@ -450,7 +452,7 @@ class TestOverrides:
             replicates=[2],
         )
         with pytest.raises(ValueError, match="one entry per level"):
-            simulate_subcritical_survival_splitting(config)
+            simulate_survival_splitting(config)
 
     def test_replicates_without_level_times_raises(self) -> None:
         config = SplittingConfig(
@@ -461,7 +463,7 @@ class TestOverrides:
             replicates=[2],
         )
         with pytest.raises(ValueError, match="requires level_times"):
-            simulate_subcritical_survival_splitting(config)
+            simulate_survival_splitting(config)
 
 
 class TestInitialLevelCount:
@@ -500,7 +502,7 @@ class TestAnyRates:
             n_particles=200,
             random_seed=3,
         )
-        result = simulate_subcritical_survival_splitting(config)
+        result = simulate_survival_splitting(config)
         assert result.replicates[0] >= 2
         assert result.max_restarts is not None
         assert len(result.conditioned_trajectories) > 0
@@ -515,7 +517,7 @@ class TestAnyRates:
             n_particles=200,
             random_seed=4,
         )
-        result = simulate_subcritical_survival_splitting(config)
+        result = simulate_survival_splitting(config)
         assert len(result.conditioned_trajectories) > 0
 
     def test_easy_case_is_simulated_directly(self) -> None:
@@ -527,7 +529,7 @@ class TestAnyRates:
             n_particles=200,
             random_seed=5,
         )
-        result = simulate_subcritical_survival_splitting(config)
+        result = simulate_survival_splitting(config)
         assert result.replicates.tolist() == [1]
         assert result.level_times.tolist() == [0.0, 15.0]
         assert result.initial_particle_count == 1
@@ -544,13 +546,164 @@ class TestAnyRates:
             random_seed=6,
             max_restarts=1000,
         )
-        result = simulate_subcritical_survival_splitting(config)
+        result = simulate_survival_splitting(config)
         assert result.max_restarts == 1000
         assert result.n_attempts <= 1000
 
-    def test_nonpositive_rates_still_rejected(self) -> None:
+    def test_negative_rates_rejected(self) -> None:
         config = SplittingConfig(
-            birth_rate=0.0, death_rate=1.0, terminal_time=5.0, n_particles=10
+            birth_rate=-0.1, death_rate=1.0, terminal_time=5.0, n_particles=10
         )
-        with pytest.raises(ValueError, match="positive"):
-            simulate_subcritical_survival_splitting(config)
+        with pytest.raises(ValueError, match="non-negative"):
+            simulate_survival_splitting(config)
+
+    def test_zero_float_birth_rate_is_accepted(self) -> None:
+        config = SplittingConfig(
+            birth_rate=0.0,
+            death_rate=0.5,
+            terminal_time=3.0,
+            n_particles=100,
+            random_seed=1,
+            max_restarts=200,
+        )
+        result = simulate_survival_splitting(config)
+        assert result.final_survivor_count > 0
+        for trajectory in result.conditioned_trajectories:
+            assert len(trajectory.process.records) == 1
+
+
+def _rate_like_pair(horizon: float) -> tuple[PiecewiseConstant, PiecewiseLinear]:
+    return (
+        PiecewiseConstant([1.0], [horizon]),
+        PiecewiseLinear([0.0], [1.6], [horizon]),
+    )
+
+
+class TestRateInputs:
+    """Floats and rate-likes through the one set of entry points."""
+
+    def test_terminal_time_is_required_for_float_rates(self) -> None:
+        config = SplittingConfig(birth_rate=1.0, death_rate=2.0, n_particles=10)
+        with pytest.raises(ValueError, match="terminal_time is required"):
+            simulate_survival_splitting(config)
+        with pytest.raises(ValueError, match="terminal_time is required"):
+            select_level_times_for_band(birth_rate=1.0, death_rate=2.0)
+
+    def test_terminal_time_must_match_rate_likes(self) -> None:
+        birth, death = _rate_like_pair(4.0)
+        config = SplittingConfig(
+            birth_rate=birth, death_rate=death, terminal_time=5.0, n_particles=10
+        )
+        with pytest.raises(ValueError, match="terminal_time must equal"):
+            simulate_survival_splitting(config)
+
+    def test_rate_likes_without_terminal_time(self) -> None:
+        birth, death = _rate_like_pair(4.0)
+        levels = select_level_times_for_band(birth_rate=birth, death_rate=death)
+        assert levels[0] == 0.0
+        assert levels[-1] == pytest.approx(4.0)
+
+    def test_trees_store_rate_objects(self) -> None:
+        config = SplittingConfig(
+            birth_rate=1.0,
+            death_rate=2.0,
+            terminal_time=4.0,
+            n_particles=100,
+            random_seed=1,
+            max_restarts=200,
+        )
+        tree = simulate_survival_splitting(config).conditioned_trajectories[0].process
+        assert tree.birth_rate == PiecewiseConstant([1.0], [4.0])
+        assert tree.death_rate == PiecewiseConstant([2.0], [4.0])
+        assert tree.terminal_time == 4.0
+
+    def test_constant_rate_like_matches_float_helpers(self) -> None:
+        horizon = 6.0
+        floats = {"birth_rate": 1.0, "death_rate": 2.0}
+        likes = {
+            "birth_rate": PiecewiseConstant([1.0], [horizon]),
+            "death_rate": PiecewiseConstant([2.0], [horizon]),
+        }
+        np.testing.assert_allclose(
+            select_level_times_for_band(**floats, terminal_time=horizon),
+            select_level_times_for_band(**likes),
+            rtol=1e-9,
+        )
+        levels = [0.0, 2.0, 4.0, horizon]
+        np.testing.assert_array_equal(
+            compute_level_replicates(**floats, level_times=levels),
+            compute_level_replicates(**likes, level_times=levels),
+        )
+        replicates = [3, 3, 3]
+        assert default_max_restarts(
+            **floats, level_times=levels, replicates=replicates
+        ) == default_max_restarts(**likes, level_times=levels, replicates=replicates)
+
+    def test_float_horizon_defaults_to_the_last_level_time(self) -> None:
+        levels = [0.0, 2.0, 5.0]
+        np.testing.assert_array_equal(
+            compute_level_replicates(
+                birth_rate=1.0, death_rate=2.0, level_times=levels
+            ),
+            compute_level_replicates(
+                birth_rate=1.0, death_rate=2.0, level_times=levels, terminal_time=5.0
+            ),
+        )
+
+    def test_linear_rate_objects_in_the_helpers(self) -> None:
+        birth, death = _rate_like_pair(6.0)
+        levels = select_level_times_for_band(birth_rate=birth, death_rate=death)
+        replicates = compute_level_replicates(
+            birth_rate=birth, death_rate=death, level_times=levels
+        )
+        assert replicates.shape == (len(levels) - 1,)
+        assert np.all(replicates >= 2)
+        assert (
+            default_max_restarts(
+                birth_rate=birth,
+                death_rate=death,
+                level_times=levels,
+                replicates=replicates,
+            )
+            >= 1
+        )
+
+    def test_mixed_float_and_rate_like(self) -> None:
+        death = PiecewiseLinear([0.0], [1.6], [6.0])
+        levels = select_level_times_for_band(birth_rate=1.0, death_rate=death)
+        assert levels[-1] == pytest.approx(6.0)
+
+
+class TestPartialGrids:
+    """The helpers accept a grid that stops short of T, not one beyond it."""
+
+    @pytest.mark.parametrize("last", [4.0, 3.0])
+    def test_grid_ending_at_or_before_t_is_accepted(self, last: float) -> None:
+        birth, death = PiecewiseConstant([1.0], [4.0]), PiecewiseConstant([1.5], [4.0])
+        levels = [0.0, 2.0, last]
+        replicates = compute_level_replicates(
+            birth_rate=birth, death_rate=death, level_times=levels
+        )
+        assert replicates.shape == (2,)
+        restarts = default_max_restarts(
+            birth_rate=birth,
+            death_rate=death,
+            level_times=levels,
+            replicates=replicates,
+        )
+        assert restarts >= 1
+
+    def test_grid_beyond_t_is_rejected(self) -> None:
+        birth, death = PiecewiseConstant([1.0], [5.0]), PiecewiseConstant([1.5], [5.0])
+        with pytest.raises(ValueError, match="level_times"):
+            compute_level_replicates(
+                birth_rate=birth, death_rate=death, level_times=[0, 2.5, 9.0]
+            )
+
+
+class TestKeywordOnlyConfig:
+    def test_positional_construction_raises(self) -> None:
+        with pytest.raises(TypeError):
+            SplittingConfig(1.0, 2.0, 8.0, 200)  # type: ignore[misc]
+        with pytest.raises(TypeError):
+            SplittingConfig(1.0, 2.0, 200)  # type: ignore[misc]

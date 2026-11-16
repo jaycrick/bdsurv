@@ -4,9 +4,10 @@
 
 `src/bdsurv/lifespans.py` simulates a linear birth-death process whose rates are
 piecewise constant over epochs.
-It returns the same records as `simulate_birth_death_process`
-(`src/bdsurv/gillespie.py`), but the event loop runs inside a single
-JIT-compiled `jax.lax.while_loop`.
+It returns the same records as `simulate_birth_death` with
+`PiecewiseConstant` rates (`src/bdsurv/forward.py`), but the numeric core runs in
+JIT-compiled JAX: one `jax.lax.while_loop` per epoch, driven by a host loop over
+the epochs (`advance_era`).
 
 The process is not conditioned on survival.
 For survival-conditioned subcritical trees use the contour-process or splitting
@@ -20,7 +21,7 @@ Each individual's whole lifespan is decided the moment it is born.
    $E \sim \mathrm{Exp}(1)$ and find the first time the cumulative death hazard
    $\int_b^t \mu(s)\,ds$ reaches $E$.
    The hazard is piecewise constant, so this is a scan over the epoch
-   boundaries (`_sample_piecewise_exponential_death_time`).
+   boundaries (`sample_piecewise_exponential_death_time`).
    If the hazard up to the terminal time $T$ never reaches $E$, the death time
    is $\infty$ and the individual survives.
 2. **Next birth.** With $n$ individuals alive in an epoch with birth rate
@@ -44,7 +45,7 @@ size $n$ just before its birth.
 maintaining the ordered list of living individuals.
 A newborn is inserted at position $1 + \lfloor u n \rfloor$ (clamped to $n$)
 and its parent is the individual in the preceding position,
-the same convention as the Gillespie simulator.
+the same convention as `simulate_birth_death`.
 The spine is the first living individual at the terminal time.
 
 ## Entry points
@@ -53,8 +54,9 @@ The spine is the first living individual at the terminal time.
   tuple (`birth_times`, `death_times`, `birth_epochs`, `survived`, `n_born`)
   and skips the genealogy replay.
   Use it when only per-epoch counts are needed, as in era-conditioned sampling.
-- `simulate_birth_death_lifespans` returns a `SimulatedProcess` with a
-  `birth_epoch` column in `records`.
+- `simulate_birth_death_lifespans` returns a `SimulatedTree` with a
+  `birth_epoch` column in `records`; its `birth_rate` and `death_rate` are
+  `PiecewiseConstant` objects holding the epoch rates and end times.
   `ensure_non_extinct=True` redraws, up to `max_retries` times, until at least
   one individual survives.
 

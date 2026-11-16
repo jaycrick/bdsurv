@@ -17,7 +17,6 @@ import numpy as np
 import pytest
 
 from bdsurv import (
-    LinearSplittingConfig,
     PiecewiseConstant,
     PiecewiseLinear,
     SplittingConfig,
@@ -27,16 +26,13 @@ from bdsurv import (
     sample_conditioned_survival_per_posterior,
     sample_conditioned_survival_process,
     select_level_times_for_band,
+    simulate_birth_death,
     simulate_birth_death_lifespans,
     simulate_birth_death_lifespans_arrays,
-    simulate_birth_death_linear,
-    simulate_birth_death_process,
-    simulate_birth_death_process_from_contour_process,
     simulate_contour_given_ages,
     simulate_contour_given_population,
-    simulate_linear_rate_contour_process,
-    simulate_linear_survival_splitting,
-    simulate_subcritical_survival_splitting,
+    simulate_contour_given_survival,
+    simulate_survival_splitting,
 )
 
 NAN = float("nan")
@@ -55,12 +51,8 @@ def _arr(*values: float) -> np.ndarray:
     return np.array(values, dtype=np.float64)
 
 
-def _subcritical_splitting(**kwargs: Any):
-    return simulate_subcritical_survival_splitting(SplittingConfig(**kwargs))
-
-
-def _linear_splitting(**kwargs: Any):
-    return simulate_linear_survival_splitting(LinearSplittingConfig(**kwargs))
+def _splitting(**kwargs: Any):
+    return simulate_survival_splitting(SplittingConfig(**kwargs))
 
 
 FORWARD_BASE: dict[str, Any] = {
@@ -69,7 +61,13 @@ FORWARD_BASE: dict[str, Any] = {
     "times": _arr(1.0, 2.0),
     "random_seed": 0,
 }
-LINEAR_BASE: dict[str, Any] = {
+FLOAT_BASE: dict[str, Any] = {
+    "birth_rate": 0.9,
+    "death_rate": 1.0,
+    "terminal_time": 5.0,
+    "random_seed": 0,
+}
+RATE_LIKE_BASE: dict[str, Any] = {
     "birth_rate": _constant([1.0, 0.8], [2.0, 4.0]),
     "death_rate": _linear([0.3, 0.5], [0.5, 0.9], [2.0, 4.0]),
     "random_seed": 0,
@@ -88,7 +86,7 @@ SPLITTING_BASE: dict[str, Any] = {
     "random_seed": 0,
     "max_restarts": 5,
 }
-LINEAR_SPLITTING_BASE: dict[str, Any] = {
+RATE_LIKE_SPLITTING_BASE: dict[str, Any] = {
     "birth_rate": _constant([1.0, 0.8], [2.0, 4.0]),
     "death_rate": _constant([0.5, 0.6], [2.0, 4.0]),
     "n_particles": 20,
@@ -106,6 +104,20 @@ REPLICATES_BASE: dict[str, Any] = {
     "level_times": [0.0, 2.0, 5.0],
 }
 RESTARTS_BASE: dict[str, Any] = {**REPLICATES_BASE, "replicates": [2, 2]}
+# The helpers with rate-like rates; their end time is 4.
+RATE_LIKE_RATES: dict[str, Any] = {
+    "birth_rate": _constant([1.0, 0.8], [2.0, 4.0]),
+    "death_rate": _linear([0.3, 0.5], [0.5, 0.9], [2.0, 4.0]),
+}
+RATE_LIKE_BAND_BASE: dict[str, Any] = dict(RATE_LIKE_RATES)
+RATE_LIKE_REPLICATES_BASE: dict[str, Any] = {
+    **RATE_LIKE_RATES,
+    "level_times": [0.0, 2.0, 4.0],
+}
+RATE_LIKE_RESTARTS_BASE: dict[str, Any] = {
+    **RATE_LIKE_REPLICATES_BASE,
+    "replicates": [2, 2],
+}
 ERA_BASE: dict[str, Any] = {
     "birth_rates": [0.6, 0.5],
     "death_rates": [0.2, 0.3],
@@ -127,22 +139,23 @@ POSTERIOR_BASE: dict[str, Any] = {
     "max_population": 500,
 }
 
-# entry point name -> (callable, valid base arguments)
+# entry point name -> (callable, valid base arguments); "(float)" and "(rate-like)"
+# name the same function called with float rates and with rate objects.
 ENTRY_POINTS: dict[str, tuple[Callable[..., Any], dict[str, Any]]] = {
-    "simulate_birth_death_process": (simulate_birth_death_process, FORWARD_BASE),
+    "simulate_birth_death(float)": (simulate_birth_death, FLOAT_BASE),
+    "simulate_birth_death(rate-like)": (simulate_birth_death, RATE_LIKE_BASE),
     "simulate_birth_death_lifespans": (simulate_birth_death_lifespans, FORWARD_BASE),
     "simulate_birth_death_lifespans_arrays": (
         simulate_birth_death_lifespans_arrays,
         FORWARD_BASE,
     ),
-    "simulate_birth_death_linear": (simulate_birth_death_linear, LINEAR_BASE),
-    "simulate_birth_death_process_from_contour_process": (
-        simulate_birth_death_process_from_contour_process,
-        {"birth_rate": 0.9, "death_rate": 1.0, "terminal_time": 5.0, "random_seed": 0},
+    "simulate_contour_given_survival(float)": (
+        simulate_contour_given_survival,
+        FLOAT_BASE,
     ),
-    "simulate_linear_rate_contour_process": (
-        simulate_linear_rate_contour_process,
-        LINEAR_BASE,
+    "simulate_contour_given_survival(rate-like)": (
+        simulate_contour_given_survival,
+        RATE_LIKE_BASE,
     ),
     "simulate_contour_given_population": (
         simulate_contour_given_population,
@@ -152,14 +165,26 @@ ENTRY_POINTS: dict[str, tuple[Callable[..., Any], dict[str, Any]]] = {
         simulate_contour_given_ages,
         {**CONDITIONED_BASE, "ages": [1.0, 2.0]},
     ),
-    "simulate_subcritical_survival_splitting": (
-        _subcritical_splitting,
-        SPLITTING_BASE,
+    "simulate_survival_splitting(float)": (_splitting, SPLITTING_BASE),
+    "simulate_survival_splitting(rate-like)": (
+        _splitting,
+        RATE_LIKE_SPLITTING_BASE,
     ),
-    "simulate_linear_survival_splitting": (_linear_splitting, LINEAR_SPLITTING_BASE),
-    "select_level_times_for_band": (select_level_times_for_band, BAND_BASE),
-    "compute_level_replicates": (compute_level_replicates, REPLICATES_BASE),
-    "default_max_restarts": (default_max_restarts, RESTARTS_BASE),
+    "select_level_times_for_band(float)": (select_level_times_for_band, BAND_BASE),
+    "select_level_times_for_band(rate-like)": (
+        select_level_times_for_band,
+        RATE_LIKE_BAND_BASE,
+    ),
+    "compute_level_replicates(float)": (compute_level_replicates, REPLICATES_BASE),
+    "compute_level_replicates(rate-like)": (
+        compute_level_replicates,
+        RATE_LIKE_REPLICATES_BASE,
+    ),
+    "default_max_restarts(float)": (default_max_restarts, RESTARTS_BASE),
+    "default_max_restarts(rate-like)": (
+        default_max_restarts,
+        RATE_LIKE_RESTARTS_BASE,
+    ),
     "build_target_ranges": (build_target_ranges, {"observed_counts": [5, 3, 0]}),
     "sample_conditioned_survival_process": (
         sample_conditioned_survival_process,
@@ -202,7 +227,7 @@ def _show(value: Any) -> str:
 
 
 def _forward_rows(entry: str) -> list[Row]:
-    """Rows shared by the three forward simulators on piecewise-constant arrays."""
+    """Rows of the two epoch-array simulators, which need strictly positive rates."""
     rows = _rows(
         entry,
         "positive",
@@ -241,18 +266,11 @@ def _forward_rows(entry: str) -> list[Row]:
 
 ROWS: list[Row] = []
 for _entry in (
-    "simulate_birth_death_process",
     "simulate_birth_death_lifespans",
     "simulate_birth_death_lifespans_arrays",
 ):
     ROWS += _forward_rows(_entry)
 ROWS += [
-    (
-        "simulate_birth_death_process",
-        {"ensure_non_extinct": True, "max_retries": -1},
-        "non-negative",
-        "max_retries=-1",
-    ),
     (
         "simulate_birth_death_lifespans",
         {"ensure_non_extinct": True, "max_retries": -1},
@@ -272,8 +290,21 @@ ROWS += [
 ]
 
 
-def _linear_rate_rows(entry: str) -> list[Row]:
-    """Rows for the entry points taking ``birth_rate`` and ``death_rate`` rate-likes."""
+def _float_rate_rows(entry: str, *, terminal_time_required: bool = True) -> list[Row]:
+    """Rows for the entry points called with float rates and ``terminal_time``.
+
+    A float rate of zero is valid, so none of these rows has one.
+    """
+    rows = _rows(entry, "non-negative", {"birth_rate": [-1.0], "death_rate": [-1.0]})
+    rows += _rows(entry, "finite", {"birth_rate": [NAN, INF], "death_rate": [NAN, INF]})
+    rows += _rows(entry, "positive", {"terminal_time": [0.0, -1.0, NAN, INF]})
+    if terminal_time_required:
+        rows += _rows(entry, "terminal_time is required", {"terminal_time": [None]})
+    return rows
+
+
+def _rate_like_rows(entry: str) -> list[Row]:
+    """Rows for the entry points called with rate-likes for both rates."""
     rows = _rows(
         entry,
         "non-negative",
@@ -300,14 +331,23 @@ def _linear_rate_rows(entry: str) -> list[Row]:
         entry,
         "increasing",
         {
-            "birth_rate": [_constant([1.0, 0.8], [6.0, 4.0])],
+            "birth_rate": [
+                _constant([1.0, 0.8], [6.0, 4.0]),
+                _constant([1.0, 0.8], [2.0, NAN]),
+                _constant([1.0, 0.8], [2.0, INF]),
+            ],
             "death_rate": [_linear([0.3, 0.5], [0.5, 0.9], [6.0, 4.0])],
         },
     )
     rows += _rows(
         entry,
         "positive",
-        {"birth_rate": [_constant([1.0, 0.8], [0.0, 4.0])]},
+        {
+            "birth_rate": [
+                _constant([1.0, 0.8], [0.0, 4.0]),
+                _constant([1.0, 0.8], [-1.0, 4.0]),
+            ]
+        },
     )
     rows += _rows(
         entry,
@@ -322,33 +362,49 @@ def _linear_rate_rows(entry: str) -> list[Row]:
     return rows
 
 
-ROWS += _linear_rate_rows("simulate_birth_death_linear")
-ROWS += _linear_rate_rows("simulate_linear_rate_contour_process")
+ROWS += _float_rate_rows("simulate_birth_death(float)")
+ROWS += _rate_like_rows("simulate_birth_death(rate-like)")
+for _entry in ("simulate_birth_death(float)", "simulate_birth_death(rate-like)"):
+    ROWS.append(
+        (
+            _entry,
+            {"ensure_non_extinct": True, "max_retries": -1},
+            "non-negative",
+            "max_retries=-1",
+        )
+    )
+ROWS.append(
+    (
+        "simulate_birth_death(rate-like)",
+        {"terminal_time": 5.0},
+        "terminal_time must equal",
+        "terminal_time-differs-from-rates-end-time",
+    )
+)
+
+# Survival-conditioned contour: a death rate that is identically zero is rejected.
+ROWS += _float_rate_rows("simulate_contour_given_survival(float)")
+ROWS += _rate_like_rows("simulate_contour_given_survival(rate-like)")
 ROWS += [
     (
-        "simulate_birth_death_linear",
-        {"ensure_non_extinct": True, "max_retries": -1},
-        "non-negative",
-        "max_retries=-1",
+        "simulate_contour_given_survival(float)",
+        {"death_rate": 0.0},
+        "identically zero",
+        "death_rate=0.0",
     ),
     (
-        "simulate_linear_rate_contour_process",
+        "simulate_contour_given_survival(rate-like)",
         {"death_rate": _constant([0.0, 0.0], [2.0, 4.0])},
         "identically zero",
         "death_rate=identically-zero",
     ),
+    (
+        "simulate_contour_given_survival(rate-like)",
+        {"terminal_time": 5.0},
+        "terminal_time must equal",
+        "terminal_time-differs-from-rates-end-time",
+    ),
 ]
-
-# Constant-rate contour.
-ROWS += _rows(
-    "simulate_birth_death_process_from_contour_process",
-    "positive",
-    {
-        "birth_rate": [0.0, -1.0, NAN, INF],
-        "death_rate": [0.0, -1.0, NAN, INF],
-        "terminal_time": [0.0, -1.0, NAN, INF],
-    },
-)
 
 # Conditioned contours.
 for _entry in ("simulate_contour_given_population", "simulate_contour_given_ages"):
@@ -363,6 +419,7 @@ for _entry in ("simulate_contour_given_population", "simulate_contour_given_ages
         {"birth_rate": [NAN, INF], "death_rate": [NAN, INF]},
     )
     ROWS += _rows(_entry, "positive", {"terminal_time": [0.0, -1.0, NAN, INF]})
+    ROWS += _rows(_entry, "terminal_time is required", {"terminal_time": [None]})
     ROWS.append(
         (
             _entry,
@@ -407,107 +464,90 @@ ROWS += _rows(
 )
 
 # Splitting.
-for _entry, _fragment_rows in (
+ROWS += _float_rate_rows("simulate_survival_splitting(float)")
+ROWS += _rate_like_rows("simulate_survival_splitting(rate-like)")
+ROWS.append(
     (
-        "simulate_subcritical_survival_splitting",
-        {
-            "birth_rate": [0.0, -1.0, NAN, INF],
-            "death_rate": [0.0, -1.0, NAN, INF],
-            "terminal_time": [0.0, -1.0, NAN, INF],
-        },
-    ),
-):
-    ROWS += _rows(_entry, "positive", _fragment_rows)
-ROWS += _rows(
-    "simulate_subcritical_survival_splitting",
-    "n_particles must be positive",
-    {"n_particles": [0, -1]},
+        "simulate_survival_splitting(rate-like)",
+        {"terminal_time": 5.0},
+        "terminal_time must equal",
+        "terminal_time-differs-from-rates-end-time",
+    )
 )
+for _entry in (
+    "simulate_survival_splitting(float)",
+    "simulate_survival_splitting(rate-like)",
+):
+    ROWS += _rows(_entry, "n_particles must be positive", {"n_particles": [0, -1]})
+    ROWS += _rows(_entry, "max_restarts", {"max_restarts": [0, -1]})
 ROWS += _rows(
-    "simulate_subcritical_survival_splitting",
+    "simulate_survival_splitting(float)",
     "n_levels must be positive",
     {"n_levels": [0, -1]},
 )
 ROWS += _rows(
-    "simulate_subcritical_survival_splitting",
+    "simulate_survival_splitting(float)",
     "increasing",
     {"level_times": [[0.0, 3.0, 2.0, 5.0]]},
 )
 ROWS.append(
     (
-        "simulate_subcritical_survival_splitting",
+        "simulate_survival_splitting(float)",
         {"level_times": [0.0, 2.0, 5.0], "replicates": [2]},
         "one entry per level",
         "replicates-length-differs-from-intervals",
     )
 )
 ROWS += _rows(
-    "simulate_subcritical_survival_splitting",
+    "simulate_survival_splitting(float)",
     "requires level_times",
     {"replicates": [[2]]},
 )
-ROWS += _rows(
-    "simulate_subcritical_survival_splitting",
-    "max_restarts",
-    {"max_restarts": [0, -1]},
-)
-ROWS += _linear_rate_rows("simulate_linear_survival_splitting")
-ROWS += _rows(
-    "simulate_linear_survival_splitting",
-    "n_particles must be positive",
-    {"n_particles": [0, -1]},
-)
-ROWS += _rows(
-    "simulate_linear_survival_splitting",
-    "max_restarts",
-    {"max_restarts": [0, -1]},
-)
 
 # Level grid, replicates and restarts.
-for _entry in ("select_level_times_for_band", "compute_level_replicates"):
-    ROWS += _rows(
-        _entry,
-        "positive",
-        {"birth_rate": [0.0, -1.0, NAN, INF], "death_rate": [0.0, -1.0, NAN, INF]},
-    )
+ROWS += _float_rate_rows("select_level_times_for_band(float)")
+ROWS += _rate_like_rows("select_level_times_for_band(rate-like)")
+for _entry in ("compute_level_replicates", "default_max_restarts"):
+    ROWS += _float_rate_rows(f"{_entry}(float)", terminal_time_required=False)
+    ROWS += _rate_like_rows(f"{_entry}(rate-like)")
 ROWS += _rows(
-    "default_max_restarts",
-    "positive",
-    {"birth_rate": [0.0, -1.0, NAN, INF], "death_rate": [0.0, -1.0, NAN, INF]},
-)
-ROWS += _rows(
-    "select_level_times_for_band",
-    "positive",
-    {"terminal_time": [0.0, -1.0, NAN, INF]},
-)
-ROWS += _rows("select_level_times_for_band", "n_levels", {"n_levels": [0, -1]})
-ROWS += _rows(
-    "select_level_times_for_band",
+    "select_level_times_for_band(float)",
     "increasing",
     {"initial_level_times": [[0.0, 3.0, 2.0, 5.0]]},
 )
 ROWS += _rows(
-    "compute_level_replicates",
+    "compute_level_replicates(float)",
     "increasing",
     {"level_times": [[0.0, 3.0, 2.0], [0.0, 2.0, 2.0]]},
 )
+for _entry in ("compute_level_replicates", "default_max_restarts"):
+    ROWS += _rows(
+        f"{_entry}(rate-like)",
+        "must not exceed T",
+        {"level_times": [[0.0, 2.0, 9.0], [0.0, 4.5]]},
+    )
+    ROWS += _rows(
+        f"{_entry}(float)",
+        "must not exceed T",
+        {"terminal_time": [3.0]},
+    )
 ROWS += _rows(
-    "default_max_restarts",
+    "default_max_restarts(float)",
     "increasing",
     {"level_times": [[0.0, 3.0, 2.0]]},
 )
 ROWS += _rows(
-    "default_max_restarts",
+    "default_max_restarts(float)",
     "one entry per level",
     {"replicates": [[2], [2, 2, 2]]},
 )
 ROWS += _rows(
-    "default_max_restarts",
+    "default_max_restarts(float)",
     "replicates",
     {"replicates": [[0, 2], [-1, 2]]},
 )
 ROWS += _rows(
-    "default_max_restarts",
+    "default_max_restarts(float)",
     "target_success",
     {"target_success": [0.0, 1.0, -0.5, NAN]},
 )

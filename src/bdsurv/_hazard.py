@@ -194,7 +194,7 @@ def log_survival_probability_constant(
         return 0.0
     growth_rate = birth_rate - death_rate
     x = growth_rate * time
-    # log of ``num`` in ``pr_extinction``; survival is 1 / (1 + num).
+    # log of ``I(t)``, so that survival is 1 / (1 + I(t)).
     if abs(x) < CRITICAL_TOLERANCE:
         log_num = math.log(death_rate) + math.log(time)
     elif x < 0.0:

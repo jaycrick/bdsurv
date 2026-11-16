@@ -2,8 +2,9 @@
 
 This module provides continuous-time simulation utilities for sampling
 birth-death branching-process trajectories conditioned on survival up to a large
-terminal time.  Any positive rates are accepted: for subcritical processes
-survival is rare, for supercritical ones it is likely but not certain.
+terminal time.  Rates are floats or piecewise constant / linear in time; for
+subcritical processes survival is rare, for supercritical ones it is likely but
+not certain.
 
 Implemented methods:
 - Multilevel splitting with exact Gillespie trajectory evolution, an adaptive
@@ -26,18 +27,14 @@ import numpy as np
 import pandas as pd
 
 from bdsurv._forward import ForwardState, Segment, advance
-from bdsurv._hazard import (
-    close,
-    log_survival_probability,
-    log_survival_probability_constant,
-)
+from bdsurv._hazard import close, log_survival_probability
 from bdsurv._seeding import bump, root_rng, spawn
 from bdsurv.rates import (
     ConstantRateLike,
     LinearRateLike,
-    check_positive_rates,
+    RateInput,
+    as_rate_like,
     check_strictly_increasing,
-    check_terminal_time,
     merged_segments,
     resolve_rates,
 )
@@ -57,27 +54,31 @@ _MAX_LOG_REPLICATES: float = 30.0  # refuse R_i beyond ~1e13
 DEFAULT_RESTART_SUCCESS_PROBABILITY: float = 0.999
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class SplittingConfig:
-    """Configuration for multilevel splitting.
+    """Configuration for multilevel splitting; every field is keyword-only.
 
     Parameters
     ----------
-    birth_rate : float
-        Per-individual birth rate used in the birth-death dynamics.
-    death_rate : float
-        Per-individual death rate used in the birth-death dynamics.
-    terminal_time : float
-        Target time horizon T for conditioning on survival.
+    birth_rate : float | ConstantRateLike | LinearRateLike
+        Per-individual birth rate: a float (constant on ``[0, T]``) or a
+        piecewise constant / linear rate-like.
+    death_rate : float | ConstantRateLike | LinearRateLike
+        Per-individual death rate; see ``birth_rate``.
+        Rate-likes must have a common end time ``T``.
     n_particles : int
         Cap on the ensemble size after each enrichment step.  The initial
         ensemble size is ``R_1`` (see ``compute_level_replicates``), which may
         be smaller than this cap.  After enrichment, if the ensemble would
         exceed ``n_particles`` it is subsampled uniformly back down to
         ``n_particles``.
+    terminal_time : float | None, optional
+        Target time horizon T for conditioning on survival.  Required when both
+        rates are floats; otherwise ``None`` or equal to the end time of the
+        rate-likes.
     level_times : list[float] | None, optional
-        Level boundary times (including 0 and `terminal_time`).  If ``None``
-        the starting grid is ``linspace(0, terminal_time, K + 1)`` with ``K`` from
+        Level boundary times (including 0 and ``T``).  If ``None``
+        the starting grid is ``linspace(0, T, K + 1)`` with ``K`` from
         ``n_levels``.
         Unless ``replicates`` is also given, this grid is only the *starting*
         grid and is adjusted by ``select_level_times_for_band``.
@@ -104,47 +105,16 @@ class SplittingConfig:
 
     """
 
-    birth_rate: float
-    death_rate: float
-    terminal_time: float
+    birth_rate: RateInput
+    death_rate: RateInput
     n_particles: int
+    terminal_time: float | None = None
     level_times: list[float] | None = None
     n_levels: int | None = None
     random_seed: int | None = None
     n_conditioned_trajectories: int | None = None
     replicates: list[int] | None = None
     max_restarts: int | None = None
-
-
-@dataclass(frozen=True)
-class LinearSplittingConfig:
-    """Configuration for multilevel splitting with time-varying linear rates.
-
-    The fields are those of :class:`SplittingConfig`, except that the rates
-    are piecewise constant or piecewise linear in time over ``[0, T]`` and the
-    terminal time ``T`` is their common end time (``terminal_time``).
-
-    Parameters
-    ----------
-    birth_rate, death_rate : ConstantRateLike | LinearRateLike
-        Per-individual rates with a common end time.
-
-    """
-
-    birth_rate: ConstantRateLike | LinearRateLike
-    death_rate: ConstantRateLike | LinearRateLike
-    n_particles: int
-    level_times: list[float] | None = None
-    n_levels: int | None = None
-    random_seed: int | None = None
-    n_conditioned_trajectories: int | None = None
-    replicates: list[int] | None = None
-    max_restarts: int | None = None
-
-    @property
-    def terminal_time(self) -> float:
-        """The common end time of the rates."""
-        return float(np.atleast_1d(self.birth_rate.epoch_end_times)[-1])
 
 
 @dataclass(frozen=True)
@@ -208,7 +178,7 @@ class SplittingSimulationResult:
 
     Parameters
     ----------
-    config : SplittingConfig | LinearSplittingConfig
+    config : SplittingConfig
         The configuration used to run the simulation.
     level_times : np.ndarray
         Array of level boundary times including time 0 and terminal time.
@@ -240,7 +210,7 @@ class SplittingSimulationResult:
 
     """
 
-    config: SplittingConfig | LinearSplittingConfig
+    config: SplittingConfig
     level_times: np.ndarray
     level_diagnostics: list[LevelDiagnostic]
     level_mean_populations: np.ndarray
@@ -350,11 +320,43 @@ def _initial_level_count(log_pr_terminal: float) -> int:
     return max(1, round(log_pr_terminal / math.log(_TARGET_LEVEL_RATIO)))
 
 
+def _survival_curve(
+    birth_rate: RateInput, death_rate: RateInput, terminal_time: float | None
+) -> tuple[Callable[[float], float], float]:
+    """Return ``t -> log Pr(Z_t > 0)`` for the rates, and their horizon ``T``."""
+    birth, death, horizon = resolve_rates(birth_rate, death_rate, terminal_time)
+    return lambda t: log_survival_probability(birth, death, t), horizon
+
+
+def _grid_curve(
+    birth_rate: RateInput,
+    death_rate: RateInput,
+    level_times: list[float] | np.ndarray,
+    terminal_time: float | None,
+) -> Callable[[float], float]:
+    """Return ``t -> log Pr(Z_t > 0)`` for a possibly partial level grid.
+
+    For float rates without ``terminal_time`` the horizon is the last level
+    time; otherwise the horizon ``T`` is that of :func:`resolve_rates`, and a
+    last level time beyond ``T`` raises ``ValueError``.
+    """
+    times = _as_level_array(level_times)
+    if terminal_time is None and all(
+        isinstance(rate, int | float) for rate in (birth_rate, death_rate)
+    ):
+        terminal_time = float(times[-1])
+    log_pr, horizon = _survival_curve(birth_rate, death_rate, terminal_time)
+    if times[-1] > horizon and not np.isclose(times[-1], horizon):
+        msg = f"the last of level_times ({times[-1]}) must not exceed T = {horizon}"
+        raise ValueError(msg)
+    return log_pr
+
+
 def select_level_times_for_band(
     *,
-    birth_rate: float,
-    death_rate: float,
-    terminal_time: float,
+    birth_rate: RateInput,
+    death_rate: RateInput,
+    terminal_time: float | None = None,
     n_levels: int | None = None,
     initial_level_times: list[float] | np.ndarray | None = None,
 ) -> np.ndarray:
@@ -380,19 +382,20 @@ def select_level_times_for_band(
 
     Parameters
     ----------
-    birth_rate : float
-        Per-individual birth rate.
-    death_rate : float
-        Per-individual death rate.
-    terminal_time : float
-        Terminal time T.
+    birth_rate : float | ConstantRateLike | LinearRateLike
+        Per-individual birth rate: a float or a rate-like over ``[0, T]``.
+    death_rate : float | ConstantRateLike | LinearRateLike
+        Per-individual death rate; see ``birth_rate``.
+    terminal_time : float | None, optional
+        Terminal time T.  Required when both rates are floats; otherwise
+        ``None`` or equal to the end time of the rate-likes.
     n_levels : int | None, optional
         Number of intervals ``K`` in the starting grid
         ``linspace(0, T, K + 1)``.  If ``None``, ``K`` is chosen so that
         ``Pr(T) ** (1 / K)`` is about 1/3.  Ignored if ``initial_level_times``
         is given.
     initial_level_times : list[float] | np.ndarray | None, optional
-        Starting grid, including ``0`` and ``terminal_time``.
+        Starting grid, including ``0`` and ``T``.
 
     Returns
     -------
@@ -402,17 +405,15 @@ def select_level_times_for_band(
     Raises
     ------
     ValueError
-        If a rate or ``terminal_time`` is not finite and positive, the starting
-        grid is invalid, or the refine step exceeds ``_MAX_GRID_POINTS`` points.
+        If a rate or ``terminal_time`` is invalid (see
+        :func:`bdsurv.rates.resolve_rates`), the starting grid is invalid, or
+        the refine step exceeds ``_MAX_GRID_POINTS`` points.
 
     """
-    check_positive_rates(birth_rate, death_rate)
-    check_terminal_time(terminal_time)
+    log_pr, horizon = _survival_curve(birth_rate, death_rate, terminal_time)
     return _select_level_times(
-        log_pr=lambda t: log_survival_probability_constant(
-            birth_rate=birth_rate, death_rate=death_rate, time=t
-        ),
-        terminal_time=terminal_time,
+        log_pr=log_pr,
+        terminal_time=horizon,
         n_levels=n_levels,
         initial_level_times=initial_level_times,
     )
@@ -483,9 +484,10 @@ def _coarsen_grid(times: list[float], log_prs: list[float]) -> list[float]:
 
 def compute_level_replicates(
     *,
-    birth_rate: float,
-    death_rate: float,
+    birth_rate: RateInput,
+    death_rate: RateInput,
     level_times: list[float] | np.ndarray,
+    terminal_time: float | None = None,
 ) -> np.ndarray:
     """Return the replicate count ``R_i`` for each level interval.
 
@@ -496,12 +498,16 @@ def compute_level_replicates(
 
     Parameters
     ----------
-    birth_rate : float
-        Per-individual birth rate.
-    death_rate : float
-        Per-individual death rate.
+    birth_rate : float | ConstantRateLike | LinearRateLike
+        Per-individual birth rate: a float or a rate-like over ``[0, T]``.
+    death_rate : float | ConstantRateLike | LinearRateLike
+        Per-individual death rate; see ``birth_rate``.
     level_times : list[float] | np.ndarray
         Level boundary times ``0 = t_0 < ... < t_K``.
+    terminal_time : float | None, optional
+        Terminal time T.  For float rates it defaults to the last level time;
+        otherwise ``None`` or equal to the end time of the rate-likes.
+        The last level time may be short of T but not beyond it.
 
     Returns
     -------
@@ -511,18 +517,13 @@ def compute_level_replicates(
     Raises
     ------
     ValueError
-        If a rate is not finite and positive, ``level_times`` is not a finite
-        strictly increasing grid, or some ``R_i`` would be astronomically large
-        (a grid far outside the band).
+        If a rate or ``terminal_time`` is invalid, the last level time exceeds
+        ``T``, ``level_times`` is not a finite strictly increasing grid, or some
+        ``R_i`` would be astronomically large (a grid far outside the band).
 
     """
-    check_positive_rates(birth_rate, death_rate)
-    return _level_replicates(
-        log_pr=lambda t: log_survival_probability_constant(
-            birth_rate=birth_rate, death_rate=death_rate, time=t
-        ),
-        level_times=level_times,
-    )
+    log_pr = _grid_curve(birth_rate, death_rate, level_times, terminal_time)
+    return _level_replicates(log_pr=log_pr, level_times=level_times)
 
 
 def _level_replicates(
@@ -550,10 +551,11 @@ def _level_replicates(
 
 def default_max_restarts(
     *,
-    birth_rate: float,
-    death_rate: float,
+    birth_rate: RateInput,
+    death_rate: RateInput,
     level_times: list[float] | np.ndarray,
     replicates: list[int] | np.ndarray,
+    terminal_time: float | None = None,
     target_success: float = DEFAULT_RESTART_SUCCESS_PROBABILITY,
 ) -> int:
     """Return the number of attempts so that at least one succeeds w.p. ``target``.
@@ -575,14 +577,18 @@ def default_max_restarts(
 
     Parameters
     ----------
-    birth_rate : float
-        Per-individual birth rate.
-    death_rate : float
-        Per-individual death rate.
+    birth_rate : float | ConstantRateLike | LinearRateLike
+        Per-individual birth rate: a float or a rate-like over ``[0, T]``.
+    death_rate : float | ConstantRateLike | LinearRateLike
+        Per-individual death rate; see ``birth_rate``.
     level_times : list[float] | np.ndarray
         Level boundary times ``0 = t_0 < ... < t_K``.
     replicates : list[int] | np.ndarray
         Replicate counts, one per interval.
+    terminal_time : float | None, optional
+        Terminal time T.  For float rates it defaults to the last level time;
+        otherwise ``None`` or equal to the end time of the rate-likes.
+        The last level time may be short of T but not beyond it.
     target_success : float, optional
         Required probability that at least one attempt survives.
 
@@ -594,16 +600,15 @@ def default_max_restarts(
     Raises
     ------
     ValueError
-        If a rate is not finite and positive, ``level_times`` is not a finite
-        strictly increasing grid, ``replicates`` is not one integer ``>= 1`` per
-        interval, or ``target_success`` is outside ``(0, 1)``.
+        If a rate or ``terminal_time`` is invalid, the last level time exceeds
+        ``T``, ``level_times`` is not a finite strictly increasing grid,
+        ``replicates`` is not one integer ``>= 1`` per interval, or
+        ``target_success`` is outside ``(0, 1)``.
 
     """
-    check_positive_rates(birth_rate, death_rate)
+    log_pr = _grid_curve(birth_rate, death_rate, level_times, terminal_time)
     return _max_restarts(
-        log_pr=lambda t: log_survival_probability_constant(
-            birth_rate=birth_rate, death_rate=death_rate, time=t
-        ),
+        log_pr=log_pr,
         level_times=level_times,
         replicates=replicates,
         target_success=target_success,
@@ -698,39 +703,30 @@ def _clone_particle(
     )
 
 
-def _particle_to_tree(
-    *,
-    state: _ParticleState,
-    terminal_time: float,
-    birth_rate: float,
-    death_rate: float,
-    birth_rate_function: ConstantRateLike | LinearRateLike | None = None,
-    death_rate_function: ConstantRateLike | LinearRateLike | None = None,
-) -> SimulatedTree:
+def _particle_to_tree(*, state: _ParticleState, dynamics: _Dynamics) -> SimulatedTree:
     return SimulatedTree(
-        records=state.forward.to_records(terminal_time),
-        birth_rate=float(birth_rate),
-        death_rate=float(death_rate),
-        terminal_time=float(terminal_time),
-        birth_rate_function=birth_rate_function,
-        death_rate_function=death_rate_function,
+        records=state.forward.to_records(dynamics.terminal_time),
+        birth_rate=dynamics.birth_rate,
+        death_rate=dynamics.death_rate,
+        terminal_time=dynamics.terminal_time,
     )
 
 
 @dataclass(frozen=True)
 class _Dynamics:
-    """What distinguishes constant-rate from linear-rate splitting."""
+    """The rates of a splitting run in the forms the algorithm uses."""
 
     terminal_time: float
     log_pr: Callable[[float], float]
     segments: list[Segment]
-    tree_rates: dict[str, Any]
+    birth_rate: ConstantRateLike | LinearRateLike
+    death_rate: ConstantRateLike | LinearRateLike
 
 
 def _build_conditioned_trajectories(
     *,
     particles: list[_ParticleState],
-    config: Any,
+    config: SplittingConfig,
     seed_rng: np.random.Generator,
     dynamics: _Dynamics,
 ) -> list[ConditionedTrajectory]:
@@ -751,11 +747,7 @@ def _build_conditioned_trajectories(
     trajectories: list[ConditionedTrajectory] = []
     for raw_idx in np.atleast_1d(chosen_indices):
         particle = survivors[int(raw_idx)]
-        process = _particle_to_tree(
-            state=particle,
-            terminal_time=dynamics.terminal_time,
-            **dynamics.tree_rates,
-        )
+        process = _particle_to_tree(state=particle, dynamics=dynamics)
         trajectories.append(
             ConditionedTrajectory(
                 particle_id=particle.particle_id,
@@ -857,7 +849,7 @@ class _AttemptOutcome:
 
 def _run_attempt(
     *,
-    config: SplittingConfig | LinearSplittingConfig,
+    config: SplittingConfig,
     levels: np.ndarray,
     replicates: np.ndarray,
     seed_rng: np.random.Generator,
@@ -937,7 +929,7 @@ def _run_attempt(
 
 
 def _resolve_levels_and_replicates(
-    config: SplittingConfig | LinearSplittingConfig,
+    config: SplittingConfig,
     dynamics: _Dynamics,
 ) -> tuple[np.ndarray, np.ndarray, bool]:
     """Return ``(levels, replicates, direct)``.
@@ -978,14 +970,15 @@ def _resolve_levels_and_replicates(
     return levels, replicates, False
 
 
-def simulate_subcritical_survival_splitting(
+def simulate_survival_splitting(
     config: SplittingConfig,
 ) -> SplittingSimulationResult:
-    """Sample survival-conditioned trajectories by multilevel (RESTART) splitting.
+    r"""Sample survival-conditioned trajectories by multilevel (RESTART) splitting.
 
-    Accepts any positive rates.  The name is historical: the method was
-    written for the subcritical case, where survival is rare, but supercritical
-    and critical processes work too (survival is then likely but not certain).
+    Accepts rates that are floats or piecewise constant / linear in time, finite
+    and non-negative.  Subcritical processes, where survival is rare, are the
+    intended case, but supercritical and critical processes work too (survival
+    is then likely but not certain).
 
     Algorithm
     ---------
@@ -1025,6 +1018,20 @@ def simulate_subcritical_survival_splitting(
     failed attempts are discarded.  If every attempt fails a warning is issued
     and no trajectories are returned.
 
+    **Time-varying rates.** Two points matter when the rates are not constant.
+
+    - *Survival probability.* A single individual alive at 0 has
+      $\Pr(Z_t > 0) = 1 / (1 + I(t))$ with
+      $I(t) = \int_0^t \mu(s) e^{-\Gamma(s)} ds$ and
+      $\Gamma(s) = \int_0^s (\lambda - \mu)$, evaluated by panelled
+      Gauss-Legendre quadrature in log space (in closed form for constant
+      rates).  It drives the level grid, the replicate counts and the default
+      restart cap.
+    - *Dynamics.* Each particle is evolved by exact event simulation: within
+      every linear segment the next event time inverts the cumulative total
+      hazard, and the event is a birth with probability
+      $\lambda(t) / (\lambda(t) + \mu(t))$.
+
     Parameters
     ----------
     config : SplittingConfig
@@ -1053,90 +1060,30 @@ def simulate_subcritical_survival_splitting(
     Raises
     ------
     ValueError
-        If a rate is not positive, ``n_particles < 1``, ``terminal_time <= 0``,
-        ``max_restarts < 1``, or ``replicates`` is invalid or given without
-        ``level_times``.
-
-    """
-    birth_rate, death_rate = float(config.birth_rate), float(config.death_rate)
-    check_positive_rates(birth_rate, death_rate)
-    check_terminal_time(float(config.terminal_time))
-    _check_n_particles(int(config.n_particles))
-    terminal_time = float(config.terminal_time)
-    dynamics = _Dynamics(
-        terminal_time=terminal_time,
-        log_pr=lambda t: log_survival_probability_constant(
-            birth_rate=birth_rate, death_rate=death_rate, time=t
-        ),
-        segments=merged_segments(
-            *resolve_rates(birth_rate, death_rate, terminal_time)[:2]
-        ),
-        tree_rates={"birth_rate": birth_rate, "death_rate": death_rate},
-    )
-    return _run_splitting(config, dynamics)
-
-
-def simulate_linear_survival_splitting(
-    config: LinearSplittingConfig,
-) -> SplittingSimulationResult:
-    r"""Sample survival-conditioned trajectories by splitting, with linear rates.
-
-    The algorithm is that of :func:`simulate_subcritical_survival_splitting`,
-    with two changes for rates that vary in time.
-
-    - **Survival probability.** A single individual alive at 0 has
-      $\Pr(Z_t > 0) = 1 / (1 + I(t))$ with
-      $I(t) = \int_0^t \mu(s) e^{-\Gamma(s)} ds$ and
-      $\Gamma(s) = \int_0^s (\lambda - \mu)$, evaluated by panelled
-      Gauss-Legendre quadrature in log space.  It drives the level grid, the
-      replicate counts and the default restart cap.
-    - **Dynamics.** Each particle is evolved by exact event simulation: within
-      every linear segment the next event time inverts the cumulative total
-      hazard, and the event is a birth with probability
-      $\lambda(t) / (\lambda(t) + \mu(t))$.
-
-    Parameters
-    ----------
-    config : LinearSplittingConfig
-        Simulation parameters; ``terminal_time`` is the rates' end time.
-
-    Returns
-    -------
-    SplittingSimulationResult
-        As for the constant-rate version.  The trees carry NaN scalar rates
-        and the rates themselves in ``birth_rate_function`` and
-        ``death_rate_function``.
-
-    Raises
-    ------
-    ValueError
-        If the rates are invalid or differ in end time, ``n_particles < 1``,
+        If a rate or ``terminal_time`` is invalid (see
+        :func:`bdsurv.rates.resolve_rates`), ``n_particles < 1``,
         ``max_restarts < 1``, or ``replicates`` is invalid or given without
         ``level_times``.
 
     """
     birth, death, terminal_time = resolve_rates(
-        config.birth_rate, config.death_rate, None
+        config.birth_rate, config.death_rate, config.terminal_time
     )
-    _check_n_particles(config.n_particles)
+    _check_n_particles(int(config.n_particles))
     dynamics = _Dynamics(
         terminal_time=terminal_time,
         log_pr=lambda t: log_survival_probability(birth, death, t),
         segments=merged_segments(birth, death),
-        tree_rates={
-            "birth_rate": math.nan,
-            "death_rate": math.nan,
-            "birth_rate_function": config.birth_rate,
-            "death_rate_function": config.death_rate,
-        },
+        birth_rate=as_rate_like(config.birth_rate, terminal_time),
+        death_rate=as_rate_like(config.death_rate, terminal_time),
     )
     return _run_splitting(config, dynamics)
 
 
 def _run_splitting(
-    config: SplittingConfig | LinearSplittingConfig, dynamics: _Dynamics
+    config: SplittingConfig, dynamics: _Dynamics
 ) -> SplittingSimulationResult:
-    """Run levels, restarts and trajectory extraction for either dynamics."""
+    """Run levels, restarts and trajectory extraction for the resolved rates."""
     levels, replicates, direct = _resolve_levels_and_replicates(config, dynamics)
 
     max_restarts: int | None

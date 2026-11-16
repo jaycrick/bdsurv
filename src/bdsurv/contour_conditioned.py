@@ -26,33 +26,13 @@ from bdsurv.contour import (
     join_pieces,
     sample_until,
 )
-from bdsurv.rates import PiecewiseConstant, Rate, RateInput, resolve_rates
+from bdsurv.rates import Rate, RateInput, as_rate_like, resolve_rates
 from bdsurv.tree import SimulatedTree
 
 Direction = Literal["auto", "top", "bottom"]
 
 _DIRECTIONS = ("auto", "top", "bottom")
 _END_PIECES = 2
-
-
-def _tree_args(
-    birth_rate: RateInput, death_rate: RateInput, terminal_time: float
-) -> dict[str, object]:
-    """Return the rate arguments of the decoded ``SimulatedTree``."""
-    if isinstance(birth_rate, int | float) and isinstance(death_rate, int | float):
-        return {"birth_rate": float(birth_rate), "death_rate": float(death_rate)}
-
-    def wrap(rate: RateInput) -> object:
-        if isinstance(rate, int | float):
-            return PiecewiseConstant([float(rate)], [terminal_time])
-        return rate
-
-    return {
-        "birth_rate": float("nan"),
-        "death_rate": float("nan"),
-        "birth_rate_function": wrap(birth_rate),
-        "death_rate_function": wrap(death_rate),
-    }
 
 
 def _log_survival_pair(
@@ -122,6 +102,7 @@ def simulate_contour_given_population(
     n_alive: int,
     terminal_time: float | None = None,
     random_seed: int | None = None,
+    *,
     direction: Direction = "auto",
 ) -> SimulatedTree:
     r"""Simulate a birth-death tree conditioned on ``n_alive`` individuals at ``T``.
@@ -146,14 +127,14 @@ def simulate_contour_given_population(
         Seed for reproducibility.
     direction
         ``"auto"`` chooses the end of the end pieces; ``"top"`` or ``"bottom"``
-        force it. All give the same distribution.
+        force it. All give the same distribution. Keyword-only.
 
     Returns
     -------
     SimulatedTree
-        For float rates the tree carries them as scalars; otherwise
-        ``birth_rate`` and ``death_rate`` are NaN and the rates are in
-        ``birth_rate_function`` and ``death_rate_function``.
+        The tree with one spine survivor.
+        Its ``birth_rate`` and ``death_rate`` are the rate objects (a float
+        rate as a one-epoch :class:`~bdsurv.rates.PiecewiseConstant`).
 
     Raises
     ------
@@ -173,8 +154,11 @@ def simulate_contour_given_population(
         raise ValueError(msg)
     walker = Walker(birth, death, horizon, root_rng(random_seed, "contour"))
     contour = _population_contour(walker, n_alive, prefer_top=prefer_top)
-    tree_args = _tree_args(birth_rate, death_rate, horizon)
-    return contour_process_list_to_tree(contour, **tree_args)  # pyright: ignore[reportArgumentType]
+    return contour_process_list_to_tree(
+        contour,
+        birth_rate=as_rate_like(birth_rate, horizon),
+        death_rate=as_rate_like(death_rate, horizon),
+    )
 
 
 def _spine_levels(ages: Sequence[float], terminal_time: float) -> list[float]:
@@ -324,13 +308,14 @@ def _ages_contour(
     return contour, spine_index
 
 
-def simulate_contour_given_ages(  # noqa: PLR0913, PLR0917  # public signature, revisited in S9
+def simulate_contour_given_ages(  # noqa: PLR0913  # public signature
     birth_rate: RateInput,
     death_rate: RateInput,
     ages: Sequence[float],
     terminal_time: float | None = None,
-    spine_index: int | None = None,
     random_seed: int | None = None,
+    *,
+    spine_index: int | None = None,
     direction: Direction = "auto",
 ) -> SimulatedTree:
     r"""Simulate a birth-death tree whose survivors at ``T`` have the given ``ages``.
@@ -352,13 +337,14 @@ def simulate_contour_given_ages(  # noqa: PLR0913, PLR0917  # public signature, 
     terminal_time
         The time ``T``. For rate-like inputs it must be ``None`` or equal to
         their common end time.
-    spine_index
-        Index in ``ages`` of the spine survivor; sampled when ``None``.
     random_seed
         Seed for reproducibility.
+    spine_index
+        Index in ``ages`` of the spine survivor; sampled when ``None``.
+        Keyword-only.
     direction
         ``"auto"`` chooses the end of the end pieces; ``"top"`` or ``"bottom"``
-        force it. All give the same distribution.
+        force it. All give the same distribution. Keyword-only.
 
     Returns
     -------
@@ -407,5 +393,8 @@ def simulate_contour_given_ages(  # noqa: PLR0913, PLR0917  # public signature, 
             raise ValueError(msg)
     walker = Walker(birth, death, horizon, root_rng(random_seed, "contour"))
     contour, _ = _ages_contour(walker, age_list, spine_index, prefer_top=prefer_top)
-    tree_args = _tree_args(birth_rate, death_rate, horizon)
-    return contour_process_list_to_tree(contour, **tree_args)  # pyright: ignore[reportArgumentType]
+    return contour_process_list_to_tree(
+        contour,
+        birth_rate=as_rate_like(birth_rate, horizon),
+        death_rate=as_rate_like(death_rate, horizon),
+    )

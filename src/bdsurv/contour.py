@@ -32,8 +32,8 @@ from bdsurv.rates import (
     ConstantRateLike,
     LinearRateLike,
     Rate,
-    check_positive_rates,
-    check_terminal_time,
+    RateInput,
+    as_rate_like,
     resolve_rates,
 )
 from bdsurv.tree import SimulatedTree, build_records
@@ -250,10 +250,8 @@ def validate_contour_process_list(contour_process_list: list[float]) -> None:
 def contour_process_list_to_tree(
     contour_process_list: list[float],
     *,
-    birth_rate: float,
-    death_rate: float,
-    birth_rate_function: ConstantRateLike | LinearRateLike | None = None,
-    death_rate_function: ConstantRateLike | LinearRateLike | None = None,
+    birth_rate: ConstantRateLike | LinearRateLike,
+    death_rate: ConstantRateLike | LinearRateLike,
 ) -> SimulatedTree:
     """Reconstruct a ``SimulatedTree`` from a validated contour list.
 
@@ -264,6 +262,8 @@ def contour_process_list_to_tree(
     among those alive when the process first reaches the terminal time
     (equivalently, the individual at the top of the genealogy stack when T
     is first hit).
+    The tree's ``birth_rate`` and ``death_rate`` are the rate objects given, and
+    its ``terminal_time`` is the largest value of the contour.
     """
     validate_contour_process_list(contour_process_list)
 
@@ -318,104 +318,71 @@ def contour_process_list_to_tree(
 
     return SimulatedTree(
         records=records_df,
-        birth_rate=float(birth_rate),
-        death_rate=float(death_rate),
+        birth_rate=birth_rate,
+        death_rate=death_rate,
         terminal_time=terminal_time,
-        birth_rate_function=birth_rate_function,
-        death_rate_function=death_rate_function,
     )
 
 
-def _simulate_survival(
-    birth: Rate,
-    death: Rate,
-    terminal_time: float,
-    random_seed: int | None,
-    **tree_args: object,
-) -> SimulatedTree:
-    """Generate a survival-conditioned contour and decode it into a tree."""
-    walker = Walker(birth, death, terminal_time, root_rng(random_seed, "contour"))
-    return contour_process_list_to_tree(_survival_contour(walker), **tree_args)  # pyright: ignore[reportArgumentType]
-
-
-def simulate_birth_death_process_from_contour_process(
-    birth_rate: float,
-    death_rate: float,
-    terminal_time: float,
+def simulate_contour_given_survival(
+    birth_rate: RateInput,
+    death_rate: RateInput,
+    terminal_time: float | None = None,
     random_seed: int | None = None,
 ) -> SimulatedTree:
-    """Simulate a birth-death tree using contour-process reconstruction.
+    r"""Simulate a birth-death tree conditioned to survive to ``T``, exactly.
 
-    Raises
-    ------
-    ValueError
-        If a rate or ``terminal_time`` is not finite and positive.
-
-    """
-    check_positive_rates(birth_rate, death_rate)
-    check_terminal_time(terminal_time)
-    birth, death, horizon = resolve_rates(birth_rate, death_rate, terminal_time)
-    return _simulate_survival(
-        birth,
-        death,
-        horizon,
-        random_seed,
-        birth_rate=float(birth_rate),
-        death_rate=float(death_rate),
-    )
-
-
-def simulate_linear_rate_contour_process(
-    birth_rate: ConstantRateLike | LinearRateLike,
-    death_rate: ConstantRateLike | LinearRateLike,
-    random_seed: int | None = None,
-) -> SimulatedTree:
-    r"""Simulate a survival-conditioned tree with time-varying linear rates.
-
-    The construction is that of
-    :func:`simulate_birth_death_process_from_contour_process`, with the
-    exponential jumps replaced by hazard inversion at the absolute time of the
-    jump.
+    The contour of the tree is generated directly by excursions of the
+    :class:`Walker` between the levels ``0`` and ``T`` and decoded into a
+    genealogy (see ``docs/contour_process.md``).
+    The exponential jumps of the constant-rate case are replaced by hazard
+    inversion at the absolute time of the jump.
     A downward jump from level $x$ goes to the time $s < x$ at which
     $\int_s^x \lambda = E$, and an upward jump from $y$ to the time $s > y$ at
     which $\int_y^s \mu = E$, where $E \sim \mathrm{Exp}(1)$; each is solved
-    exactly as a quadratic within every linear segment.
+    exactly as a quadratic within every linear segment, and as an exponential
+    draw for a constant rate.
     Upward jumps are capped at $T$, and the spine excursion resets when one
-    reaches $T$, as in the constant-rate case.
+    reaches $T$.
 
     Parameters
     ----------
     birth_rate, death_rate
-        Per-individual rates over ``[0, T]``, piecewise constant or piecewise
-        linear, non-negative, with a common end time $T$ (the terminal time).
+        Per-individual rates, each a float (constant on ``[0, T]``) or a
+        rate-like (:class:`~bdsurv.rates.PiecewiseConstant`,
+        :class:`~bdsurv.rates.PiecewiseLinear` or any object with the same
+        attributes), finite and non-negative.
+        Rate-likes must have a common end time ``T``.
         The death rate must not be identically zero.
+    terminal_time
+        The time ``T`` the tree is conditioned to survive to.
+        Required when both rates are floats; otherwise ``None`` or equal to the
+        end time of the rate-likes.
     random_seed
         Seed for reproducibility.
 
     Returns
     -------
     SimulatedTree
-        ``birth_rate`` and ``death_rate`` are NaN; the rates are stored in
-        ``birth_rate_function`` and ``death_rate_function``.
+        The tree with exactly one surviving individual marked ``is_spine``.
+        Its ``birth_rate`` and ``death_rate`` are the rate objects (a float
+        rate as a one-epoch :class:`~bdsurv.rates.PiecewiseConstant`).
 
     Raises
     ------
     ValueError
-        If the rates are invalid, have different end times, or the death rate
-        is identically zero.
+        If a rate or ``terminal_time`` is invalid, the rate-likes differ in end
+        time, ``terminal_time`` is missing or does not match the rates, or the
+        death rate is identically zero.
 
     """
-    birth, death, terminal_time = resolve_rates(birth_rate, death_rate, None)
-    if cumulative(death, terminal_time) <= 0.0:
+    birth, death, horizon = resolve_rates(birth_rate, death_rate, terminal_time)
+    if cumulative(death, horizon) <= 0.0:
         msg = "death_rate must not be identically zero"
         raise ValueError(msg)
-    return _simulate_survival(
-        birth,
-        death,
-        terminal_time,
-        random_seed,
-        birth_rate=float("nan"),
-        death_rate=float("nan"),
-        birth_rate_function=birth_rate,
-        death_rate_function=death_rate,
+    walker = Walker(birth, death, horizon, root_rng(random_seed, "contour"))
+    return contour_process_list_to_tree(
+        _survival_contour(walker),
+        birth_rate=as_rate_like(birth_rate, horizon),
+        death_rate=as_rate_like(death_rate, horizon),
     )

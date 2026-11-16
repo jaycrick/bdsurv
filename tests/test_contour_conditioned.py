@@ -23,13 +23,8 @@ from bdsurv.contour_conditioned import (
     simulate_contour_given_ages,
     simulate_contour_given_population,
 )
-from bdsurv.gillespie import simulate_birth_death_process
-from bdsurv.linear_rates import (
-    PiecewiseConstant,
-    PiecewiseLinear,
-    simulate_birth_death_linear,
-)
-from bdsurv.rates import as_rate, resolve_rates
+from bdsurv.forward import simulate_birth_death
+from bdsurv.rates import PiecewiseConstant, PiecewiseLinear, as_rate, resolve_rates
 
 T = 4.0
 N_SEEDS = 200
@@ -163,14 +158,11 @@ class TestTreeValidity:
 
     def test_rates_stored(self) -> None:
         tree = _tree("subcritical", 2, 0)
-        assert (tree.birth_rate, tree.death_rate) == (0.8, 1.1)
-        assert tree.birth_rate_function is None
-        assert tree.death_rate_function is None
+        assert tree.birth_rate == PiecewiseConstant([0.8], [T])
+        assert tree.death_rate == PiecewiseConstant([1.1], [T])
         tree = _tree("arley", 2, 0)
-        assert np.isnan(tree.birth_rate)
-        assert np.isnan(tree.death_rate)
-        assert tree.birth_rate_function is ARLEY[0]
-        assert tree.death_rate_function is ARLEY[1]
+        assert tree.birth_rate is ARLEY[0]
+        assert tree.death_rate is ARLEY[1]
         assert tree.terminal_time == T
 
     def test_terminal_time_given_for_rate_likes(self) -> None:
@@ -424,10 +416,10 @@ class TestAgesStructure:
 
     def test_rates_stored(self) -> None:
         tree = _ages_tree("subcritical", (1.0, 2.0), 0)
-        assert (tree.birth_rate, tree.death_rate) == (0.8, 1.1)
+        assert tree.birth_rate == PiecewiseConstant([0.8], [T])
+        assert tree.death_rate == PiecewiseConstant([1.1], [T])
         tree = _ages_tree("arley", (1.0, 2.0), 0)
-        assert np.isnan(tree.birth_rate)
-        assert tree.birth_rate_function is ARLEY[0]
+        assert tree.birth_rate is ARLEY[0]
         assert tree.terminal_time == T
 
 
@@ -643,9 +635,8 @@ class TestSurvivalReversalIdentity:
 
 
 def _forward_run(birth: Any, death: Any, horizon: float, seed: int) -> Any:
-    if isinstance(birth, float):
-        return simulate_birth_death_process(birth, death, horizon, random_seed=seed)
-    return simulate_birth_death_linear(birth, death, random_seed=seed)
+    terminal_time = horizon if isinstance(birth, float) else None
+    return simulate_birth_death(birth, death, terminal_time, random_seed=seed)
 
 
 def _tree_summary(records: pd.DataFrame, horizon: float) -> tuple[int, list[float]]:
@@ -875,3 +866,31 @@ class TestSpineAgeLaw:
             f"KS test of the continuous spine age law ({regime}, n={n}): "
             f"p-value {result.pvalue:.3g} <= threshold {ALPHA}"
         )
+
+
+class TestKeywordOnlyOptions:
+    """``direction`` and ``spine_index`` cannot be passed positionally."""
+
+    def test_population_direction_is_keyword_only(self) -> None:
+        with pytest.raises(TypeError):
+            simulate_contour_given_population(1.0, 1.0, 2, T, 0, "top")
+        tree = simulate_contour_given_population(1.0, 1.0, 2, T, 0, direction="top")
+        assert tree.terminal_time == T
+
+    def test_ages_options_are_keyword_only(self) -> None:
+        with pytest.raises(TypeError):
+            simulate_contour_given_ages(1.0, 1.0, [1.0, 2.0], T, 0, 0)
+        with pytest.raises(TypeError):
+            simulate_contour_given_ages(
+                1.0,
+                1.0,
+                [1.0, 2.0],
+                T,
+                0,
+                None,
+                "top",
+            )
+        tree = simulate_contour_given_ages(
+            1.0, 1.0, [1.0, 2.0], T, 0, spine_index=0, direction="top"
+        )
+        assert tree.terminal_time == T

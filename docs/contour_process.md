@@ -26,13 +26,12 @@ This document describes the contour-process based simulator in
 
 ## Construction algorithm
 
-1. Produce a spine component using `_generate_spine_component`.
-2. Produce a non-spine component using `_generate_non_spine_component`.
-3. Build the contour list with `_build_contour_process_list`.
-4. Validate with `_validate_contour_process_list` (odd length, start/end 0,
-   strict alternation of peaks/valleys).
-5. Reconstruct a canonical `SimulatedTree` with
-   `_contour_process_list_to_tree`.
+1. Draw the spine component and the non-spine excursions with `_survival_contour`,
+   which steps `Walker.top_excursion` (the one stepper, in `contour.py`).
+2. Join the pieces into the contour list with `join_pieces`.
+3. Validate with `validate_contour_process_list` (odd length, start/end 0,
+   strict alternation of peaks/valleys); the decoder calls it.
+4. Reconstruct a canonical `SimulatedTree` with `contour_process_list_to_tree`.
 
 ## Reconstruction (stack algorithm)
 
@@ -47,7 +46,8 @@ This document describes the contour-process based simulator in
 
 ## Assumptions and invariants
 
-- Rates (`birth_rate`, `death_rate`) are positive.
+- Rates (`birth_rate`, `death_rate`) are finite and non-negative (floats or rate
+  objects), and the death rate is not identically zero.
 - Terminal time `T` is positive.
 - Generated contour lists must be strictly alternating and start/end with 0.
 - The public API returns a `SimulatedTree` (a plain `records` DataFrame plus
@@ -67,7 +67,7 @@ This document describes the contour-process based simulator in
   > **Note (as of this extraction):** an earlier draft of this document, and
   > the comparison notebook in `bdpinf`, both described the spine as
   > the *earliest-created* surviving individual instead. That was never
-  > true of the implementation — see `_contour_process_list_to_tree` in
+  > true of the implementation — see `contour_process_list_to_tree` in
   > `src/bdsurv/contour.py`, which has always marked the last-born
   > individual. This note exists so the discrepancy is visible before it is
   > written into the paper; whichever convention is intended, the code,
@@ -75,8 +75,9 @@ This document describes the contour-process based simulator in
 
 ## Linear (time-varying) rates
 
-`simulate_linear_rate_contour_process` accepts piecewise-constant or
-piecewise-linear rates $\lambda(t)$, $\mu(t)$ on $[0, T]$.
+`simulate_contour_given_survival` accepts floats or piecewise-constant or
+piecewise-linear rates $\lambda(t)$, $\mu(t)$ on $[0, T]$ (a float is constant
+on $[0, T]$).
 The construction and reconstruction are unchanged; only the jumps differ, and
 they now depend on the absolute time:
 
@@ -94,8 +95,8 @@ The spine's reset-on-$T$ rule is the same.
 Constant rates recover the exponential jumps above.
 The death rate must not vanish identically, or the spine would reset forever.
 
-The result is a `SimulatedTree` whose scalar rates are NaN and whose
-`birth_rate_function` / `death_rate_function` hold the rates.
+The result is a `SimulatedTree` whose `birth_rate` and `death_rate` hold the
+rate objects (a float rate as a one-epoch `PiecewiseConstant`).
 `tests/test_linear_conditioned.py` checks the population at $T$ against
 rejection-sampled forward simulation.
 
@@ -108,7 +109,7 @@ rejection-sampled forward simulation.
 
 ## Usage
 
-Call `simulate_birth_death_process_from_contour_process(...)` from the
-`bdsurv` package.
+Call `simulate_contour_given_survival(birth_rate, death_rate, terminal_time,
+random_seed)` from the `bdsurv` package.
 See the function docstring and
 `src/bdsurv/contour.py` for parameter descriptions and examples.

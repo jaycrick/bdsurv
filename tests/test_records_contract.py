@@ -1,8 +1,9 @@
 """One contract for the records table of every simulator that returns one.
 
 Every public simulator is run on small cases across the subcritical, critical,
-supercritical and Arley regimes (the last only where the simulator accepts
-time-varying rates).  Each run must satisfy the invariants of
+supercritical and Arley regimes (the lifespan simulator takes per-epoch arrays,
+so it runs the float regimes only).  The first three regimes are run with float
+rates and again as one-epoch rate-likes.  Each run must satisfy the invariants of
 ``_helpers.assert_valid_records``, be identical for a repeated seed, and run
 with ``random_seed=None``.
 
@@ -24,21 +25,19 @@ from _helpers import assert_valid_records
 from pandas.testing import assert_frame_equal
 
 from bdsurv import (
-    LinearSplittingConfig,
+    ConstantRateLike,
+    LinearRateLike,
     PiecewiseConstant,
     PiecewiseLinear,
+    SimulatedTree,
     SplittingConfig,
+    simulate_birth_death,
     simulate_birth_death_lifespans,
-    simulate_birth_death_linear,
-    simulate_birth_death_process,
-    simulate_birth_death_process_from_contour_process,
     simulate_contour_given_ages,
     simulate_contour_given_population,
-    simulate_linear_rate_contour_process,
-    simulate_linear_survival_splitting,
-    simulate_subcritical_survival_splitting,
+    simulate_contour_given_survival,
+    simulate_survival_splitting,
 )
-from bdsurv.linear_rates import ConstantRateLike, LinearRateLike
 
 T = 3.0
 SEEDS = tuple(range(8))
@@ -56,10 +55,12 @@ BASE_DTYPES = {
 LIFESPAN_DTYPES = {**BASE_DTYPES, "birth_epoch": "int64"}
 
 RateLike = ConstantRateLike | LinearRateLike
-# (records, terminal time) of every tree or process a call returns.
+# (records, terminal time) of every tree a call returns.
 Runs = list[tuple[pd.DataFrame, float]]
 
-CONSTANT_REGIMES = {
+# The regimes with float rates, the same ones as rate-likes (suffix ``_epochs``),
+# and the time-varying Arley regime.
+FLOAT_REGIMES = {
     "subcritical": (0.5, 1.0),
     "critical": (1.0, 1.0),
     "supercritical": (1.3, 0.8),
@@ -68,13 +69,17 @@ ARLEY_RATES: tuple[RateLike, RateLike] = (
     PiecewiseConstant(np.array([1.0]), np.array([T])),
     PiecewiseLinear(np.array([0.0]), np.array([0.8 * T]), np.array([T])),
 )
-LINEAR_REGIMES: dict[str, tuple[RateLike, RateLike]] = {
-    name: (
-        PiecewiseConstant(np.array([b]), np.array([T])),
-        PiecewiseConstant(np.array([d]), np.array([T])),
-    )
-    for name, (b, d) in CONSTANT_REGIMES.items()
-} | {"arley": ARLEY_RATES}
+REGIMES: dict[str, tuple[float | RateLike, float | RateLike]] = (
+    dict(FLOAT_REGIMES)
+    | {
+        f"{name}_epochs": (
+            PiecewiseConstant(np.array([b]), np.array([T])),
+            PiecewiseConstant(np.array([d]), np.array([T])),
+        )
+        for name, (b, d) in FLOAT_REGIMES.items()
+    }
+    | {"arley": ARLEY_RATES}
+)
 
 
 @dataclass(frozen=True)
@@ -93,83 +98,50 @@ class Simulator:
         return dict(self.dtypes)
 
 
-def _process(regime: str, seed: int | None) -> Runs:
-    birth, death = CONSTANT_REGIMES[regime]
-    process = simulate_birth_death_process(birth, death, T, random_seed=seed)
-    return [(process.records, float(process.epoch_end_times[-1]))]
+def _tree_run(tree: SimulatedTree) -> Runs:
+    return [(tree.records, tree.terminal_time)]
+
+
+def _forward(regime: str, seed: int | None) -> Runs:
+    birth, death = REGIMES[regime]
+    return _tree_run(simulate_birth_death(birth, death, T, random_seed=seed))
 
 
 def _lifespans(regime: str, seed: int | None) -> Runs:
-    birth, death = CONSTANT_REGIMES[regime]
-    process = simulate_birth_death_lifespans(birth, death, T, random_seed=seed)
-    return [(process.records, float(process.epoch_end_times[-1]))]
-
-
-def _linear(regime: str, seed: int | None) -> Runs:
-    birth, death = LINEAR_REGIMES[regime]
-    process = simulate_birth_death_linear(birth, death, random_seed=seed)
-    return [(process.records, float(process.epoch_end_times[-1]))]
+    birth, death = FLOAT_REGIMES[regime]
+    return _tree_run(simulate_birth_death_lifespans(birth, death, T, random_seed=seed))
 
 
 def _contour(regime: str, seed: int | None) -> Runs:
-    birth, death = CONSTANT_REGIMES[regime]
-    tree = simulate_birth_death_process_from_contour_process(
-        birth, death, T, random_seed=seed
-    )
-    return [(tree.records, tree.terminal_time)]
-
-
-def _linear_contour(regime: str, seed: int | None) -> Runs:
-    birth, death = LINEAR_REGIMES[regime]
-    tree = simulate_linear_rate_contour_process(birth, death, random_seed=seed)
-    return [(tree.records, tree.terminal_time)]
-
-
-def _conditioned_rates(regime: str) -> tuple[float | RateLike, float | RateLike]:
-    return CONSTANT_REGIMES.get(regime) or ARLEY_RATES
+    birth, death = REGIMES[regime]
+    return _tree_run(simulate_contour_given_survival(birth, death, T, random_seed=seed))
 
 
 def _given_population(regime: str, seed: int | None) -> Runs:
-    birth, death = _conditioned_rates(regime)
-    tree = simulate_contour_given_population(
-        birth, death, 3, terminal_time=T, random_seed=seed
+    birth, death = REGIMES[regime]
+    return _tree_run(
+        simulate_contour_given_population(
+            birth, death, 3, terminal_time=T, random_seed=seed
+        )
     )
-    return [(tree.records, tree.terminal_time)]
 
 
 def _given_ages(regime: str, seed: int | None) -> Runs:
-    birth, death = _conditioned_rates(regime)
-    tree = simulate_contour_given_ages(
-        birth, death, [0.7, 1.9], terminal_time=T, random_seed=seed
+    birth, death = REGIMES[regime]
+    return _tree_run(
+        simulate_contour_given_ages(
+            birth, death, [0.7, 1.9], terminal_time=T, random_seed=seed
+        )
     )
-    return [(tree.records, tree.terminal_time)]
 
 
 def _splitting(regime: str, seed: int | None) -> Runs:
-    birth, death = CONSTANT_REGIMES[regime]
-    result = simulate_subcritical_survival_splitting(
+    birth, death = REGIMES[regime]
+    result = simulate_survival_splitting(
         SplittingConfig(
-            birth,
-            death,
-            T,
-            n_particles=30,
-            random_seed=seed,
-            n_conditioned_trajectories=3,
-            max_restarts=200,
-        )
-    )
-    return [
-        (t.process.records, t.process.terminal_time)
-        for t in result.conditioned_trajectories
-    ]
-
-
-def _linear_splitting(regime: str, seed: int | None) -> Runs:
-    birth, death = LINEAR_REGIMES[regime]
-    result = simulate_linear_survival_splitting(
-        LinearSplittingConfig(
-            birth,
-            death,
+            birth_rate=birth,
+            death_rate=death,
+            terminal_time=T,
             n_particles=30,
             random_seed=seed,
             n_conditioned_trajectories=3,
@@ -199,42 +171,16 @@ def _sim(
     )
 
 
-CONSTANT = tuple(CONSTANT_REGIMES)
-WITH_ARLEY = (*CONSTANT, "arley")
+FLOAT = tuple(FLOAT_REGIMES)
+ALL = tuple(REGIMES)
 
 SIMULATORS = [
-    _sim(
-        "simulate_birth_death_process",
-        CONSTANT,
-        _process,
-        forward=True,
-    ),
-    _sim(
-        "simulate_birth_death_linear",
-        WITH_ARLEY,
-        _linear,
-        forward=True,
-    ),
-    _sim(
-        "simulate_birth_death_lifespans",
-        CONSTANT,
-        _lifespans,
-        forward=True,
-    ),
-    _sim("simulate_birth_death_process_from_contour_process", CONSTANT, _contour),
-    _sim("simulate_linear_rate_contour_process", WITH_ARLEY, _linear_contour),
-    _sim("simulate_contour_given_population", WITH_ARLEY, _given_population),
-    _sim("simulate_contour_given_ages", WITH_ARLEY, _given_ages),
-    _sim(
-        "simulate_subcritical_survival_splitting",
-        CONSTANT,
-        _splitting,
-    ),
-    _sim(
-        "simulate_linear_survival_splitting",
-        WITH_ARLEY,
-        _linear_splitting,
-    ),
+    _sim("simulate_birth_death", ALL, _forward, forward=True),
+    _sim("simulate_birth_death_lifespans", FLOAT, _lifespans, forward=True),
+    _sim("simulate_contour_given_survival", ALL, _contour),
+    _sim("simulate_contour_given_population", ALL, _given_population),
+    _sim("simulate_contour_given_ages", ALL, _given_ages),
+    _sim("simulate_survival_splitting", ALL, _splitting),
 ]
 
 CASES = [

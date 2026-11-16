@@ -54,11 +54,11 @@ import numpy as np
 import pandas as pd
 
 from bdsurv import (
-    LinearSplittingConfig,
     PiecewiseConstant,
     PiecewiseLinear,
-    simulate_linear_rate_contour_process,
-    simulate_linear_survival_splitting,
+    SplittingConfig,
+    simulate_contour_given_survival,
+    simulate_survival_splitting,
 )
 from bdsurv import _hazard as lm
 from bdsurv.rates import Rate, as_rate
@@ -335,7 +335,7 @@ def replicate_seed(unit: Unit, replicate: int) -> int:
 def _run_contour(unit: Unit, seed: int) -> dict[str, Any]:
     birth, death = arley_rates(unit.cell.slope, unit.cell.time)
     start = time.perf_counter()
-    tree = simulate_linear_rate_contour_process(birth, death, random_seed=seed)
+    tree = simulate_contour_given_survival(birth, death, random_seed=seed)
     seconds = time.perf_counter() - start
     return {
         "seconds": seconds,
@@ -349,7 +349,7 @@ def _run_contour(unit: Unit, seed: int) -> dict[str, Any]:
 
 def _run_splitting(unit: Unit, seed: int) -> dict[str, Any]:
     birth, death = arley_rates(unit.cell.slope, unit.cell.time)
-    config = LinearSplittingConfig(
+    config = SplittingConfig(
         birth_rate=birth,
         death_rate=death,
         n_particles=base.N_PARTICLES,
@@ -359,7 +359,7 @@ def _run_splitting(unit: Unit, seed: int) -> dict[str, Any]:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         start = time.perf_counter()
-        result = simulate_linear_survival_splitting(config)
+        result = simulate_survival_splitting(config)
         seconds = time.perf_counter() - start
     kept = result.conditioned_trajectories
     row: dict[str, Any] = {

@@ -1,4 +1,4 @@
-"""The result type shared by both survival-conditioned simulators."""
+"""The records table builder and the one result type of every simulator."""
 
 from __future__ import annotations
 
@@ -88,41 +88,10 @@ def build_records(
 
 @dataclass(frozen=True)
 class SimulatedTree:
-    """A single-epoch birth-death tree conditioned on survival to ``terminal_time``.
+    """A simulated birth-death tree, with the rates and horizon it was built with.
 
-    Parameters
-    ----------
-    records : pd.DataFrame
-        One row per individual, with columns ``individual_id``, ``parent_id``,
-        ``creation_time``, ``death_time``, ``is_spine``, ``survived``, ``age``,
-        and ``lifespan``. Exactly one surviving individual has ``is_spine``
-        set to ``True``.
-    birth_rate : float
-        Per-individual birth rate used to generate the tree.
-    death_rate : float
-        Per-individual death rate used to generate the tree.
-    terminal_time : float
-        The time horizon ``T`` the tree is conditioned to survive to.
-    birth_rate_function, death_rate_function : rate-like, optional
-        For trees simulated with time-varying (piecewise-linear) rates, the
-        rates used; ``birth_rate`` and ``death_rate`` are then NaN.
-
-    """
-
-    records: pd.DataFrame
-    birth_rate: float
-    death_rate: float
-    terminal_time: float
-    birth_rate_function: ConstantRateLike | LinearRateLike | None = None
-    death_rate_function: ConstantRateLike | LinearRateLike | None = None
-
-
-@dataclass(frozen=True)
-class SimulatedProcess:
-    """A birth-death process simulated forward over one or more rate epochs.
-
-    Unlike :class:`SimulatedTree`, the process is not conditioned on survival,
-    and the rates may change at ``epoch_end_times``.
+    Every simulator returns this type: the forward simulators, the contour
+    simulators, multilevel splitting and the lifespan simulator.
 
     Parameters
     ----------
@@ -130,26 +99,21 @@ class SimulatedProcess:
         One row per individual, with columns ``individual_id``, ``parent_id``,
         ``creation_time``, ``death_time``, ``is_spine``, ``survived``, ``age``,
         and ``lifespan``. Some simulators add further columns, such as
-        ``birth_epoch``.
-    birth_rates : np.ndarray or None
-        Per-individual birth rate in each epoch, shape ``(n_epochs,)``.
-        ``None`` when the rates are not piecewise constant, as for
-        :func:`bdsurv.linear_rates.simulate_birth_death_linear`.
-    death_rates : np.ndarray or None
-        Per-individual death rate in each epoch; see ``birth_rates``.
-    epoch_end_times : np.ndarray
-        Strictly increasing end time of each epoch; the last entry is the
-        terminal time.
-    start_time : float
-        Time at which the process starts.
-    initial_population : int
-        Number of individuals alive at ``start_time``.
+        ``birth_epoch``. The survival-conditioned simulators mark exactly one
+        surviving individual as ``is_spine``.
+    birth_rate : ConstantRateLike or LinearRateLike
+        Per-individual birth rate used to generate the tree. A rate-like given
+        by the caller is stored as given, a float as a one-epoch
+        :class:`~bdsurv.rates.PiecewiseConstant`, and the per-epoch arrays of the
+        lifespan simulator as a :class:`~bdsurv.rates.PiecewiseConstant`.
+    death_rate : ConstantRateLike or LinearRateLike
+        Per-individual death rate used to generate the tree; see ``birth_rate``.
+    terminal_time : float
+        The time horizon ``T`` at which the tree is observed.
 
     """
 
     records: pd.DataFrame
-    epoch_end_times: np.ndarray
-    birth_rates: np.ndarray | None = None
-    death_rates: np.ndarray | None = None
-    start_time: float = 0.0
-    initial_population: int = 1
+    birth_rate: ConstantRateLike | LinearRateLike
+    death_rate: ConstantRateLike | LinearRateLike
+    terminal_time: float

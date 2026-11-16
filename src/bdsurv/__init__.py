@@ -1,35 +1,51 @@
-"""bdsurv: simulation of birth-death processes, focused on subcritical survival.
+"""bdsurv: simulation of birth-death processes, focused on survival-conditioned trees.
 
-Survival-conditioned simulation of subcritical linear birth-death processes,
-plus forward simulators for general (multi-epoch, time-varying-rate) processes.
+Every simulator returns a :class:`SimulatedTree`: the individual-level records
+DataFrame plus the rates and the terminal time ``T`` used to generate it.
+The rates of a tree are always rate objects; a float rate is stored as a
+one-epoch :class:`PiecewiseConstant`.
 
-Two independent methods for sampling a birth-death tree conditioned on
-survival to a terminal time ``T``:
+Rates are given as a :data:`RateInput`: a float (constant on ``[0, T]``), or a
+rate-like that is piecewise constant (:class:`PiecewiseConstant`,
+:class:`ConstantRateLike`) or piecewise linear (:class:`PiecewiseLinear`,
+:class:`LinearRateLike`) in time over ``[0, T]``.
+Rates are finite and non-negative, and ``terminal_time`` is required when both
+rates are floats.
 
-- ``simulate_birth_death_process_from_contour_process`` — exact, via
-  contour-process reconstruction (see ``docs/contour_process.md``).
-- ``simulate_subcritical_survival_splitting`` — approximate, via adaptive-grid
-  (RESTART) multilevel splitting (see ``docs/splitting.md``).
+Forward simulation, not conditioned on survival:
 
-Both have counterparts for rates that are piecewise linear in time:
-``simulate_linear_rate_contour_process`` and
-``simulate_linear_survival_splitting``.
+- ``simulate_birth_death`` - exact event simulation for any ``RateInput`` rates.
+- ``simulate_birth_death_lifespans`` - JIT-compiled lifespan-at-birth engine for
+  constant rates per epoch, given as arrays; ``..._arrays`` returns the raw
+  per-individual arrays.
 
-Both return a ``SimulatedTree``: a plain dataclass wrapping the individual-
-level records DataFrame plus the rates and terminal time used to generate it.
+Trees conditioned on survival to a terminal time ``T``, by two independent
+methods:
 
-Unconditioned forward simulators return a ``SimulatedProcess``:
-
-- ``simulate_birth_death_process`` — numpy Gillespie, piecewise-constant rates.
-- ``simulate_birth_death_lifespans`` — JIT-compiled lifespan-at-birth engine.
-- ``simulate_birth_death_linear`` — exact, piecewise-linear rates.
-- ``sample_conditioned_survival_process`` — era-conditioned multilevel splitting.
+- ``simulate_contour_given_survival`` - exact, via contour-process
+  reconstruction (see ``docs/contour_process.md``).
+- ``simulate_survival_splitting`` - approximate, via adaptive-grid (RESTART)
+  multilevel splitting configured by ``SplittingConfig`` (see
+  ``docs/splitting.md``), with the level helpers
+  ``select_level_times_for_band``, ``compute_level_replicates`` and
+  ``default_max_restarts``.
 
 Exact contour simulators conditioned on the population alive at ``T``
-(see ``docs/contour_conditioned.md``), returning a ``SimulatedTree``:
+(see ``docs/contour_conditioned.md``):
 
-- ``simulate_contour_given_population`` — exactly ``n`` individuals alive at ``T``.
-- ``simulate_contour_given_ages`` — survivors at ``T`` with the given ages.
+- ``simulate_contour_given_population`` - exactly ``n`` individuals alive at ``T``.
+- ``simulate_contour_given_ages`` - survivors at ``T`` with the given ages.
+
+Era-conditioned sampling for multi-epoch processes (see
+``docs/era_conditioning.md``): ``sample_conditioned_survival_process`` and
+``sample_conditioned_survival_per_posterior``, with ``build_target_ranges``.
+
+``log_survival_probability`` is the probability that a process started from one
+individual is not extinct at a given time.
+``count_draws`` counts the random draws a block of code makes.
+
+Importing the package sets ``jax_enable_x64`` and, unless it is already set,
+``JAX_PLATFORMS=cpu``.
 """
 
 import importlib.metadata
@@ -45,10 +61,7 @@ import jax
 jax.config.update("jax_enable_x64", True)
 
 from bdsurv._seeding import DrawCounts, count_draws  # noqa: E402
-from bdsurv.contour import (  # noqa: E402
-    simulate_birth_death_process_from_contour_process,
-    simulate_linear_rate_contour_process,
-)
+from bdsurv.contour import simulate_contour_given_survival  # noqa: E402
 from bdsurv.contour_conditioned import (  # noqa: E402
     simulate_contour_given_ages,
     simulate_contour_given_population,
@@ -61,13 +74,12 @@ from bdsurv.era_conditioning import (  # noqa: E402
     sample_conditioned_survival_per_posterior,
     sample_conditioned_survival_process,
 )
-from bdsurv.gillespie import simulate_birth_death_process  # noqa: E402
+from bdsurv.forward import simulate_birth_death  # noqa: E402
 from bdsurv.lifespans import (  # noqa: E402
     LifespanSimulationArrays,
     simulate_birth_death_lifespans,
     simulate_birth_death_lifespans_arrays,
 )
-from bdsurv.linear_rates import simulate_birth_death_linear  # noqa: E402
 from bdsurv.rates import (  # noqa: E402
     ConstantRateLike,
     LinearRateLike,
@@ -78,16 +90,15 @@ from bdsurv.rates import (  # noqa: E402
 from bdsurv.splitting import (  # noqa: E402
     ConditionedTrajectory,
     LevelDiagnostic,
-    LinearSplittingConfig,
     SplittingConfig,
     SplittingSimulationResult,
     compute_level_replicates,
     default_max_restarts,
     select_level_times_for_band,
-    simulate_linear_survival_splitting,
-    simulate_subcritical_survival_splitting,
+    simulate_survival_splitting,
 )
-from bdsurv.tree import SimulatedProcess, SimulatedTree  # noqa: E402
+from bdsurv.survival import log_survival_probability  # noqa: E402
+from bdsurv.tree import SimulatedTree  # noqa: E402
 
 __version__ = importlib.metadata.version("bdsurv")
 __author__ = "Jacob Cumming"
@@ -101,30 +112,26 @@ __all__ = [
     "LevelDiagnostic",
     "LifespanSimulationArrays",
     "LinearRateLike",
-    "LinearSplittingConfig",
     "MatchedSurvivalSample",
     "PiecewiseConstant",
     "PiecewiseLinear",
     "RateInput",
-    "SimulatedProcess",
     "SimulatedTree",
     "SplittingConfig",
     "SplittingSimulationResult",
     "build_target_ranges",
-    "count_draws",
     "compute_level_replicates",
+    "count_draws",
     "default_max_restarts",
+    "log_survival_probability",
     "sample_conditioned_survival_per_posterior",
     "sample_conditioned_survival_process",
     "select_level_times_for_band",
+    "simulate_birth_death",
     "simulate_birth_death_lifespans",
     "simulate_birth_death_lifespans_arrays",
-    "simulate_birth_death_linear",
-    "simulate_birth_death_process",
-    "simulate_birth_death_process_from_contour_process",
     "simulate_contour_given_ages",
     "simulate_contour_given_population",
-    "simulate_linear_rate_contour_process",
-    "simulate_linear_survival_splitting",
-    "simulate_subcritical_survival_splitting",
+    "simulate_contour_given_survival",
+    "simulate_survival_splitting",
 ]

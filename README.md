@@ -10,64 +10,70 @@ In the subcritical regime (`lambda < mu`, per-individual birth rate `lambda`,
 death rate `mu`) the unconditioned process goes extinct with probability 1, so
 surviving to a terminal time `T` is a rare event.
 Two independent simulators produce a tree conditioned on that event.
-Both accept any positive rates; splitting also covers supercritical processes,
-which still go extinct with probability `mu / lambda`.
-Alongside them are forward simulators for processes whose rates change over
+Both accept rates that are finite and non-negative; splitting also covers
+supercritical processes, which still go extinct with probability `mu / lambda`.
+Alongside them is a forward simulator for processes whose rates change over
 time, in any regime.
+
+## Rates and results
+
+Every simulator takes each rate as a `RateInput`: a float, which is constant on
+`[0, T]`, or a rate object, which is piecewise constant (`PiecewiseConstant`) or
+piecewise linear (`PiecewiseLinear`) in time with epochs ending at the given
+times (an Arley process, for example, has `mu(t) = m t`).
+Rate objects must share one end time, which is the terminal time `T`, so
+`terminal_time` is required when both rates are floats and otherwise may be
+omitted.
+`ConstantRateLike` and `LinearRateLike` are the protocols any object with the
+same attributes satisfies.
+
+Every simulator returns a `SimulatedTree`: a frozen dataclass of the
+individual-level `records` table, `birth_rate`, `death_rate` and
+`terminal_time`.
+The rates of a tree are always rate objects: a float is stored as a one-epoch
+`PiecewiseConstant`.
 
 ## Survival-conditioned simulation
 
 Compared head-to-head in
 [`bdpinf`'s validation notebooks](https://github.com/jaycrick/bdpinf/tree/main/qmd_scripts/validation/survival_conditioned_simulation).
 
-| Method                     | Function                                             | Mechanism                                            |
-| -------------------------- | ----------------------------------------------------- | ----------------------------------------------------- |
-| Contour process            | `simulate_birth_death_process_from_contour_process`    | Exact — the spine excursion is constructed to reach `T` |
-| Multilevel splitting       | `simulate_subcritical_survival_splitting`               | Adaptive-grid (RESTART) enrichment at level boundaries |
+| Method               | Function                         | Mechanism                                               |
+| -------------------- | -------------------------------- | ------------------------------------------------------- |
+| Contour process      | `simulate_contour_given_survival` | Exact: the spine excursion is constructed to reach `T`   |
+| Multilevel splitting | `simulate_survival_splitting`     | Adaptive-grid (RESTART) enrichment at level boundaries   |
 
-Both have counterparts for rates that are piecewise linear in time
-(for example an Arley process, `mu(t) = m t`):
-
-| Method               | Function                                  | Config                  |
-| -------------------- | ----------------------------------------- | ----------------------- |
-| Contour process      | `simulate_linear_rate_contour_process`    | rates passed directly   |
-| Multilevel splitting | `simulate_linear_survival_splitting`      | `LinearSplittingConfig` |
-
-The rates are `PiecewiseConstant` or `PiecewiseLinear` objects with a common
-end time, which is the terminal time `T`.
+Splitting is configured by a keyword-only `SplittingConfig`.
+Its level grid, replicate counts and restart cap come from
+`select_level_times_for_band`, `compute_level_replicates` and
+`default_max_restarts`, which take the same `RateInput` rates.
 The jumps of the contour process and the survival probability that drives the
 splitting levels are computed from the rates by exact hazard inversion and
 quadrature (`docs/contour_process.md`, `docs/splitting.md`).
-
-Both return a `SimulatedTree`: a plain dataclass wrapping the individual-level
-records table plus the rates and terminal time used to generate it.
+That survival probability is public as `log_survival_probability`.
 
 Two further exact contour simulators condition on the population alive at `T`
 (`docs/contour_conditioned.md`):
 
-| Function                           | Conditioning                               |
-| ---------------------------------- | ------------------------------------------ |
-| `simulate_contour_given_population` | exactly `n` individuals alive at `T`       |
-| `simulate_contour_given_ages`       | survivors at `T` with the given ages       |
-
-They return a `SimulatedTree` as well.
+| Function                            | Conditioning                         |
+| ----------------------------------- | ------------------------------------ |
+| `simulate_contour_given_population` | exactly `n` individuals alive at `T` |
+| `simulate_contour_given_ages`       | survivors at `T` with the given ages |
 
 ## Forward simulation of general processes
 
-These are not conditioned on survival, and the rates may vary by epoch.
-They return a `SimulatedProcess`: the records table plus the epoch rates and
-end times.
+These are not conditioned on survival, and the rates may vary over time.
 
-| Function                              | Rates                    | Mechanism                                                   |
-| ------------------------------------- | ------------------------ | ----------------------------------------------------------- |
-| `simulate_birth_death_process`        | piecewise constant       | Gillespie event loop in `numpy`                             |
-| `simulate_birth_death_lifespans`      | piecewise constant       | JIT-compiled (JAX) loop; each lifespan drawn at birth       |
-| `simulate_birth_death_linear`         | piecewise linear         | Exact inverse of the cumulative hazard within each segment  |
-| `sample_conditioned_survival_process` | piecewise constant       | Era-by-era filtering and cloning on per-era survivor counts |
+| Function                              | Rates                             | Mechanism                                                   |
+| ------------------------------------- | --------------------------------- | ----------------------------------------------------------- |
+| `simulate_birth_death`                | any `RateInput`                   | Exact inverse of the cumulative hazard within each segment  |
+| `simulate_birth_death_lifespans`      | piecewise constant, as arrays     | JIT-compiled (JAX) loop; each lifespan drawn at birth       |
+| `sample_conditioned_survival_process` | piecewise constant, as arrays     | Era-by-era filtering and cloning on per-era survivor counts |
 
 `simulate_birth_death_lifespans_arrays` returns the raw per-individual arrays,
 and `sample_conditioned_survival_per_posterior` runs the era-conditioned
 sampler once per posterior draw.
+The three functions that take per-epoch arrays require strictly positive rates.
 
 The runtime dependencies are `numpy`, `pandas` and `jax`.
 `import bdsurv` enables JAX 64-bit mode and defaults `JAX_PLATFORMS` to `cpu`.
@@ -97,12 +103,12 @@ uv sync --all-groups
 ```python
 from bdsurv import (
     SplittingConfig,
-    simulate_birth_death_process_from_contour_process,
-    simulate_subcritical_survival_splitting,
+    simulate_contour_given_survival,
+    simulate_survival_splitting,
 )
 
 # Exact: one conditioned tree per call.
-tree = simulate_birth_death_process_from_contour_process(
+tree = simulate_contour_given_survival(
     birth_rate=0.9, death_rate=1.0, terminal_time=50.0, random_seed=0
 )
 print(tree.records.head())
@@ -112,29 +118,33 @@ print(tree.records.head())
 config = SplittingConfig(
     birth_rate=0.9, death_rate=1.0, terminal_time=50.0, n_particles=500
 )
-result = simulate_subcritical_survival_splitting(config)
+result = simulate_survival_splitting(config)
 print(len(result.conditioned_trajectories))
 ```
 
-Rates that vary linearly in time (here birth 1, death `0.1 t`, over `[0, 20]`):
+Rates that vary linearly in time (here birth 1, death `0.1 t`, over `[0, 20]`);
+the terminal time is the rates' end time:
 
 ```python
 import numpy as np
 
-from bdsurv import PiecewiseConstant, PiecewiseLinear, simulate_linear_rate_contour_process
+from bdsurv import PiecewiseConstant, PiecewiseLinear, simulate_contour_given_survival
 
 birth = PiecewiseConstant(np.array([1.0]), np.array([20.0]))
 death = PiecewiseLinear(np.array([0.0]), np.array([2.0]), np.array([20.0]))
-tree = simulate_linear_rate_contour_process(birth, death, random_seed=0)
+tree = simulate_contour_given_survival(birth, death, random_seed=0)
 ```
 
 Forward simulation with rates that change at the epoch end times:
 
 ```python
-from bdsurv import simulate_birth_death_process
+from bdsurv import PiecewiseConstant, simulate_birth_death
 
-process = simulate_birth_death_process(
-    birth_rates=[0.5, 0.3], death_rates=[0.3, 0.4], times=[5.0, 10.0], random_seed=0
+epoch_ends = [5.0, 10.0]
+process = simulate_birth_death(
+    PiecewiseConstant([0.5, 0.3], epoch_ends),
+    PiecewiseConstant([0.3, 0.4], epoch_ends),
+    random_seed=0,
 )
 print(process.records.head())
 ```

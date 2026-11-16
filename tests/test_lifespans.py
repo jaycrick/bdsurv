@@ -1,5 +1,6 @@
 """Tests for the lifespan-at-birth birth-death simulator."""
 
+import math
 from typing import ClassVar
 
 import jax
@@ -17,11 +18,11 @@ from scipy.stats import ks_2samp
 
 from bdsurv import (
     LifespanSimulationArrays,
+    log_survival_probability,
+    simulate_birth_death,
     simulate_birth_death_lifespans,
     simulate_birth_death_lifespans_arrays,
-    simulate_birth_death_process,
 )
-from bdsurv._extinction import pr_extinction
 from bdsurv.lifespans import (
     LoopState,
     _reconstruct_genealogy,  # pyright: ignore[reportPrivateUsage]
@@ -29,7 +30,7 @@ from bdsurv.lifespans import (
     initial_state,
     sample_piecewise_exponential_death_time,
 )
-from bdsurv.tree import SimulatedProcess
+from bdsurv.tree import SimulatedTree
 
 _SEED = 42
 
@@ -39,11 +40,11 @@ class TestLifespanSimulation:
 
     def test_returns_birth_death_process(self) -> None:
         result = simulate_birth_death_lifespans(0.1, 0.02, 100.0, random_seed=_SEED)
-        assert isinstance(result, SimulatedProcess)
+        assert isinstance(result, SimulatedTree)
 
     def test_epoch_end_time_correct(self) -> None:
         result = simulate_birth_death_lifespans(0.1, 0.02, 100.0, random_seed=_SEED)
-        assert float(result.epoch_end_times[-1]) == 100.0
+        assert result.terminal_time == 100.0
 
     def test_creation_times_in_bounds(self) -> None:
         T = 100.0
@@ -115,8 +116,8 @@ class TestLifespanSimulation:
     def test_empty_result_is_valid(self) -> None:
         """Very high death rate should often produce extinction; result must be valid."""
         result = simulate_birth_death_lifespans(0.001, 2.0, 1.0, random_seed=_SEED)
-        assert isinstance(result, SimulatedProcess)
-        assert float(result.epoch_end_times[-1]) == 1.0
+        assert isinstance(result, SimulatedTree)
+        assert result.terminal_time == 1.0
         assert isinstance(creation_times(result), list)
 
     def test_exactly_one_spine_when_survivors_present(self) -> None:
@@ -181,8 +182,8 @@ class TestLifespanMultiEpoch:
         result = simulate_birth_death_lifespans(
             self._B2, self._D2, self._T2, random_seed=_SEED
         )
-        assert isinstance(result, SimulatedProcess)
-        assert float(result.epoch_end_times[-1]) == 40.0
+        assert isinstance(result, SimulatedTree)
+        assert result.terminal_time == 40.0
 
     def test_three_epoch_structure(self) -> None:
         result = simulate_birth_death_lifespans(
@@ -191,8 +192,10 @@ class TestLifespanMultiEpoch:
             [15.0, 30.0, 45.0],
             random_seed=_SEED,
         )
-        assert isinstance(result, SimulatedProcess)
-        assert len(result.epoch_end_times) == 3
+        assert isinstance(result, SimulatedTree)
+        assert list(result.birth_rate.epoch_end_times) == [15.0, 30.0, 45.0]
+        assert list(result.birth_rate.values) == [0.1, 0.15, 0.12]
+        assert list(result.death_rate.values) == [0.02, 0.03, 0.025]
 
     def test_scalar_equals_single_element_array(self) -> None:
         p_scalar = simulate_birth_death_lifespans(0.1, 0.02, 100.0, random_seed=_SEED)
@@ -539,11 +542,7 @@ class TestLifespanEquivalence:
         seed_offset: int = 0,
     ) -> list[np.ndarray]:
         """Return list of age arrays (one per non-extinct simulation)."""
-        fn = (
-            simulate_birth_death_lifespans
-            if use_lifespan
-            else simulate_birth_death_process
-        )
+        fn = simulate_birth_death_lifespans if use_lifespan else simulate_birth_death
         age_arrays: list[np.ndarray] = []
         for s in range(n):
             proc = fn(
@@ -557,22 +556,22 @@ class TestLifespanEquivalence:
                 age_arrays.append(surv["age"].to_numpy(dtype=np.float64))
         return age_arrays
 
-    def test_mean_population_close_to_gillespie(self) -> None:
+    def test_mean_population_close_to_forward(self) -> None:
         """Mean survivor count should agree between the two simulators."""
         lifespan_pops = [
             len(a) for a in self._run_many(use_lifespan=True, n=self._N_SIMS)
         ]
-        gillespie_pops = [
+        forward_pops = [
             len(a)
             for a in self._run_many(
                 use_lifespan=False, n=self._N_SIMS, seed_offset=10_000
             )
         ]
-        if not lifespan_pops or not gillespie_pops:
+        if not lifespan_pops or not forward_pops:
             pytest.skip("all simulations went extinct")
 
         mean_l = float(np.mean(lifespan_pops))
-        mean_g = float(np.mean(gillespie_pops))
+        mean_g = float(np.mean(forward_pops))
         # Mean population should agree within 30% (simulation noise is high)
         rel_diff = abs(mean_l - mean_g) / max(mean_g, 1.0)
         assert rel_diff < 0.30, (
@@ -585,13 +584,13 @@ class TestLifespanEquivalence:
         lifespan_ages = np.concatenate(
             self._run_many(use_lifespan=True, n=self._N_SIMS)
         )
-        gillespie_ages = np.concatenate(
+        forward_ages = np.concatenate(
             self._run_many(use_lifespan=False, n=self._N_SIMS, seed_offset=10_000)
         )
-        if lifespan_ages.size < 30 or gillespie_ages.size < 30:
+        if lifespan_ages.size < 30 or forward_ages.size < 30:
             pytest.skip("too few survivors for KS test")
 
-        stat, p_value = ks_2samp(lifespan_ages, gillespie_ages)
+        stat, p_value = ks_2samp(lifespan_ages, forward_ages)
         assert p_value > 0.01, (
             f"KS test rejected age distributions: stat={stat:.4f}, p={p_value:.4f}. "
             "This may be a fluke; re-run before concluding a bug."
@@ -610,7 +609,9 @@ class TestLifespanEquivalence:
                 n_extinct += 1
 
         empirical_extinct = n_extinct / n
-        theoretical_extinct = pr_extinction(self._BIRTH_RATE, self._DEATH_RATE, self._T)
+        theoretical_extinct = -math.expm1(
+            log_survival_probability(self._BIRTH_RATE, self._DEATH_RATE, self._T)
+        )
         # Binomial std for proportion: sqrt(p(1-p)/n)
         binom_std = float(np.sqrt(theoretical_extinct * (1 - theoretical_extinct) / n))
         assert abs(empirical_extinct - theoretical_extinct) < 4 * binom_std, (

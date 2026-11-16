@@ -9,20 +9,16 @@ import numpy as np
 import pytest
 
 from bdsurv import (
-    LinearSplittingConfig,
     PiecewiseConstant,
     PiecewiseLinear,
     SplittingConfig,
     sample_conditioned_survival_process,
+    simulate_birth_death,
     simulate_birth_death_lifespans,
-    simulate_birth_death_linear,
-    simulate_birth_death_process,
-    simulate_birth_death_process_from_contour_process,
     simulate_contour_given_ages,
     simulate_contour_given_population,
-    simulate_linear_rate_contour_process,
-    simulate_linear_survival_splitting,
-    simulate_subcritical_survival_splitting,
+    simulate_contour_given_survival,
+    simulate_survival_splitting,
 )
 
 BIRTH = PiecewiseConstant(np.array([1.0]), np.array([6.0]))
@@ -65,9 +61,7 @@ class TestSeededOutputs:
         ],
     )
     def test_constant_contour(self, seed: int, expected: list[float]) -> None:
-        tree = simulate_birth_death_process_from_contour_process(
-            0.9, 1.0, 15.0, random_seed=seed
-        )
+        tree = simulate_contour_given_survival(0.9, 1.0, 15.0, random_seed=seed)
         _check(tree.records, expected)
 
     @pytest.mark.parametrize(
@@ -78,13 +72,18 @@ class TestSeededOutputs:
         ],
     )
     def test_linear_contour(self, seed: int, expected: list[float]) -> None:
-        tree = simulate_linear_rate_contour_process(BIRTH, DEATH, random_seed=seed)
+        tree = simulate_contour_given_survival(BIRTH, DEATH, random_seed=seed)
         _check(tree.records, expected)
 
     def test_constant_splitting(self) -> None:
-        result = simulate_subcritical_survival_splitting(
+        result = simulate_survival_splitting(
             SplittingConfig(
-                1.0, 2.0, 8.0, n_particles=200, random_seed=1, max_restarts=500
+                birth_rate=1.0,
+                death_rate=2.0,
+                terminal_time=8.0,
+                n_particles=200,
+                random_seed=1,
+                max_restarts=500,
             )
         )
         assert [
@@ -102,9 +101,13 @@ class TestSeededOutputs:
         )
 
     def test_linear_splitting(self) -> None:
-        result = simulate_linear_survival_splitting(
-            LinearSplittingConfig(
-                BIRTH, DEATH, n_particles=200, random_seed=2, max_restarts=500
+        result = simulate_survival_splitting(
+            SplittingConfig(
+                birth_rate=BIRTH,
+                death_rate=DEATH,
+                n_particles=200,
+                random_seed=2,
+                max_restarts=500,
             )
         )
         assert [
@@ -142,11 +145,13 @@ class TestSeededForwardOutputs:
             (2, [6, 0, 11.116018231543297, 17.866882013197998, 0.0], 7),
         ],
     )
-    def test_gillespie(
+    def test_forward_epochs(
         self, seed: int, expected: list[float], parent_id_sum: int
     ) -> None:
-        process = simulate_birth_death_process(
-            FORWARD_BIRTH, FORWARD_DEATH, FORWARD_TIMES, random_seed=seed
+        process = simulate_birth_death(
+            PiecewiseConstant(FORWARD_BIRTH, FORWARD_TIMES),
+            PiecewiseConstant(FORWARD_DEATH, FORWARD_TIMES),
+            random_seed=seed,
         )
         _check_with_genealogy(process.records, expected, parent_id_sum)
 
@@ -178,9 +183,7 @@ class TestSeededForwardOutputs:
         ],
     )
     def test_linear(self, seed: int, expected: list[float], parent_id_sum: int) -> None:
-        process = simulate_birth_death_linear(
-            LINEAR_BIRTH, LINEAR_DEATH, random_seed=seed
-        )
+        process = simulate_birth_death(LINEAR_BIRTH, LINEAR_DEATH, random_seed=seed)
         _check_with_genealogy(process.records, expected, parent_id_sum)
 
 
