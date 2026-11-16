@@ -1,29 +1,16 @@
 """Tests for the Arley benchmark's slope-by-time grid mode and its charts."""
 
-import importlib.util
+import importlib
 import math
-import sys
 from pathlib import Path
 
+import bench_arley_comparison as arley
 import numpy as np
 import pandas as pd
 import pytest
 
-_SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
-sys.path.insert(0, str(_SCRIPTS))
-
-
-def _load(name: str):
-    spec = importlib.util.spec_from_file_location(name, _SCRIPTS / f"{name}.py")
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-arley = _load("bench_arley_comparison")
+# Imported lazily by the chart tests, which skip when altair is missing.
+_load = importlib.import_module
 
 
 @pytest.fixture(scope="module")

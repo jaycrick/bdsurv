@@ -18,6 +18,15 @@ PALETTE = {LABEL_CONTOUR: "#004488", LABEL_RUN: "#DDAA33", LABEL_KEPT: "#BB5566"
 def color_encoding(
     legend_font_size: int = 14, methods: list[str] | None = None
 ) -> alt.Color:
+    """Return the colour encoding that maps each method label to its palette colour.
+
+    Parameters
+    ----------
+    legend_font_size
+        Font size of the legend labels.
+    methods
+        Method labels to show, in legend order; all labels in ``PALETTE`` if None.
+    """
     shown = methods or list(PALETTE)
     return alt.Color(
         "method:N",
@@ -49,6 +58,22 @@ def _bdsurv_theme() -> alt.theme.ThemeConfig:
 
 
 def band(frame: pd.DataFrame, column: str, label: str) -> pd.DataFrame:
+    """Summarise ``column`` by ``(mu, T)``: median, mean, 95% CI, and 10th-90th band.
+
+    Parameters
+    ----------
+    frame
+        Benchmark rows with ``mu`` and ``T`` columns.
+    column
+        Name of the column to summarise.
+    label
+        Method label written to the ``method`` column of the result.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per ``(mu, T)`` cell, without the cells whose median is missing.
+    """
     grouped = frame.groupby(["mu", "T"])[column]
     sem = grouped.std() / np.sqrt(grouped.count())
     out = pd.DataFrame(
@@ -70,7 +95,9 @@ def band(frame: pd.DataFrame, column: str, label: str) -> pd.DataFrame:
 def curves_from_rows(rows: pd.DataFrame) -> pd.DataFrame:
     """Median and percentile band of seconds per tree, one block per method label."""
     rows = rows.assign(
-        per_kept=np.where(rows["n_trees"] > 0, rows["seconds"] / rows["n_trees"], np.nan)
+        per_kept=np.where(
+            rows["n_trees"] > 0, rows["seconds"] / rows["n_trees"], np.nan
+        )
     )
     contour_rows = rows[rows["method"] == "contour"]
     split_rows = rows[rows["method"] == "splitting"]
@@ -108,6 +135,7 @@ def curves_from_draws(rows: pd.DataFrame) -> pd.DataFrame:
 
 
 def x_by_t(ts: list[float]) -> alt.X:
+    """Return the log-scale x encoding for terminal time, with ticks at ``ts``."""
     return alt.X(
         "T:Q",
         scale=alt.Scale(type="log"),
@@ -117,6 +145,7 @@ def x_by_t(ts: list[float]) -> alt.X:
 
 
 def x_by_mu(mus: list[float]) -> alt.X:
+    """Return the log-scale x encoding for the death rate, with ticks at ``mus``."""
     return alt.X(
         "mu:Q",
         # Tight to the data, so there is no empty stretch before the first mu.
@@ -141,6 +170,33 @@ def cost_chart(
     width: int = 900,
     height: int = 380,
 ) -> alt.Chart:
+    """Build the layered cost-per-tree chart, one curve (and optional band) per method.
+
+    Parameters
+    ----------
+    data
+        Curves from ``curves_from_rows`` or ``curves_from_draws``.
+    x
+        The x encoding, from ``x_by_t`` or ``x_by_mu``.
+    lam
+        Birth rate, used to place the critical-point rule when ``mark_critical``.
+    log_y
+        Use a log-scale y axis if True, a zero-based linear axis otherwise.
+    methods
+        Method labels to show; all of them if None.
+    show_band
+        Draw the percentile band (median) or 95% interval (mean) around each curve.
+    statistic
+        Column to plot, ``"median"`` or ``"mean"``.
+    measure
+        ``"seconds"`` or ``"draws"``; sets the axis title.
+    mark_critical
+        Draw a vertical rule at ``mu = lam``, separating super- from subcritical.
+    legend_font_size
+        Font size of the legend labels.
+    width, height
+        Chart size in pixels.
+    """
     y_scale = alt.Scale(type="log") if log_y else alt.Scale(zero=True)
     if measure == "draws":
         unit = f"{statistic} random draws per tree"
@@ -189,7 +245,5 @@ def cost_chart(
         )
         layers.append(critical)
     return (
-        alt.layer(*layers)
-        .add_params(selection)
-        .properties(width=width, height=height)
+        alt.layer(*layers).add_params(selection).properties(width=width, height=height)
     )

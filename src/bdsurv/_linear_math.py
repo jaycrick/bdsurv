@@ -175,7 +175,7 @@ def _logsumexp(x: _Array) -> float:
     return peak + math.log(float(np.sum(np.exp(x - peak))))
 
 
-def _log_integral(  # noqa: PLR0913
+def _log_integral(
     weight: Rate,
     birth: Rate,
     death: Rate,

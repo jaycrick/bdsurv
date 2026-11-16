@@ -16,7 +16,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
@@ -33,7 +33,7 @@ jobs:
         run: uv sync --all-groups --frozen
 
       - name: Run tests with coverage
-        run: uv run pytest
+        run: uv run pytest -m "slow or not slow" --cov=src --cov-report=term-missing --cov-report=xml --cov-fail-under=86
 
   lint:
     runs-on: ubuntu-latest
@@ -45,7 +45,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
@@ -62,10 +62,10 @@ jobs:
         run: uv sync --all-groups --frozen
 
       - name: Ruff check
-        run: uv run ruff check src tests
+        run: uv run ruff check src tests scripts
 
       - name: Ruff format check
-        run: uv run ruff format --check src tests
+        run: uv run ruff format --check src tests scripts
 
       - name: basedpyright check
         run: uv run basedpyright src/

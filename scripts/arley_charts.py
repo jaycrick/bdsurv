@@ -267,7 +267,7 @@ def diagnostic_chart(data: pd.DataFrame) -> alt.HConcatChart:
 def _slope_term(slope: float) -> str:
     """``t/k`` when the slope is ``1/k`` for an integer ``k``, else ``slope t``."""
     k = round(1.0 / slope)
-    if k >= 2 and abs(slope * k - 1.0) < 1e-9:  # noqa: PLR2004
+    if k >= 2 and abs(slope * k - 1.0) < 1e-9:
         return f"t/{k}"
     return f"{slope:.3g} t"
 

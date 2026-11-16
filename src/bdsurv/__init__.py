@@ -32,13 +32,14 @@ Exact contour simulators conditioned on the population alive at ``T``
 - ``simulate_contour_given_ages`` — survivors at ``T`` with the given ages.
 """
 
+import importlib.metadata
 import os
 
 # JAX raises a fatal error when jax[cuda] is installed but the GPU is
 # unavailable, so default to CPU.  Set JAX_PLATFORMS before importing jax.
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
-import jax  # noqa: E402
+import jax
 
 # The simulators work in float64 throughout.
 jax.config.update("jax_enable_x64", True)
@@ -87,7 +88,7 @@ from bdsurv.splitting import (  # noqa: E402
 )
 from bdsurv.tree import SimulatedProcess, SimulatedTree  # noqa: E402
 
-__version__ = "0.4.0"
+__version__ = importlib.metadata.version("bdsurv")
 __author__ = "Jacob Cumming"
 
 __all__ = [

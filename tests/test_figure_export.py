@@ -1,20 +1,10 @@
 """Tests for the figure exporter's manifest and prune logic."""
 
-import importlib.util
 import sys
 from pathlib import Path
 
+import figure_export as fe
 import pytest
-
-_SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
-_spec = importlib.util.spec_from_file_location(
-    "figure_export", _SCRIPTS / "figure_export.py"
-)
-assert _spec is not None
-assert _spec.loader is not None
-fe = importlib.util.module_from_spec(_spec)
-sys.modules["figure_export"] = fe
-_spec.loader.exec_module(fe)
 
 
 class _FakeChart:

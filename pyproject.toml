@@ -43,7 +43,7 @@ dev = [
 
 [tool.basedpyright]
 include = ["src"]
-pythonVersion = "3.11"
+pythonVersion = "3.13"
 typeCheckingMode = "strict"
 reportMissingTypeStubs = "warning"
 # numpy's overloaded stubs for isclose/where/choice/etc. resolve to a partially
@@ -55,7 +55,40 @@ reportUnknownMemberType = "none"
 line-length = 88
 
 [tool.ruff.lint]
-select = ["B", "D", "E", "F", "I", "UP", "W"]
+select = [
+  "ARG",
+  "B",
+  "BLE",
+  "C90",
+  "D",
+  "E",
+  "ERA",
+  "F",
+  "I",
+  "N",
+  "NPY",
+  "PERF",
+  "PLR",
+  "PT",
+  "PTH",
+  "RET",
+  "RUF",
+  "SIM",
+  "SLF",
+  "UP",
+  "W"
+]
+ignore = [
+  "N803", # mathematical argument names such as E and T
+  "N806", # mathematical variable names such as E and T
+  "PLR2004" # numeric literals are normal in maths and tests
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+max-args = 6
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
@@ -68,8 +101,35 @@ convention = "numpy"
   "D101", # test classes are self-documenting via their names
   "D102", # test methods are self-documenting via their names
   "E501", # test strings and fixture data are allowed to be long
-  "S101" # asserts are the mechanism of the tests
+  "PLR0913", # test helpers take many parameters
+  "S101", # asserts are the mechanism of the tests
+  "SLF001" # tests exercise private kernels directly
 ]
+
+# TEMPORARY: removed by step S6
+"src/bdsurv/gillespie.py" = ["C901", "PLR0912", "PLR0915"]
+"src/bdsurv/splitting.py" = ["C901", "PLR0913"]
+"tests/test_gillespie.py" = ["PT018"]
+"tests/test_splitting.py" = ["RUF007"]
+# TEMPORARY: removed by step S7
+"src/bdsurv/contour_conditioned.py" = ["C901", "PLR0912", "PLR0915", "PLR0917"]
+"tests/test_contour.py" = ["PT011"]
+"tests/test_contour_conditioned.py" = ["ERA001", "N802", "RUF007"]
+# TEMPORARY: removed by step S8
+"src/bdsurv/era_conditioning.py" = ["BLE001", "C901", "PLR0913", "PLR0915", "PLR0917"]
+"src/bdsurv/lifespans.py" = ["C901", "ERA001", "PLR0913"]
+"tests/test_era_conditioning.py" = ["RUF003"]
+"tests/test_lifespans.py" = ["ERA001", "RUF001"]
+# TEMPORARY: removed by step S9
+"src/bdsurv/__init__.py" = ["RUF022"]
+# TEMPORARY: removed by step S11
+"scripts/arley_charts.py" = ["PLR0913"]
+"scripts/bench_arley_comparison.py" = ["PERF401", "SLF001"]
+"scripts/bench_method_comparison.py" = ["PERF401"]
+"scripts/count_draws.py" = ["RUF028", "SLF001"]
+"scripts/figure_export.py" = ["SIM105"]
+"scripts/method_comparison_charts.py" = ["PLR0913"]
+"tests/test_arley_grid.py" = ["PERF401"]
 
 [tool.toml-sort]
 all = true
@@ -82,10 +142,11 @@ sort_table_keys = true
 
 [tool.pytest.ini_options]
 markers = ["slow: long-running statistical tests"]
-addopts = "--cov=src --cov-report=term-missing --cov-report=xml --cov-fail-under=86"
+addopts = "-m 'not slow' --strict-markers"
 python_classes = ["Test*"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
+pythonpath = ["tests", "scripts"]
 testpaths = ["tests"]
 
 [tool.coverage.run]

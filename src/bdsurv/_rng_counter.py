@@ -143,7 +143,7 @@ def count_draws() -> Generator[DrawCounts]:
     Yields a :class:`DrawCounts` that fills in as the block runs.
     Blocks may be nested; the outer one resumes counting on exit of the inner.
     """
-    global _active  # noqa: PLW0603
+    global _active
     previous = _active
     counts = DrawCounts()
     _active = counts

@@ -1,24 +1,13 @@
 """Tests for the method-comparison benchmark engine."""
 
 import argparse
-import importlib.util
 import math
-import sys
 from pathlib import Path
 
+import bench_method_comparison as bench
 import numpy as np
 import pandas as pd
 import pytest
-
-_SCRIPT = (
-    Path(__file__).resolve().parent.parent / "scripts" / "bench_method_comparison.py"
-)
-_spec = importlib.util.spec_from_file_location("bench_method_comparison", _SCRIPT)
-assert _spec is not None
-assert _spec.loader is not None
-bench = importlib.util.module_from_spec(_spec)
-sys.modules["bench_method_comparison"] = bench
-_spec.loader.exec_module(bench)
 
 DETERMINISTIC_COLUMNS = [
     "method",

@@ -1,6 +1,6 @@
 # bdsurv
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Simulation of linear birth-death processes, with a focus on survival-conditioned
@@ -147,11 +147,18 @@ Run tests:
 uv run pytest
 ```
 
+This runs the fast set (tests marked `slow` are deselected).
+Run the full suite with coverage, as CI does:
+
+```sh
+uv run pytest -m "slow or not slow" --cov=src --cov-report=term-missing --cov-fail-under=86
+```
+
 Lint and type-check:
 
 ```sh
-uv run ruff check src tests
-uv run ruff format --check src tests
+uv run ruff check src tests scripts
+uv run ruff format --check src tests scripts
 uv run basedpyright src/
 ```
 
