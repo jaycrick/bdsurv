@@ -1,5 +1,6 @@
 """Tests for the lifespan-at-birth birth-death simulator."""
 
+import math
 from typing import ClassVar
 
 import jax
@@ -17,15 +18,19 @@ from scipy.stats import ks_2samp
 
 from bdsurv import (
     LifespanSimulationArrays,
+    log_survival_probability,
+    simulate_birth_death,
     simulate_birth_death_lifespans,
     simulate_birth_death_lifespans_arrays,
-    simulate_birth_death_process,
 )
-from bdsurv._extinction import pr_extinction
 from bdsurv.lifespans import (
-    _sample_piecewise_exponential_death_time,  # pyright: ignore[reportPrivateUsage]
+    LoopState,
+    _reconstruct_genealogy,  # pyright: ignore[reportPrivateUsage]
+    advance_era,
+    initial_state,
+    sample_piecewise_exponential_death_time,
 )
-from bdsurv.tree import SimulatedProcess
+from bdsurv.tree import SimulatedTree
 
 _SEED = 42
 
@@ -35,11 +40,11 @@ class TestLifespanSimulation:
 
     def test_returns_birth_death_process(self) -> None:
         result = simulate_birth_death_lifespans(0.1, 0.02, 100.0, random_seed=_SEED)
-        assert isinstance(result, SimulatedProcess)
+        assert isinstance(result, SimulatedTree)
 
     def test_epoch_end_time_correct(self) -> None:
         result = simulate_birth_death_lifespans(0.1, 0.02, 100.0, random_seed=_SEED)
-        assert float(result.epoch_end_times[-1]) == 100.0
+        assert result.terminal_time == 100.0
 
     def test_creation_times_in_bounds(self) -> None:
         T = 100.0
@@ -111,8 +116,8 @@ class TestLifespanSimulation:
     def test_empty_result_is_valid(self) -> None:
         """Very high death rate should often produce extinction; result must be valid."""
         result = simulate_birth_death_lifespans(0.001, 2.0, 1.0, random_seed=_SEED)
-        assert isinstance(result, SimulatedProcess)
-        assert float(result.epoch_end_times[-1]) == 1.0
+        assert isinstance(result, SimulatedTree)
+        assert result.terminal_time == 1.0
         assert isinstance(creation_times(result), list)
 
     def test_exactly_one_spine_when_survivors_present(self) -> None:
@@ -177,8 +182,8 @@ class TestLifespanMultiEpoch:
         result = simulate_birth_death_lifespans(
             self._B2, self._D2, self._T2, random_seed=_SEED
         )
-        assert isinstance(result, SimulatedProcess)
-        assert float(result.epoch_end_times[-1]) == 40.0
+        assert isinstance(result, SimulatedTree)
+        assert result.terminal_time == 40.0
 
     def test_three_epoch_structure(self) -> None:
         result = simulate_birth_death_lifespans(
@@ -187,8 +192,10 @@ class TestLifespanMultiEpoch:
             [15.0, 30.0, 45.0],
             random_seed=_SEED,
         )
-        assert isinstance(result, SimulatedProcess)
-        assert len(result.epoch_end_times) == 3
+        assert isinstance(result, SimulatedTree)
+        assert list(result.birth_rate.epoch_end_times) == [15.0, 30.0, 45.0]
+        assert list(result.birth_rate.values) == [0.1, 0.15, 0.12]
+        assert list(result.death_rate.values) == [0.02, 0.03, 0.025]
 
     def test_scalar_equals_single_element_array(self) -> None:
         p_scalar = simulate_birth_death_lifespans(0.1, 0.02, 100.0, random_seed=_SEED)
@@ -256,7 +263,7 @@ class TestLifespanDeathTimeSampling:
             1
             for seed in range(50)
             if not jnp.isfinite(
-                _sample_piecewise_exponential_death_time(
+                sample_piecewise_exponential_death_time(
                     jnp.float64(0.0), dr, et, terminal, self._make_key(seed)
                 )
             )
@@ -273,7 +280,7 @@ class TestLifespanDeathTimeSampling:
             1
             for seed in range(50)
             if jnp.isfinite(
-                _sample_piecewise_exponential_death_time(
+                sample_piecewise_exponential_death_time(
                     jnp.float64(0.0), dr, et, terminal, self._make_key(seed)
                 )
             )
@@ -287,7 +294,7 @@ class TestLifespanDeathTimeSampling:
         terminal = jnp.float64(50.0)
         birth = jnp.float64(10.0)
         for seed in range(30):
-            dt = _sample_piecewise_exponential_death_time(
+            dt = sample_piecewise_exponential_death_time(
                 birth, dr, et, terminal, self._make_key(seed)
             )
             if jnp.isfinite(dt):
@@ -301,7 +308,7 @@ class TestLifespanDeathTimeSampling:
         terminal = jnp.float64(100.0)
         birth = jnp.float64(0.0)
         for seed in range(30):
-            dt = _sample_piecewise_exponential_death_time(
+            dt = sample_piecewise_exponential_death_time(
                 birth, dr, et, terminal, self._make_key(seed)
             )
             if jnp.isfinite(dt):
@@ -321,7 +328,7 @@ class TestLifespanDeathTimeSampling:
         keys = jax.random.split(self._make_key(0), n)
         samples = np.asarray(
             jax.vmap(
-                lambda key: _sample_piecewise_exponential_death_time(
+                lambda key: sample_piecewise_exponential_death_time(
                     birth, dr, et, terminal, key
                 )
             )(keys)
@@ -331,12 +338,16 @@ class TestLifespanDeathTimeSampling:
         if len(dead) < 50:
             pytest.skip("too few dead samples to compute mean")
 
-        # E[death | death < T] = (1/rate) - T * exp(-rate*T) / (1 - exp(-rate*T))
+        # The truncated-exponential mean is 1/rate minus T * exp(-rate*T) / p_die.
         p_die = 1.0 - np.exp(-rate * T)
         theoretical_mean = (1.0 / rate) - T * np.exp(-rate * T) / p_die
         empirical_mean = float(np.mean(dead))
         # Loose tolerance: 15% relative
-        assert abs(empirical_mean - theoretical_mean) / theoretical_mean < 0.15
+        rel_err = abs(empirical_mean - theoretical_mean) / theoretical_mean
+        assert rel_err < 0.15, (
+            f"conditional mean death time {empirical_mean:.4g} vs theory "
+            f"{theoretical_mean:.4g}: relative error {rel_err:.3g} >= threshold 0.15"
+        )
 
 
 class TestLifespanArraysEntryPoint:
@@ -389,6 +400,132 @@ class TestLifespanArraysEntryPoint:
         )
 
 
+_KERNEL_MAX_POP = 64  # one compiled variant for every kernel test below
+_KERNEL_ENDS = jnp.array([5.0, 12.0], dtype=jnp.float64)
+_KERNEL_DEATH = jnp.array([0.05, 0.05], dtype=jnp.float64)
+
+
+def _kernel_start(seed: int = 0, max_population: int = _KERNEL_MAX_POP) -> LoopState:
+    return initial_state(
+        _KERNEL_DEATH, _KERNEL_ENDS, jax.random.key(seed), max_population
+    )
+
+
+def _kernel_era(
+    state: LoopState,
+    era: int,
+    birth_rate: float = 0.4,
+    max_population: int = _KERNEL_MAX_POP,
+) -> LoopState:
+    return advance_era(
+        jnp.float64(birth_rate),
+        _KERNEL_DEATH,
+        _KERNEL_ENDS,
+        jnp.int32(era),
+        _KERNEL_ENDS[era],
+        state,
+        max_population,
+    )
+
+
+class TestAdvanceEraKernel:
+    """Unit tests for initial_state and the one event kernel advance_era."""
+
+    def test_initial_state_has_one_individual_born_at_zero(self) -> None:
+        state = _kernel_start()
+        assert int(state.n_born) == 1, "exactly one individual should exist"
+        assert int(state.n_alive) == 1, "the root should be alive"
+        assert float(state.current_time) == 0.0, "the clock should start at 0"
+        assert not bool(state.overflow), "overflow must start False"
+        assert float(state.birth_time_buf[0]) == 0.0, "the root is born at time 0"
+        assert float(state.death_time_buf[0]) > 0.0, "the root dies after birth"
+        assert state.birth_time_buf.shape == (_KERNEL_MAX_POP,), "buffer size"
+
+    def test_advance_ends_at_segment_end(self) -> None:
+        out = _kernel_era(_kernel_start(1), 0)
+        assert float(out.current_time) == float(_KERNEL_ENDS[0]), (
+            "advance_era must stop exactly at segment_end"
+        )
+        out = _kernel_era(out, 1)
+        assert float(out.current_time) == float(_KERNEL_ENDS[1]), (
+            "the second era must stop at its own end"
+        )
+
+    def test_births_tagged_with_their_era(self) -> None:
+        state0 = _kernel_era(_kernel_start(2), 0)
+        n0 = int(state0.n_born)
+        state1 = _kernel_era(state0, 1)
+        n1 = int(state1.n_born)
+        assert n0 > 1, "rates chosen so era 0 has births"
+        assert n1 > n0, "rates chosen so era 1 has births"
+        epochs = np.asarray(state1.birth_epoch_buf[:n1])
+        assert np.all(epochs[:n0] == 0), "era-0 tags must be untouched by era 1"
+        assert np.all(epochs[n0:] == 1), "births in era 1 must be tagged 1"
+        np.testing.assert_array_equal(
+            np.asarray(state1.birth_time_buf[:n0]),
+            np.asarray(state0.birth_time_buf[:n0]),
+            err_msg="era-0 birth times must be untouched by era 1",
+        )
+        births = np.asarray(state1.birth_time_buf[n0:n1])
+        assert np.all((births >= _KERNEL_ENDS[0]) & (births <= _KERNEL_ENDS[1])), (
+            "era-1 births must fall inside era 1"
+        )
+
+    def test_zero_birth_rate_gives_no_births(self) -> None:
+        out = _kernel_era(_kernel_start(3), 0, birth_rate=0.0)
+        assert int(out.n_born) == 1, "nobody can be born at birth rate 0"
+        assert not bool(out.overflow), "no births means no overflow"
+
+    def test_buffers_beyond_n_born_untouched_without_births(self) -> None:
+        start = _kernel_start(4)
+        out = _kernel_era(start, 0, birth_rate=0.0)
+        for name in LoopState._fields:
+            if not name.endswith("_buf"):
+                continue
+            np.testing.assert_array_equal(
+                np.asarray(getattr(out, name)),
+                np.asarray(getattr(start, name)),
+                err_msg=f"{name} changed although nobody was born",
+            )
+
+    def test_tiny_max_population_sets_overflow(self) -> None:
+        out = _kernel_era(
+            _kernel_start(5, max_population=2), 0, birth_rate=2.0, max_population=2
+        )
+        assert bool(out.overflow), "a buffer of 2 cannot hold a fast-growing era"
+        assert int(out.n_born) == 2, "the buffer should be full, not overrun"
+
+    def test_same_key_same_state_different_keys_differ(self) -> None:
+        a = _kernel_era(_kernel_start(6), 0)
+        b = _kernel_era(_kernel_start(6), 0)
+        c = _kernel_era(_kernel_start(7), 0)
+        for name in LoopState._fields:
+            if name == "key":
+                continue
+            np.testing.assert_array_equal(
+                np.asarray(getattr(a, name)),
+                np.asarray(getattr(b, name)),
+                err_msg=f"{name} differs for the same key",
+            )
+        assert not np.array_equal(
+            np.asarray(a.death_time_buf), np.asarray(c.death_time_buf)
+        ), "different keys should give different trajectories"
+
+
+class TestReconstructGenealogy:
+    def test_inconsistent_event_stream_raises(self) -> None:
+        """An individual that dies before it is born is an inconsistent stream."""
+        with pytest.raises(ValueError, match="inconsistent event stream"):
+            _reconstruct_genealogy(
+                birth_times=np.array([0.0, 5.0]),
+                death_times=np.array([np.inf, 3.0]),
+                insert_uniforms=np.array([0.0, 0.5]),
+                birth_epochs=np.array([0, 0]),
+                n_alive_at_birth=np.array([0, 1]),
+                terminal_time=10.0,
+            )
+
+
 @pytest.mark.slow
 class TestLifespanEquivalence:
     """Statistical equivalence: lifespan sim ≈ Gillespie sim ≈ theory (KS test)."""
@@ -405,11 +542,7 @@ class TestLifespanEquivalence:
         seed_offset: int = 0,
     ) -> list[np.ndarray]:
         """Return list of age arrays (one per non-extinct simulation)."""
-        fn = (
-            simulate_birth_death_lifespans
-            if use_lifespan
-            else simulate_birth_death_process
-        )
+        fn = simulate_birth_death_lifespans if use_lifespan else simulate_birth_death
         age_arrays: list[np.ndarray] = []
         for s in range(n):
             proc = fn(
@@ -423,22 +556,22 @@ class TestLifespanEquivalence:
                 age_arrays.append(surv["age"].to_numpy(dtype=np.float64))
         return age_arrays
 
-    def test_mean_population_close_to_gillespie(self) -> None:
+    def test_mean_population_close_to_forward(self) -> None:
         """Mean survivor count should agree between the two simulators."""
         lifespan_pops = [
             len(a) for a in self._run_many(use_lifespan=True, n=self._N_SIMS)
         ]
-        gillespie_pops = [
+        forward_pops = [
             len(a)
             for a in self._run_many(
                 use_lifespan=False, n=self._N_SIMS, seed_offset=10_000
             )
         ]
-        if not lifespan_pops or not gillespie_pops:
+        if not lifespan_pops or not forward_pops:
             pytest.skip("all simulations went extinct")
 
         mean_l = float(np.mean(lifespan_pops))
-        mean_g = float(np.mean(gillespie_pops))
+        mean_g = float(np.mean(forward_pops))
         # Mean population should agree within 30% (simulation noise is high)
         rel_diff = abs(mean_l - mean_g) / max(mean_g, 1.0)
         assert rel_diff < 0.30, (
@@ -451,13 +584,13 @@ class TestLifespanEquivalence:
         lifespan_ages = np.concatenate(
             self._run_many(use_lifespan=True, n=self._N_SIMS)
         )
-        gillespie_ages = np.concatenate(
+        forward_ages = np.concatenate(
             self._run_many(use_lifespan=False, n=self._N_SIMS, seed_offset=10_000)
         )
-        if lifespan_ages.size < 30 or gillespie_ages.size < 30:
+        if lifespan_ages.size < 30 or forward_ages.size < 30:
             pytest.skip("too few survivors for KS test")
 
-        stat, p_value = ks_2samp(lifespan_ages, gillespie_ages)
+        stat, p_value = ks_2samp(lifespan_ages, forward_ages)
         assert p_value > 0.01, (
             f"KS test rejected age distributions: stat={stat:.4f}, p={p_value:.4f}. "
             "This may be a fluke; re-run before concluding a bug."
@@ -476,11 +609,13 @@ class TestLifespanEquivalence:
                 n_extinct += 1
 
         empirical_extinct = n_extinct / n
-        theoretical_extinct = pr_extinction(self._BIRTH_RATE, self._DEATH_RATE, self._T)
+        theoretical_extinct = -math.expm1(
+            log_survival_probability(self._BIRTH_RATE, self._DEATH_RATE, self._T)
+        )
         # Binomial std for proportion: sqrt(p(1-p)/n)
         binom_std = float(np.sqrt(theoretical_extinct * (1 - theoretical_extinct) / n))
         assert abs(empirical_extinct - theoretical_extinct) < 4 * binom_std, (
             f"Empirical extinction {empirical_extinct:.3f} vs "
             f"theoretical {theoretical_extinct:.3f} "
-            f"(4σ bound = {4 * binom_std:.3f})"
+            f"(4 sigma bound = {4 * binom_std:.3f})"
         )

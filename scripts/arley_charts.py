@@ -10,66 +10,35 @@ It mirrors the constant-rate charts of the method-comparison page, keyed by
 ``(mu, slope, T)`` where ``mu`` is the constant rate the slope is paired with.
 """
 
+import sys
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
+from pathlib import Path
+
 import altair as alt
-import numpy as np
 import pandas as pd
 
-LABEL_CONTOUR = "Contour process (exact)"
-LABEL_RUN = "Splitting, per set of trees (one run)"
-LABEL_KEPT = "Splitting, per kept tree"
-PALETTE = {LABEL_CONTOUR: "#004488", LABEL_RUN: "#DDAA33", LABEL_KEPT: "#BB5566"}
+# Loaded by path from a notebook, ``scripts/`` is not on the import path yet.
+_SCRIPTS = str(Path(__file__).resolve().parent)
+if _SCRIPTS not in sys.path:
+    sys.path.append(_SCRIPTS)
+
+import _charts_common as common
+
+LABEL_CONTOUR = common.LABEL_CONTOUR
+LABEL_RUN = common.LABEL_RUN
+LABEL_KEPT = common.LABEL_KEPT
+PALETTE = common.PALETTE
 BIRTH_COLOR = "#228833"
 DEATH_COLOR = "#AA3377"
 GROUP = ["mu", "slope", "T"]
-
-
-def color_encoding(legend_font_size: int = 14) -> alt.Color:
-    """Colour the three cost series, with a clickable legend at the bottom."""
-    return alt.Color(
-        "method:N",
-        scale=alt.Scale(domain=list(PALETTE), range=list(PALETTE.values())),
-        legend=alt.Legend(
-            title=None, orient="bottom", labelFontSize=legend_font_size, labelLimit=0
-        ),
-    )
-
-
-def _band(frame: pd.DataFrame, column: str, label: str) -> pd.DataFrame:
-    grouped = frame.groupby(GROUP)[column]
-    sem = grouped.std() / np.sqrt(grouped.count())
-    out = pd.DataFrame(
-        {
-            "median": grouped.median(),
-            "mean": grouped.mean(),
-            # Normal-approximation 95% confidence interval for the mean.
-            "ci_lo": (grouped.mean() - 1.96 * sem).clip(lower=0),
-            "ci_hi": grouped.mean() + 1.96 * sem,
-            "lo": grouped.quantile(0.1),
-            "hi": grouped.quantile(0.9),
-            "replicates": grouped.count(),
-        }
-    ).reset_index()
-    out["method"] = label
-    return out.dropna(subset=["median"])
+color_encoding = common.color_encoding
+x_by_t = common.x_by_t
 
 
 def curves_from_rows(rows: pd.DataFrame) -> pd.DataFrame:
     """Mean, median and bands of seconds per tree, one block per method label."""
-    rows = rows.assign(
-        per_kept=np.where(
-            rows["n_trees"] > 0, rows["seconds"] / rows["n_trees"], np.nan
-        )
-    )
-    contour_rows = rows[rows["method"] == "contour"]
-    split_rows = rows[rows["method"] == "splitting"]
-    return pd.concat(
-        [
-            _band(contour_rows, "seconds", LABEL_CONTOUR),
-            _band(split_rows, "seconds", LABEL_RUN),
-            _band(split_rows, "per_kept", LABEL_KEPT),
-        ],
-        ignore_index=True,
-    )
+    return common.curves_from_rows(rows, GROUP)
 
 
 def curves_from_draws(rows: pd.DataFrame) -> pd.DataFrame:
@@ -78,20 +47,15 @@ def curves_from_draws(rows: pd.DataFrame) -> pd.DataFrame:
     ``rows`` are the Arley rows of ``draws.csv``.
     Splitting is charged per set of trees (the whole run) and per kept tree.
     """
-    rows = rows.assign(
-        per_kept=np.where(
-            rows["n_trees"] > 0, rows["draws_total"] / rows["n_trees"], np.nan
-        )
-    )
-    contour_rows = rows[rows["method"] == "contour"]
-    split_rows = rows[rows["method"] == "splitting"]
-    return pd.concat(
-        [
-            _band(contour_rows, "draws_total", LABEL_CONTOUR),
-            _band(split_rows, "draws_total", LABEL_RUN),
-            _band(split_rows, "per_kept", LABEL_KEPT),
-        ],
-        ignore_index=True,
+    return common.curves_from_draws(rows, GROUP)
+
+
+def _key_tooltips(mu_title: str) -> tuple[alt.Tooltip, ...]:
+    """Tooltips naming the cell: the slope, the paired constant rate and ``T``."""
+    return (
+        alt.Tooltip("slope:Q", format=".3~g", title="slope m"),
+        alt.Tooltip("mu:Q", format="g", title=mu_title),
+        alt.Tooltip("T:Q", format="g"),
     )
 
 
@@ -109,40 +73,17 @@ def draws_chart(
     Clicking a legend entry shows that method and fades the rest; shift-click
     adds more and double-click resets.
     """
-    y_title = "mean random draws per tree (log scale)"
-    y_scale = alt.Scale(type="log")
-    y = alt.Y("mean:Q", scale=y_scale, title=y_title)
-    selection = alt.selection_point(fields=["method"], bind="legend")
-
-    def fade(shown: float, hidden: float) -> alt.Opacity:
-        return alt.condition(selection, alt.value(shown), alt.value(hidden))
-
-    tooltip = [
-        "method",
-        alt.Tooltip("slope:Q", format=".3~g", title="slope m"),
-        alt.Tooltip("mu:Q", format="g", title="paired constant μ"),
-        alt.Tooltip("T:Q", format="g"),
-        alt.Tooltip("mean:Q", format=",.0f", title="mean draws"),
-        alt.Tooltip("ci_lo:Q", format=",.0f", title="95% CI low"),
-        alt.Tooltip("ci_hi:Q", format=",.0f", title="95% CI high"),
-        "replicates",
-    ]
-    base = alt.Chart(data).encode(x=x, color=color_encoding(legend_font_size))
-    area = base.mark_area().encode(
-        y=alt.Y("ci_lo:Q", scale=y_scale, title=y_title),
-        y2="ci_hi:Q",
-        opacity=fade(0.15, 0.02),
+    options = common.CostChartOptions(
+        statistic="mean",
+        measure="draws",
+        legend_font_size=legend_font_size,
+        width=width,
+        height=height,
+        key_tooltips=_key_tooltips("paired constant μ"),
+        value_format=",.0f",
+        title=title,
     )
-    line = base.mark_line(strokeWidth=3).encode(y=y, opacity=fade(1.0, 0.08))
-    points = base.mark_point(size=70, filled=True).encode(
-        y=y, tooltip=tooltip, opacity=fade(1.0, 0.08)
-    )
-    chart = (
-        alt.layer(area, line, points)
-        .add_params(selection)
-        .properties(width=width, height=height)
-    )
-    return chart.properties(title=title) if title else chart
+    return common.cost_chart(data, x, options)
 
 
 def diagnostics_from_rows(rows: pd.DataFrame) -> pd.DataFrame:
@@ -159,25 +100,14 @@ def diagnostics_from_rows(rows: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def x_by_t(ts: list[float]) -> alt.X:
-    """Log terminal-time axis with a tick at every grid value."""
-    return alt.X(
-        "T:Q",
-        scale=alt.Scale(type="log"),
-        title="terminal time T (log scale)",
-        axis=alt.Axis(values=[float(t) for t in ts], format="g", labelOverlap=True),
-    )
-
-
 def x_by_slope(slopes: list[float]) -> alt.X:
     """Log death-rate-slope axis, tight to the data."""
-    return alt.X(
-        "slope:Q",
-        scale=alt.Scale(type="log", nice=False, padding=12),
-        title="death-rate slope m (log scale)",
-        axis=alt.Axis(
-            values=[float(m) for m in slopes], format=".3~g", labelOverlap=True
-        ),
+    return common.log_axis(
+        "slope",
+        "death-rate slope m (log scale)",
+        slopes,
+        tight=True,
+        label_format=".3~g",
     )
 
 
@@ -198,43 +128,14 @@ def cost_chart(
     Clicking a legend entry shows that method and fades the rest; shift-click
     adds more and double-click resets.
     """
-    y_scale = alt.Scale(type="log")
-    unit = "mean sec per tree" if statistic == "mean" else "seconds per tree"
-    y_title = f"{unit} (log scale)"
-    lo, hi, band_name = (
-        ("ci_lo", "ci_hi", "95% CI") if statistic == "mean" else ("lo", "hi", None)
+    options = common.CostChartOptions(
+        statistic=statistic,
+        legend_font_size=legend_font_size,
+        width=width,
+        height=height,
+        key_tooltips=_key_tooltips("matched constant μ"),
     )
-    y = alt.Y(f"{statistic}:Q", scale=y_scale, title=y_title)
-    selection = alt.selection_point(fields=["method"], bind="legend")
-
-    def fade(shown: float, hidden: float) -> alt.Opacity:
-        return alt.condition(selection, alt.value(shown), alt.value(hidden))
-
-    tooltip = [
-        "method",
-        alt.Tooltip("slope:Q", format=".3~g", title="slope m"),
-        alt.Tooltip("mu:Q", format="g", title="matched constant μ"),
-        alt.Tooltip("T:Q", format="g"),
-        alt.Tooltip(f"{statistic}:Q", format=".3g", title=f"{statistic} s"),
-        alt.Tooltip(f"{lo}:Q", format=".3g", title=f"{band_name or '10th pct'} low"),
-        alt.Tooltip(f"{hi}:Q", format=".3g", title=f"{band_name or '90th pct'} high"),
-        "replicates",
-    ]
-    base = alt.Chart(data).encode(x=x, color=color_encoding(legend_font_size))
-    area = base.mark_area().encode(
-        y=alt.Y(f"{lo}:Q", scale=y_scale, title=y_title),
-        y2=f"{hi}:Q",
-        opacity=fade(0.15, 0.02),
-    )
-    line = base.mark_line(strokeWidth=3).encode(y=y, opacity=fade(1.0, 0.08))
-    points = base.mark_point(size=70, filled=True).encode(
-        y=y, tooltip=tooltip, opacity=fade(1.0, 0.08)
-    )
-    return (
-        alt.layer(area, line, points)
-        .add_params(selection)
-        .properties(width=width, height=height)
-    )
+    return common.cost_chart(data, x, options)
 
 
 def diagnostic_chart(data: pd.DataFrame) -> alt.HConcatChart:
@@ -267,22 +168,41 @@ def diagnostic_chart(data: pd.DataFrame) -> alt.HConcatChart:
 def _slope_term(slope: float) -> str:
     """``t/k`` when the slope is ``1/k`` for an integer ``k``, else ``slope t``."""
     k = round(1.0 / slope)
-    if k >= 2 and abs(slope * k - 1.0) < 1e-9:  # noqa: PLR2004
+    if k >= 2 and abs(slope * k - 1.0) < 1e-9:
         return f"t/{k}"
     return f"{slope:.3g} t"
 
 
+@dataclass(frozen=True)
+class RateChartOptions:
+    """Display options of ``rate_chart``.
+
+    Parameters
+    ----------
+    t_max
+        Last time shown.
+    y_max
+        Top of the rate axis; the death rate is clipped there.
+    legend_font_size, annotation_font_size
+        Font sizes of the legend labels and of the crossing annotation.
+    t_ticks, rate_ticks
+        Tick values of the two axes; automatic if None.
+    width, height
+        Chart size in pixels.
+    """
+
+    t_max: float = 100.0
+    y_max: float = 3.0
+    legend_font_size: int = 14
+    annotation_font_size: int = 13
+    t_ticks: Sequence[float] | None = None
+    rate_ticks: Sequence[float] | None = None
+    width: int = 900
+    height: int = 260
+
+
 def rate_chart(
-    slope: float,
-    *,
-    t_max: float = 100.0,
-    y_max: float = 3.0,
-    legend_font_size: int = 14,
-    annotation_font_size: int = 13,
-    t_ticks: list[float] | None = None,
-    rate_ticks: list[float] | None = None,
-    width: int = 900,
-    height: int = 260,
+    slope: float, options: RateChartOptions | None = None, **overrides: object
 ) -> alt.LayerChart:
     r"""Birth rate ``1`` and Arley death rate ``slope * t`` against time.
 
@@ -290,7 +210,17 @@ def rate_chart(
     stays visible even for steep slopes; it keeps rising beyond the plot.
     Before the crossing the birth rate exceeds the death rate (the process is
     supercritical), after it the process is subcritical.
+
+    ``overrides`` are fields of ``RateChartOptions`` (``t_max``, ``y_max``,
+    ``legend_font_size``, ``annotation_font_size``, ``t_ticks``, ``rate_ticks``,
+    ``width``, ``height``) replacing those of ``options``; any other keyword is a
+    ``TypeError``.
     """
+    opts = replace(options or RateChartOptions(), **overrides)
+    t_max, y_max = opts.t_max, opts.y_max
+    t_ticks, rate_ticks = opts.t_ticks, opts.rate_ticks
+    legend_font_size = opts.legend_font_size
+    annotation_font_size = opts.annotation_font_size
     lines = pd.DataFrame(
         {
             "t": [0.0, t_max, 0.0, t_max],
@@ -360,4 +290,4 @@ def rate_chart(
             )
             .encode(x="t:Q", y=alt.value(14), text="label")
         )
-    return alt.layer(*layers).properties(width=width, height=height)
+    return alt.layer(*layers).properties(width=opts.width, height=opts.height)

@@ -38,13 +38,13 @@ from scipy import stats
 from bdsurv import (
     PiecewiseConstant,
     PiecewiseLinear,
-    simulate_birth_death_linear,
-    simulate_birth_death_process,
+    simulate_birth_death,
     simulate_contour_given_ages,
     simulate_contour_given_population,
 )
-from bdsurv import _linear_math as lm
+from bdsurv import _hazard as lm
 from bdsurv.contour_conditioned import _log_spine_weights, _log_survival_pair
+from bdsurv.rates import Rate, as_rate
 
 
 
@@ -115,9 +115,9 @@ CASES = {
 }
 
 
-def rate_pair(case: str) -> tuple[lm.Rate, lm.Rate]:
+def rate_pair(case: str) -> tuple[Rate, Rate]:
     birth, death, _ = CASES[case]
-    wrap = lambda r: lm.as_rate(const(r) if isinstance(r, float) else r)  # noqa: E731
+    wrap = lambda r: as_rate(const(r) if isinstance(r, float) else r)  # noqa: E731
     return wrap(birth), wrap(death)
 
 
@@ -164,10 +164,8 @@ def forward_by_population(case: str, n_values: list[int], seed0: int) -> dict[in
     while any(len(v) < N for v in out.values()):
         seed = seed0 + runs
         runs += 1
-        if isinstance(birth, float):
-            records = simulate_birth_death_process(birth, death, T, random_seed=seed).records
-        else:
-            records = simulate_birth_death_linear(birth, death, random_seed=seed).records
+        tt = T if isinstance(birth, float) else None
+        records = simulate_birth_death(birth, death, tt, random_seed=seed).records
         n = int(records["survived"].sum())
         if n in out and len(out[n]) < N:
             s = summary(records)
@@ -268,9 +266,9 @@ rows = []
 for name, (b, d) in identity_cases.items():
     b_like = const(b) if isinstance(b, float) else b
     d_like = const(d) if isinstance(d, float) else d
-    fwd, rev = _log_survival_pair(lm.as_rate(b_like), lm.as_rate(d_like), T)
+    fwd, rev = _log_survival_pair(as_rate(b_like), as_rate(d_like), T)
     direct = lm.log_survival_probability(
-        lm.as_rate(reverse_rate(d_like, T)), lm.as_rate(reverse_rate(b_like, T)), T
+        as_rate(reverse_rate(d_like, T)), as_rate(reverse_rate(b_like, T)), T
     )
     rows.append(
         {
@@ -387,7 +385,7 @@ def age_laws(case: str) -> dict:
     birth, death = rate_pair(case)
     b = np.linspace(0.0, T, GRID)
     big_i = np.array(
-        [math.exp(lm._log_integral(death, birth, death, float(x), sign=-1.0)) for x in b]
+        [math.exp(lm.log_integral(death, birth, death, float(x), sign=-1.0)) for x in b]
     )
     u = (1.0 + big_i) / (1.0 + big_i[-1])
     base = lm.value(birth, b) * np.exp(-(lm.cumulative(birth, T) - lm.cumulative(birth, b)))

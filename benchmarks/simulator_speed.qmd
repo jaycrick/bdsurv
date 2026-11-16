@@ -42,15 +42,12 @@ from bdsurv import (
     compute_level_replicates,
     sample_conditioned_survival_process,
     select_level_times_for_band,
+    simulate_birth_death,
     simulate_birth_death_lifespans,
-    simulate_birth_death_linear,
-    simulate_birth_death_process,
-    simulate_birth_death_process_from_contour_process,
-    simulate_subcritical_survival_splitting,
+    simulate_contour_given_survival,
+    simulate_survival_splitting,
 )
-from bdsurv.splitting import (
-    _log_survival_probability,  # pyright: ignore[reportPrivateUsage]
-)
+from bdsurv import log_survival_probability
 
 SEED = 42
 pd.options.display.float_format = "{:.4g}".format
@@ -89,7 +86,7 @@ for mu in DEATH_RATES:
 
     _, contour_s = timed(
         lambda: [
-            simulate_birth_death_process_from_contour_process(
+            simulate_contour_given_survival(
                 birth_rate=BIRTH_RATE,
                 death_rate=mu,
                 terminal_time=TERMINAL_TIME,
@@ -108,7 +105,7 @@ for mu in DEATH_RATES:
         replicates=reps.tolist(),
         random_seed=SEED,
     )
-    result, splitting_s = timed(lambda: simulate_subcritical_survival_splitting(config))
+    result, splitting_s = timed(lambda: simulate_survival_splitting(config))
 
     rows.append(
         {
@@ -116,8 +113,8 @@ for mu in DEATH_RATES:
             # log space, so rare survival does not round to 0
             "P(survive to T)": float(
                 np.exp(
-                    _log_survival_probability(
-                        birth_rate=BIRTH_RATE, death_rate=mu, time=TERMINAL_TIME
+                    log_survival_probability(
+                        birth_rate=BIRTH_RATE, death_rate=mu, t=TERMINAL_TIME
                     )
                 )
             ),
@@ -159,13 +156,13 @@ linear_birth = PiecewiseLinear([BIRTH], [BIRTH], [T_END])
 linear_death = PiecewiseConstant([DEATH], [T_END])
 
 runners = {
-    "Gillespie (numpy)": lambda s: simulate_birth_death_process(
+    "Gillespie (numpy)": lambda s: simulate_birth_death(
         BIRTH, DEATH, T_END, random_seed=s
     ),
     "lifespan-at-birth (JAX, warm)": lambda s: simulate_birth_death_lifespans(
         BIRTH, DEATH, T_END, random_seed=s
     ),
-    "linear rates (numpy)": lambda s: simulate_birth_death_linear(
+    "linear rates (numpy)": lambda s: simulate_birth_death(
         linear_birth, linear_death, random_seed=s
     ),
 }

@@ -1,29 +1,16 @@
 """Tests for the Arley benchmark's slope-by-time grid mode and its charts."""
 
-import importlib.util
+import importlib
 import math
-import sys
 from pathlib import Path
 
+import bench_arley_comparison as arley
 import numpy as np
 import pandas as pd
 import pytest
 
-_SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
-sys.path.insert(0, str(_SCRIPTS))
-
-
-def _load(name: str):
-    spec = importlib.util.spec_from_file_location(name, _SCRIPTS / f"{name}.py")
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-arley = _load("bench_arley_comparison")
+# Imported lazily by the chart tests, which skip when altair is missing.
+_load = importlib.import_module
 
 
 @pytest.fixture(scope="module")
@@ -56,12 +43,12 @@ class TestGridCells:
     def test_survival_matches_the_constant_rate_at_the_matching_time(
         self, grid_cells
     ) -> None:
-        from bdsurv.splitting import _log_survival_probability
+        from bdsurv._hazard import log_survival_probability_constant
 
         at_t = [c for c in grid_cells if c.time == arley.SURVIVAL_T]
         assert len(at_t) == len(arley.GRID_SLOPES)
         for c in at_t:
-            constant = -_log_survival_probability(
+            constant = -log_survival_probability_constant(
                 birth_rate=arley.LAMBDA, death_rate=c.mu, time=c.time
             ) / math.log(10)
             assert c.arley_value == pytest.approx(constant, rel=3e-3)
@@ -150,24 +137,24 @@ class TestQuickGridRun:
 
 
 def _rows() -> pd.DataFrame:
-    records = []
-    for method in ("contour", "splitting"):
-        for t in (1.0, 10.0):
-            for r in range(4):
-                records.append(
-                    {
-                        "method": method,
-                        "mu": 3.0,
-                        "slope": 0.06,
-                        "T": t,
-                        "replicate": r,
-                        "seconds": 0.1 * (r + 1) * t,
-                        "n_trees": 1 if method == "contour" else 5,
-                        "n_attempts": np.nan if method == "contour" else 2,
-                        "levels": np.nan if method == "contour" else 3,
-                    }
-                )
-    return pd.DataFrame(records)
+    return pd.DataFrame(
+        [
+            {
+                "method": method,
+                "mu": 3.0,
+                "slope": 0.06,
+                "T": t,
+                "replicate": r,
+                "seconds": 0.1 * (r + 1) * t,
+                "n_trees": 1 if method == "contour" else 5,
+                "n_attempts": np.nan if method == "contour" else 2,
+                "levels": np.nan if method == "contour" else 3,
+            }
+            for method in ("contour", "splitting")
+            for t in (1.0, 10.0)
+            for r in range(4)
+        ]
+    )
 
 
 class TestCharts:

@@ -1,6 +1,6 @@
 [project]
 name = "bdsurv"
-version = "0.4.0"
+version = "0.5.0"
 description = "Simulation of birth-death processes, focused on survival-conditioned subcritical processes: exact contour-process reconstruction, multilevel (RESTART) splitting, and forward simulators for time-varying rates."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -32,6 +32,7 @@ bench = [
 ]
 dev = [
   "basedpyright>=1.22.0",
+  "hypothesis>=6.170.15",
   "pandas-stubs",
   "pre-commit>=4.5.1",
   "pytest-cov>=7.0.0",
@@ -43,7 +44,7 @@ dev = [
 
 [tool.basedpyright]
 include = ["src"]
-pythonVersion = "3.11"
+pythonVersion = "3.13"
 typeCheckingMode = "strict"
 reportMissingTypeStubs = "warning"
 # numpy's overloaded stubs for isclose/where/choice/etc. resolve to a partially
@@ -55,7 +56,40 @@ reportUnknownMemberType = "none"
 line-length = 88
 
 [tool.ruff.lint]
-select = ["B", "D", "E", "F", "I", "UP", "W"]
+select = [
+  "ARG",
+  "B",
+  "BLE",
+  "C90",
+  "D",
+  "E",
+  "ERA",
+  "F",
+  "I",
+  "N",
+  "NPY",
+  "PERF",
+  "PLR",
+  "PT",
+  "PTH",
+  "RET",
+  "RUF",
+  "SIM",
+  "SLF",
+  "UP",
+  "W"
+]
+ignore = [
+  "N803", # mathematical argument names such as E and T
+  "N806", # mathematical variable names such as E and T
+  "PLR2004" # numeric literals are normal in maths and tests
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+max-args = 6
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
@@ -68,7 +102,9 @@ convention = "numpy"
   "D101", # test classes are self-documenting via their names
   "D102", # test methods are self-documenting via their names
   "E501", # test strings and fixture data are allowed to be long
-  "S101" # asserts are the mechanism of the tests
+  "PLR0913", # test helpers take many parameters
+  "S101", # asserts are the mechanism of the tests
+  "SLF001" # tests exercise private kernels directly
 ]
 
 [tool.toml-sort]
@@ -82,10 +118,11 @@ sort_table_keys = true
 
 [tool.pytest.ini_options]
 markers = ["slow: long-running statistical tests"]
-addopts = "--cov=src --cov-report=term-missing --cov-report=xml --cov-fail-under=86"
+addopts = "-m 'not slow' --strict-markers"
 python_classes = ["Test*"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
+pythonpath = ["tests", "scripts"]
 testpaths = ["tests"]
 
 [tool.coverage.run]

@@ -8,8 +8,10 @@ reconstructed on the host from the stored per-individual birth/death times.
 Entry points:
 
 - :func:`simulate_birth_death_lifespans_arrays` — raw per-individual arrays.
-- :func:`simulate_birth_death_lifespans` — full :class:`~bdsurv.tree.SimulatedProcess`
-  with genealogy (same API as :func:`bdsurv.gillespie.simulate_birth_death_process`).
+- :func:`simulate_birth_death_lifespans` — full :class:`~bdsurv.tree.SimulatedTree`
+  with genealogy, for per-epoch constant rates (the same process as
+  :func:`bdsurv.forward.simulate_birth_death` with
+  :class:`~bdsurv.rates.PiecewiseConstant` rates).
 """
 
 # JAX's jit/while_loop wrappers are untyped, which strict mode reports as
@@ -18,9 +20,8 @@ Entry points:
 
 from __future__ import annotations
 
-import contextlib
 import functools
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -29,7 +30,13 @@ import pandas as pd
 from jax import lax
 from numpy.typing import NDArray
 
-from bdsurv.tree import SimulatedProcess
+from bdsurv._forward import retry_until_survival
+from bdsurv._seeding import jax_key, root_rng
+from bdsurv.rates import PiecewiseConstant, epoch_rates
+from bdsurv.tree import SimulatedTree, build_records
+
+# An event within this of an epoch end counts as the epoch end.
+TIE_TOLERANCE: float = 1e-12
 
 
 class LifespanSimulationArrays(NamedTuple):
@@ -57,7 +64,8 @@ class LifespanSimulationArrays(NamedTuple):
 
         jnp.sum((birth_epochs == e) & survived)
 
-    This is the quantity required by the multilevel-splitting estimator.
+    This is the quantity the era-conditioned sampler
+    (:mod:`bdsurv.era_conditioning`) matches against observed counts.
 
     """
 
@@ -68,23 +76,25 @@ class LifespanSimulationArrays(NamedTuple):
     n_born: int
 
 
-class _LifespanLoopState(NamedTuple):
-    """Mutable state carried through the JAX while_loop."""
+class LoopState(NamedTuple):
+    """State carried through the event loop of :func:`advance_era`.
 
-    key: jax.Array  # PRNGKey
+    Only the first ``n_born`` entries of each buffer are meaningful.
+    """
+
+    key: jax.Array  # PRNG key
     current_time: jax.Array  # float64 scalar
-    n_alive: jax.Array  # int32 scalar — individuals alive at current_time
-    n_born: jax.Array  # int32 scalar — total ever born (= next free buffer slot)
-    epoch_idx: jax.Array  # int32 scalar — current epoch index
-    overflow: jax.Array  # bool scalar — True iff max_population was exceeded
+    n_alive: jax.Array  # int32 scalar: individuals alive at current_time
+    n_born: jax.Array  # int32 scalar: total ever born (= next free buffer slot)
+    overflow: jax.Array  # bool scalar: True iff max_population was exceeded
     birth_time_buf: jax.Array  # float64 [max_population]
     death_time_buf: jax.Array  # float64 [max_population] (inf = survives)
     insert_unif_buf: jax.Array  # float64 [max_population] (U[0,1) for genealogy)
     birth_epoch_buf: jax.Array  # int32 [max_population]
-    n_alive_at_birth_buf: jax.Array  # int32 [max_population] — n_alive before birth
+    n_alive_at_birth_buf: jax.Array  # int32 [max_population]: n_alive before birth
 
 
-def _sample_piecewise_exponential_death_time(
+def sample_piecewise_exponential_death_time(
     birth_time: jax.Array,
     death_rates: jax.Array,
     epoch_end_times: jax.Array,
@@ -95,7 +105,10 @@ def _sample_piecewise_exponential_death_time(
 
     Draws ``E ~ Exp(1)`` and walks the epoch boundaries starting from
     ``birth_time``, accumulating ``rate_e * duration_e`` per epoch until the
-    total hazard reaches ``E`` (inversion method).  Returns ``jnp.inf`` when
+    total hazard reaches ``E`` (inversion method; ``docs/lifespans.md``, section
+    "Algorithm", item "Death time at birth").
+    Here ``rate_e`` is the death rate on epoch ``e`` and ``duration_e`` the time
+    spent in it between the birth and the terminal time.  Returns ``jnp.inf`` when
     the total hazard over ``[birth_time, terminal_time]`` is less than ``E``
     (i.e. the individual survives to the terminal time).
 
@@ -103,7 +116,9 @@ def _sample_piecewise_exponential_death_time(
 
     """
     key, subkey = jax.random.split(key)
-    # Draw the target cumulative hazard (exponential quantile)
+    # E ~ Exp(1) is the target value of the cumulative death hazard
+    # int_b^t mu(s) ds from the birth time b; the death time is the first t at
+    # which it reaches E (docs/lifespans.md, section "Algorithm").
     E = jax.random.exponential(subkey, dtype=jnp.float64)
 
     # Epoch start times: 0 for epoch 0, epoch_end_times[k-1] for epoch k
@@ -128,7 +143,7 @@ def _sample_piecewise_exponential_death_time(
         hazard_this_epoch = rate * duration
         new_accumulated = accumulated + hazard_this_epoch
 
-        # Solve: interval_start + (E - accumulated_before) / rate = death_time
+        # Solve for the death time: start of interval plus the remaining hazard / rate
         remaining = E - accumulated
         safe_rate = jnp.where(rate > 0.0, rate, jnp.float64(1.0))
         candidate_death = interval_start + remaining / safe_rate
@@ -151,132 +166,131 @@ def _sample_piecewise_exponential_death_time(
     return jnp.where(found, death_time, jnp.inf)
 
 
-@functools.partial(jax.jit, static_argnums=(4,))
-def _simulate_lifespans_core(
-    birth_rates: jax.Array,  # float64 [n_epochs]
-    death_rates: jax.Array,  # float64 [n_epochs]
-    epoch_end_times: jax.Array,  # float64 [n_epochs]; last entry = terminal_time
+@functools.partial(jax.jit, static_argnums=(3,))
+def initial_state(
+    death_rates: jax.Array,
+    epoch_end_times: jax.Array,
     key: jax.Array,
-    max_population: int,  # STATIC — determines buffer size and causes recompile
-) -> _LifespanLoopState:
-    """JIT-compiled lifespan-at-birth event loop.
+    max_population: int,
+) -> LoopState:
+    """Return the state with one root individual born at time 0.
 
-    Uses ``jax.lax.while_loop`` to advance a single realisation of the
-    birth-death process until ``terminal_time = epoch_end_times[-1]``.
-
-    Returns the final ``_LifespanLoopState``; only the first ``n_born``
-    entries of each buffer are meaningful.  The ``overflow`` flag is ``True``
-    if the process would have required more than ``max_population`` individuals.
-
+    The root's death time is sampled over the full hazard
+    (``death_rates`` on ``epoch_end_times``; the last entry is the terminal time).
+    Jitted with ``max_population`` static, like :func:`advance_era`.
     """
-    terminal_time: jax.Array = epoch_end_times[-1]
-    n_epochs: int = epoch_end_times.shape[0]  # static at compile time
-
-    # ---- Initialise with the root individual (id 0, born at t=0) ----
     key, k_root_death = jax.random.split(key)
-    root_death_time = _sample_piecewise_exponential_death_time(
+    root_death_time = sample_piecewise_exponential_death_time(
         birth_time=jnp.float64(0.0),
         death_rates=death_rates,
         epoch_end_times=epoch_end_times,
-        terminal_time=terminal_time,
+        terminal_time=epoch_end_times[-1],
         key=k_root_death,
     )
-
-    birth_time_buf = (
-        jnp.full(max_population, jnp.inf, dtype=jnp.float64).at[0].set(jnp.float64(0.0))
-    )
-    death_time_buf = (
-        jnp.full(max_population, jnp.inf, dtype=jnp.float64).at[0].set(root_death_time)
-    )
-    insert_unif_buf = jnp.zeros(max_population, dtype=jnp.float64)
-    birth_epoch_buf = jnp.zeros(max_population, dtype=jnp.int32)
-    n_alive_at_birth_buf = jnp.zeros(max_population, dtype=jnp.int32)  # 0 for root
-
-    init_state = _LifespanLoopState(
+    return LoopState(
         key=key,
         current_time=jnp.float64(0.0),
         n_alive=jnp.int32(1),
         n_born=jnp.int32(1),
-        epoch_idx=jnp.int32(0),
         overflow=jnp.bool_(False),
-        birth_time_buf=birth_time_buf,
-        death_time_buf=death_time_buf,
-        insert_unif_buf=insert_unif_buf,
-        birth_epoch_buf=birth_epoch_buf,
-        n_alive_at_birth_buf=n_alive_at_birth_buf,
+        birth_time_buf=jnp.full(max_population, jnp.inf, dtype=jnp.float64)
+        .at[0]
+        .set(jnp.float64(0.0)),
+        death_time_buf=jnp.full(max_population, jnp.inf, dtype=jnp.float64)
+        .at[0]
+        .set(root_death_time),
+        insert_unif_buf=jnp.zeros(max_population, dtype=jnp.float64),
+        birth_epoch_buf=jnp.zeros(max_population, dtype=jnp.int32),
+        n_alive_at_birth_buf=jnp.zeros(max_population, dtype=jnp.int32),
     )
 
-    # ---- Event loop ----
-    def _cond(state: _LifespanLoopState) -> jax.Array:
-        return (state.current_time < terminal_time) & ~state.overflow
 
-    def _body(state: _LifespanLoopState) -> _LifespanLoopState:
-        (
-            key,
-            current_time,
-            n_alive,
-            n_born,
-            epoch_idx,
-            overflow,
-            birth_time_buf,
-            death_time_buf,
-            insert_unif_buf,
-            birth_epoch_buf,
-            n_alive_at_birth_buf,
-        ) = state
+@functools.partial(jax.jit, static_argnums=(6,))
+def advance_era(  # noqa: PLR0913, PLR0917  # jitted kernel with a fixed signature
+    birth_rate_k: jax.Array,
+    death_rates: jax.Array,
+    epoch_end_times: jax.Array,
+    era_idx: jax.Array,
+    segment_end: jax.Array,
+    state: LoopState,
+    max_population: int,
+) -> LoopState:
+    """Advance the event loop from ``state.current_time`` to ``segment_end``.
 
-        key, k_birth_dt, k_death_time, k_insert = jax.random.split(key, 4)
+    This is the one JAX event kernel of the package (the forward numpy kernel is
+    :mod:`bdsurv._forward`).  Births occur at rate
+    ``n_alive * birth_rate_k``, which is fixed for the era.  Each new
+    individual's death time is sampled at birth over the **full** hazard
+    (``death_rates`` on ``epoch_end_times``), so survival to the terminal time
+    ``epoch_end_times[-1]`` is known from the start.  An event within
+    ``TIE_TOLERANCE`` of ``segment_end`` counts as the era boundary.
 
-        # Current epoch (clamp to avoid OOB on last epoch)
-        safe_idx = jnp.minimum(epoch_idx, n_epochs - 1)
-        b_rate: jax.Array = birth_rates[safe_idx]
-        t_epoch_end: jax.Array = epoch_end_times[safe_idx]
+    Parameters
+    ----------
+    birth_rate_k
+        Per-individual birth rate for this era (float64 scalar).
+    death_rates
+        Full per-epoch death rates, shape ``[n_epochs]``.
+    epoch_end_times
+        Full epoch end times, shape ``[n_epochs]``; the last is the terminal time.
+    era_idx
+        Era index (int32 scalar), written to ``birth_epoch_buf`` for every
+        individual born in this call.
+    segment_end
+        End time of the era (float64 scalar).
+    state
+        Carry-in state, from :func:`initial_state` or a previous call.
+    max_population
+        **Static** buffer capacity; a new value recompiles the kernel.
+
+    Returns
+    -------
+    LoopState
+        State at ``current_time == segment_end``, unless ``overflow`` is set
+        because more than ``max_population`` individuals would have been born.
+
+    """
+    terminal_time: jax.Array = epoch_end_times[-1]
+
+    def _cond(s: LoopState) -> jax.Array:
+        return (s.current_time < segment_end) & ~s.overflow
+
+    def _body(s: LoopState) -> LoopState:
+        key, k_birth_dt, k_death_time, k_insert = jax.random.split(s.key, 4)
 
         # ---- Next birth time ----
-        total_birth_rate = n_alive.astype(jnp.float64) * b_rate
+        # With n alive the total birth rate is n * lambda_k, so the waiting
+        # time is E / (n lambda_k) with E ~ Exp(1) (docs/lifespans.md, section
+        # "Algorithm", item "Next birth").
+        total_birth_rate = s.n_alive.astype(jnp.float64) * birth_rate_k
         dt_birth = jax.random.exponential(k_birth_dt, dtype=jnp.float64) / jnp.where(
             total_birth_rate > 0.0, total_birth_rate, jnp.float64(1.0)
         )
         next_birth = jnp.where(
-            total_birth_rate > 0.0,
-            current_time + dt_birth,
-            jnp.inf,
+            total_birth_rate > 0.0, s.current_time + dt_birth, jnp.inf
         )
 
         # ---- Next scheduled death (smallest future death time in buffer) ----
         indices = jnp.arange(max_population)
         future_death_mask = (
-            (indices < n_born)
-            & jnp.isfinite(death_time_buf)
-            & (death_time_buf > current_time)
+            (indices < s.n_born)
+            & jnp.isfinite(s.death_time_buf)
+            & (s.death_time_buf > s.current_time)
         )
-        next_death = jnp.min(jnp.where(future_death_mask, death_time_buf, jnp.inf))
+        next_death = jnp.min(jnp.where(future_death_mask, s.death_time_buf, jnp.inf))
 
-        # ---- Choose next event ----
-        next_event = jnp.minimum(jnp.minimum(next_birth, next_death), t_epoch_end)
-
-        # Event type (mutually exclusive; epoch has highest priority on exact ties)
-        is_epoch = next_event >= t_epoch_end - jnp.float64(1e-12)
-        is_death = (~is_epoch) & (next_death <= next_birth)
-        is_birth = (~is_epoch) & (~is_death)
-
-        # Advance time; clamp to terminal_time so the while-loop condition fires
-        new_time = jnp.where(next_event >= terminal_time, terminal_time, next_event)
-
-        # ---- Epoch crossing ----
-        # Only bump epoch_idx when this is an internal boundary (< terminal_time)
-        new_epoch_idx = jnp.where(
-            is_epoch & (t_epoch_end < terminal_time),
-            epoch_idx + 1,
-            epoch_idx,
-        )
+        # ---- Choose next event (the era boundary wins ties) ----
+        next_event = jnp.minimum(jnp.minimum(next_birth, next_death), segment_end)
+        is_boundary = next_event >= segment_end - jnp.float64(TIE_TOLERANCE)
+        is_death = (~is_boundary) & (next_death <= next_birth)
+        is_birth = (~is_boundary) & (~is_death)
+        new_time = jnp.where(next_event >= segment_end, segment_end, next_event)
 
         # ---- Birth event ----
-        can_do_birth = is_birth & (n_born < max_population)
-        new_overflow = overflow | (is_birth & (n_born >= max_population))
+        can_do_birth = is_birth & (s.n_born < max_population)
+        new_overflow = s.overflow | (is_birth & (s.n_born >= max_population))
 
-        # Sample this new individual's death time and insert uniform
-        new_indiv_death = _sample_piecewise_exponential_death_time(
+        new_indiv_death = sample_piecewise_exponential_death_time(
             birth_time=next_event,
             death_rates=death_rates,
             epoch_end_times=epoch_end_times,
@@ -285,58 +299,32 @@ def _simulate_lifespans_core(
         )
         new_insert_u = jax.random.uniform(k_insert, dtype=jnp.float64)
 
-        # Write to buffers at index n_born; guard OOB by clamping write index
-        # (when can_do_birth is False the written value is ignored by jnp.where)
-        safe_write_idx = jnp.minimum(n_born, max_population - 1)
-        new_birth_time_buf = jnp.where(
-            can_do_birth,
-            birth_time_buf.at[safe_write_idx].set(next_event),
-            birth_time_buf,
-        )
-        new_death_time_buf = jnp.where(
-            can_do_birth,
-            death_time_buf.at[safe_write_idx].set(new_indiv_death),
-            death_time_buf,
-        )
-        new_insert_unif_buf = jnp.where(
-            can_do_birth,
-            insert_unif_buf.at[safe_write_idx].set(new_insert_u),
-            insert_unif_buf,
-        )
-        new_birth_epoch_buf = jnp.where(
-            can_do_birth,
-            birth_epoch_buf.at[safe_write_idx].set(epoch_idx),
-            birth_epoch_buf,
-        )
-        new_n_alive_at_birth_buf = jnp.where(
-            can_do_birth,
-            n_alive_at_birth_buf.at[safe_write_idx].set(n_alive),
-            n_alive_at_birth_buf,
-        )
-        new_n_born = jnp.where(can_do_birth, n_born + 1, n_born)
+        # Single-index writes at the clamped slot; without a birth the slot
+        # keeps its old value.
+        i = jnp.minimum(s.n_born, max_population - 1)
 
-        # ---- Update n_alive ----
+        def write(buf: jax.Array, value: jax.Array) -> jax.Array:
+            return buf.at[i].set(jnp.where(can_do_birth, value, buf[i]))
+
         new_n_alive = jnp.where(
-            is_birth & can_do_birth,
-            n_alive + 1,
-            jnp.where(is_death, jnp.maximum(n_alive - 1, 0), n_alive),
+            can_do_birth,
+            s.n_alive + 1,
+            jnp.where(is_death, jnp.maximum(s.n_alive - 1, 0), s.n_alive),
         )
-
-        return _LifespanLoopState(
+        return LoopState(
             key=key,
             current_time=new_time,
             n_alive=new_n_alive,
-            n_born=new_n_born,
-            epoch_idx=new_epoch_idx,
+            n_born=jnp.where(can_do_birth, s.n_born + 1, s.n_born),
             overflow=new_overflow,
-            birth_time_buf=new_birth_time_buf,
-            death_time_buf=new_death_time_buf,
-            insert_unif_buf=new_insert_unif_buf,
-            birth_epoch_buf=new_birth_epoch_buf,
-            n_alive_at_birth_buf=new_n_alive_at_birth_buf,
+            birth_time_buf=write(s.birth_time_buf, next_event),
+            death_time_buf=write(s.death_time_buf, new_indiv_death),
+            insert_unif_buf=write(s.insert_unif_buf, new_insert_u),
+            birth_epoch_buf=write(s.birth_epoch_buf, era_idx),
+            n_alive_at_birth_buf=write(s.n_alive_at_birth_buf, s.n_alive),
         )
 
-    return lax.while_loop(_cond, _body, init_state)
+    return lax.while_loop(_cond, _body, state)
 
 
 def _reconstruct_genealogy(
@@ -350,7 +338,7 @@ def _reconstruct_genealogy(
     """Replay the event stream to assign parent IDs and spine.
 
     Replicates the random-insert genealogy convention of
-    :func:`bdsurv.gillespie.simulate_birth_death_process`: new individuals are
+    :func:`bdsurv.forward.simulate_birth_death`: new individuals are
     inserted at position
     ``1 + floor(u * n_alive)`` (clamped to ``n_alive``) in the ordered
     alive-list, with their parent being the individual at ``insert_pos - 1``.
@@ -378,7 +366,6 @@ def _reconstruct_genealogy(
 
     """
     n_born = len(birth_times)
-    survived_mask = ~np.isfinite(death_times) | (death_times > terminal_time)
 
     # ---- Build chronological event list ----
     # Each element: (time, kind, individual_id)
@@ -391,11 +378,10 @@ def _reconstruct_genealogy(
     events.sort(key=lambda e: (e[0], e[1]))
 
     # ---- Replay ----
-    records: list[dict[str, Any]] = []
     alive_list: list[int] = []  # ordered list of alive individual IDs
     parent_map: dict[int, int | None] = {}
 
-    for _t, kind, i in events:
+    for t, kind, i in events:
         if kind == 1:  # birth
             n = int(n_alive_at_birth[i])
             if n == 0:
@@ -411,38 +397,83 @@ def _reconstruct_genealogy(
                 parent_map[i] = alive_list[insert_pos - 1]
                 alive_list.insert(insert_pos, i)
         else:  # death
-            # already removed is harmless (shouldn't happen in a valid simulation)
-            with contextlib.suppress(ValueError):
+            try:
                 alive_list.remove(i)
+            except ValueError as exc:
+                msg = (
+                    f"inconsistent event stream: individual {i} dies at "
+                    f"t={t} but is not alive"
+                )
+                raise ValueError(msg) from exc
 
     # ---- Spine = alive_list[0] at termination ----
     spine_id = alive_list[0] if alive_list else None
 
     # ---- Build records DataFrame ----
-    for i in range(n_born):
-        raw_death = float(death_times[i])
-        died = np.isfinite(raw_death) and raw_death <= terminal_time
-        records.append(
-            {
-                "individual_id": i,
-                "parent_id": parent_map.get(i),
-                "creation_time": float(birth_times[i]),
-                "death_time": raw_death if died else None,
-                "is_spine": i == spine_id,
-                "survived": survived_mask[i],
-                "age": (
-                    terminal_time - float(birth_times[i])
-                    if survived_mask[i]
-                    else np.nan
-                ),
-                "lifespan": (raw_death - float(birth_times[i])) if died else np.nan,
-                "birth_epoch": int(birth_epochs[i]),
-            }
-        )
+    died = np.isfinite(death_times) & (death_times <= terminal_time)
+    return build_records(
+        birth_times,
+        [parent_map.get(i) for i in range(n_born)],
+        np.where(died, death_times, np.nan),
+        spine_id,
+        terminal_time,
+        birth_epoch=np.asarray(birth_epochs, dtype=np.int64),
+    )
 
-    df = pd.DataFrame(records)
-    df["death_time"] = df["death_time"].astype(float)
-    return df
+
+def _validated_inputs(
+    birth_rates: float | NDArray[np.float64],
+    death_rates: float | NDArray[np.float64],
+    times: float | NDArray[np.float64],
+    max_population: int,
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+    """Validate the arguments shared by both simulators; return the rate arrays."""
+    arrays = epoch_rates(birth_rates, death_rates, times)
+    if max_population < 1:
+        msg = "max_population must be at least 1"
+        raise ValueError(msg)
+    return arrays
+
+
+def _run(
+    birth_rates_arr: NDArray[np.float64],
+    death_rates_arr: NDArray[np.float64],
+    times_arr: NDArray[np.float64],
+    key: jax.Array,
+    max_population: int,
+    *,
+    caller: str,
+) -> LoopState:
+    """Run the event loop through every epoch and return the final state.
+
+    Raises
+    ------
+    RuntimeError
+        If more than ``max_population`` individuals would have been born; the
+        message names ``caller``.
+    """
+    birth_rates_jax = jnp.array(birth_rates_arr, dtype=jnp.float64)
+    death_rates_jax = jnp.array(death_rates_arr, dtype=jnp.float64)
+    times_jax = jnp.array(times_arr, dtype=jnp.float64)
+
+    state = initial_state(death_rates_jax, times_jax, key, max_population)
+    for k in range(len(times_arr)):
+        state = advance_era(
+            birth_rates_jax[k],
+            death_rates_jax,
+            times_jax,
+            jnp.int32(k),
+            times_jax[k],
+            state,
+            max_population,
+        )
+    if bool(state.overflow):
+        msg = (
+            f"{caller}: population exceeded max_population={max_population}. "
+            "Increase max_population or use a lower birth rate / shorter time span."
+        )
+        raise RuntimeError(msg)
+    return state
 
 
 def simulate_birth_death_lifespans_arrays(
@@ -455,14 +486,14 @@ def simulate_birth_death_lifespans_arrays(
 ) -> LifespanSimulationArrays:
     """Simulate a birth-death process and return raw per-individual arrays.
 
-    Runs the lifespan-at-birth Gillespie algorithm via a JIT-compiled JAX
-    event loop.  Each individual's death time is pre-sampled at birth from a
-    piecewise-exponential distribution, so the number of individuals surviving
-    from each epoch to the terminal time is directly accessible from the
-    returned arrays.
+    Runs the lifespan-at-birth algorithm (``docs/lifespans.md``) via a
+    JIT-compiled JAX event loop.  Each individual's death time is pre-sampled at
+    birth from a piecewise-exponential distribution, so the number of individuals
+    surviving from each epoch to the terminal time is directly accessible from
+    the returned arrays.
 
     This is the low-level entry point intended for downstream analysis such
-    as multilevel splitting.  For a full :class:`~bdsurv.tree.SimulatedProcess` with
+    as era-conditioned sampling.  For a full :class:`~bdsurv.tree.SimulatedTree` with
     genealogy use :func:`simulate_birth_death_lifespans` instead.
 
     Parameters
@@ -494,50 +525,25 @@ def simulate_birth_death_lifespans_arrays(
     Raises
     ------
     ValueError
-        If input arrays have incompatible lengths, non-positive rates, or
-        non-positive / non-increasing times.
+        If the arguments have incompatible lengths, a rate is not finite and
+        positive, the times are not finite, positive and strictly increasing,
+        or ``max_population < 1``.
     RuntimeError
         If the simulated population exceeds ``max_population``.
 
     """
-    birth_rates_arr = np.atleast_1d(np.asarray(birth_rates, dtype=np.float64))
-    death_rates_arr = np.atleast_1d(np.asarray(death_rates, dtype=np.float64))
-    times_arr = np.atleast_1d(np.asarray(times, dtype=np.float64))
-
-    if not (len(birth_rates_arr) == len(death_rates_arr) == len(times_arr)):
-        msg = "birth_rates, death_rates, and times must have the same length"
-        raise ValueError(msg)
-    if np.any(birth_rates_arr <= 0) or np.any(death_rates_arr <= 0):
-        msg = "Birth rates and death rates must be positive"
-        raise ValueError(msg)
-    if np.any(times_arr <= 0):
-        msg = "Times must be positive"
-        raise ValueError(msg)
-    if len(times_arr) > 1 and np.any(np.diff(times_arr) <= 0):
-        msg = "Times must be strictly increasing"
-        raise ValueError(msg)
-    if max_population < 1:
-        msg = "max_population must be at least 1"
-        raise ValueError(msg)
-
-    br_jax = jnp.array(birth_rates_arr, dtype=jnp.float64)
-    dr_jax = jnp.array(death_rates_arr, dtype=jnp.float64)
-    et_jax = jnp.array(times_arr, dtype=jnp.float64)
-
-    if random_seed is None:
-        key = jax.random.key(int(np.random.default_rng().integers(0, 2**31 - 1)))
-    else:
-        key = jax.random.key(int(random_seed))
-
-    final_state = _simulate_lifespans_core(br_jax, dr_jax, et_jax, key, max_population)
-
-    if bool(final_state.overflow):
-        msg = (
-            f"simulate_birth_death_lifespans_arrays: population exceeded "
-            f"max_population={max_population}. "
-            "Increase max_population or use a lower birth rate / shorter time span."
-        )
-        raise RuntimeError(msg)
+    birth_rates_arr, death_rates_arr, times_arr = _validated_inputs(
+        birth_rates, death_rates, times, max_population
+    )
+    key = jax_key(root_rng(random_seed, "seeding"))
+    final_state = _run(
+        birth_rates_arr,
+        death_rates_arr,
+        times_arr,
+        key,
+        max_population,
+        caller="simulate_birth_death_lifespans_arrays",
+    )
 
     n_born = int(final_state.n_born)
     terminal_time = float(times_arr[-1])
@@ -552,7 +558,7 @@ def simulate_birth_death_lifespans_arrays(
     )
 
 
-def simulate_birth_death_lifespans(
+def simulate_birth_death_lifespans(  # noqa: PLR0913  # public signature
     birth_rates: float | NDArray[np.float64],
     death_rates: float | NDArray[np.float64],
     times: float | NDArray[np.float64],
@@ -561,20 +567,24 @@ def simulate_birth_death_lifespans(
     ensure_non_extinct: bool = False,
     max_retries: int = 100,
     max_population: int = 200_000,
-) -> SimulatedProcess:
+) -> SimulatedTree:
     """Simulate a birth-death process using the lifespan-at-birth algorithm.
 
-    A JIT-compiled alternative to
-    :func:`bdsurv.gillespie.simulate_birth_death_process` with
-    the same public API.  Each individual's entire lifespan is decided at
+    A JIT-compiled alternative to :func:`bdsurv.forward.simulate_birth_death`
+    for rates that are constant within each epoch, which are given as arrays.
+    Each individual's entire lifespan is decided at
     birth from a piecewise-exponential distribution.  The numeric core runs
     inside ``jax.lax.while_loop``; parent-ID genealogy and spine assignment
     are reconstructed on the host from the stored per-individual birth/death
     times and insertion uniforms.
 
-    The returned :class:`~bdsurv.tree.SimulatedProcess` has an
+    The returned :class:`~bdsurv.tree.SimulatedTree` has an
     additional ``birth_epoch`` column in its ``records`` table,
     recording the epoch in which each individual was born.
+    Its rates are :class:`~bdsurv.rates.PiecewiseConstant` objects with the
+    arrays given here, so ``tree.birth_rate.values``,
+    ``tree.death_rate.values`` and ``tree.birth_rate.epoch_end_times`` recover
+    the epoch rates and end times.
 
     Parameters
     ----------
@@ -598,97 +608,56 @@ def simulate_birth_death_lifespans(
 
     Returns
     -------
-    SimulatedProcess
+    SimulatedTree
         Simulated process with full genealogy and spine assignment.
 
     Raises
     ------
     ValueError
-        On invalid inputs (lengths, non-positive rates, non-increasing times).
+        On invalid inputs (lengths, rates that are not finite and positive,
+        times that are not finite, positive and strictly increasing).
     RuntimeError
         If ``ensure_non_extinct=True`` and all retries produce an extinct
         population, or if ``max_population`` is exceeded.
 
     """
-    birth_rates_arr = np.atleast_1d(np.asarray(birth_rates, dtype=np.float64))
-    death_rates_arr = np.atleast_1d(np.asarray(death_rates, dtype=np.float64))
-    times_arr = np.atleast_1d(np.asarray(times, dtype=np.float64))
-
-    if not (len(birth_rates_arr) == len(death_rates_arr) == len(times_arr)):
-        msg = "birth_rates, death_rates, and times must have the same length"
-        raise ValueError(msg)
-    if np.any(birth_rates_arr <= 0) or np.any(death_rates_arr <= 0):
-        msg = "Birth rates and death rates must be positive"
-        raise ValueError(msg)
-    if np.any(times_arr <= 0):
-        msg = "Times must be positive"
-        raise ValueError(msg)
-    if len(times_arr) > 1 and np.any(np.diff(times_arr) <= 0):
-        msg = "Times must be strictly increasing"
-        raise ValueError(msg)
-    if ensure_non_extinct and max_retries < 0:
-        msg = "max_retries must be a non-negative integer"
-        raise ValueError(msg)
-    if max_population < 1:
-        msg = "max_population must be at least 1"
-        raise ValueError(msg)
-
+    birth_rates_arr, death_rates_arr, times_arr = _validated_inputs(
+        birth_rates, death_rates, times, max_population
+    )
     terminal_time = float(times_arr[-1])
-    br_jax = jnp.array(birth_rates_arr, dtype=jnp.float64)
-    dr_jax = jnp.array(death_rates_arr, dtype=jnp.float64)
-    et_jax = jnp.array(times_arr, dtype=jnp.float64)
+    rng = root_rng(random_seed, "seeding")
 
-    base_rng = np.random.default_rng(random_seed)
-    attempts = max_retries if ensure_non_extinct else 0
-
-    for _attempt in range(attempts + 1):
-        if random_seed is None:
-            key = jax.random.key(int(np.random.default_rng().integers(0, 2**31 - 1)))
-        else:
-            key = jax.random.key(int(base_rng.integers(0, 2**31 - 1)))
-
-        final_state = _simulate_lifespans_core(
-            br_jax, dr_jax, et_jax, key, max_population
+    def attempt() -> SimulatedTree | None:
+        final_state = _run(
+            birth_rates_arr,
+            death_rates_arr,
+            times_arr,
+            jax_key(rng),
+            max_population,
+            caller="simulate_birth_death_lifespans",
         )
-
-        if bool(final_state.overflow):
-            msg = (
-                f"simulate_birth_death_lifespans: population exceeded "
-                f"max_population={max_population}."
-            )
-            raise RuntimeError(msg)
-
         n_born = int(final_state.n_born)
-        birth_times_np = np.asarray(final_state.birth_time_buf[:n_born])
-        death_times_np = np.asarray(final_state.death_time_buf[:n_born])
-        insert_uniforms_np = np.asarray(final_state.insert_unif_buf[:n_born])
-        birth_epochs_np = np.asarray(final_state.birth_epoch_buf[:n_born])
-        n_alive_at_birth_np = np.asarray(final_state.n_alive_at_birth_buf[:n_born])
-
-        survived_mask = ~np.isfinite(death_times_np) | (death_times_np > terminal_time)
-
-        if ensure_non_extinct and not survived_mask.any():
-            continue
-
-        records_df = _reconstruct_genealogy(
-            birth_times=birth_times_np,
-            death_times=death_times_np,
-            insert_uniforms=insert_uniforms_np,
-            birth_epochs=birth_epochs_np,
-            n_alive_at_birth=n_alive_at_birth_np,
+        death_times = np.asarray(final_state.death_time_buf[:n_born])
+        if ensure_non_extinct and not (death_times > terminal_time).any():
+            return None
+        records = _reconstruct_genealogy(
+            birth_times=np.asarray(final_state.birth_time_buf[:n_born]),
+            death_times=death_times,
+            insert_uniforms=np.asarray(final_state.insert_unif_buf[:n_born]),
+            birth_epochs=np.asarray(final_state.birth_epoch_buf[:n_born]),
+            n_alive_at_birth=np.asarray(final_state.n_alive_at_birth_buf[:n_born]),
+            terminal_time=terminal_time,
+        )
+        return SimulatedTree(
+            records=records,
+            birth_rate=PiecewiseConstant(birth_rates_arr, times_arr),
+            death_rate=PiecewiseConstant(death_rates_arr, times_arr),
             terminal_time=terminal_time,
         )
 
-        if not ensure_non_extinct or records_df["survived"].any():
-            return SimulatedProcess(
-                records=records_df,
-                birth_rates=birth_rates_arr,
-                death_rates=death_rates_arr,
-                epoch_end_times=times_arr,
-            )
-
-    msg = (
-        f"simulate_birth_death_lifespans: exhausted {attempts} retries "
-        "without producing a non-extinct population"
+    return retry_until_survival(
+        attempt,
+        ensure_non_extinct=ensure_non_extinct,
+        max_retries=max_retries,
+        name="simulate_birth_death_lifespans",
     )
-    raise RuntimeError(msg)

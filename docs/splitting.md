@@ -4,11 +4,15 @@
 
 This document describes the multilevel-splitting simulator in
 `src/bdsurv/splitting.py`, which samples trajectories of a birth-death process
-(any positive rates) that survive to time `T`. It keeps the
+(finite, non-negative rates, floats or piecewise constant / linear rate objects)
+that survive to time `T`. It keeps the
 particles alive at `T` and does not estimate the survival probability.
+Multilevel splitting goes back to Kahn and Harris (1951), and its RESTART variant
+to Villen-Altamirano and Villen-Altamirano (1991); see [References](#references).
 
 Unlike the contour-process method, this is an **approximate**, simulation-based
-sampler: it evolves an ensemble of particles under exact Gillespie dynamics
+sampler: it evolves an ensemble of particles under exact event-by-event dynamics
+(the forward kernel, `src/bdsurv/_forward.py`; see `docs/lifespans.md`)
 and periodically duplicates ("enriches") survivors to counteract the
 population's tendency to die out, rather than constructing a tree that is
 guaranteed to survive by design.
@@ -41,7 +45,7 @@ Write `Pr(t) = P(Z_t > 0)` for a single individual started at time 0, and
    single individual at time 0.
 4. **Each level `k = 1, ..., K`:**
    - **Evolve.** Every particle advances from `t_{k-1}` to `t_k` under exact
-     Gillespie dynamics (`_simulate_to_level`).
+     event-by-event dynamics (`_advance_particle`).
    - **Cull.** Particles with no live individual at `t_k` are dropped.
    - **Enrich.** Each survivor is cloned `R_{k+1}` times (none after the last
      level). If that exceeds `n_particles`, the ensemble is subsampled uniformly
@@ -86,8 +90,10 @@ example `Pr(t_1) = 1/2` gives `R_1 = 2`, and `R_2` is the smallest integer
 An attempt fails when no particle survives to `T`. It is then restarted from
 time 0, up to `max_restarts` attempts in total. By default
 `default_max_restarts` chooses the smallest `n` with `1 - p_fail^n >= 0.999`,
-where `p_fail = F_1` comes from the backward recursion
-`F_{K+1} = 0`, `F_i = (1 - r_i + r_i F_{i+1})^{R_i}` (each line survives interval
+where `p_fail = F_1` comes from the Galton-Watson backward recursion
+`F_{K+1} = 0`, `F_i = (1 - r_i + r_i F_{i+1})^{R_i}`, with `r_i` and `R_i` as above
+and `F_i` the probability that none of the `R_i` lines started at `t_{i-1}` is alive
+at `T` (each line survives interval
 `i` independently with probability `r_i`; the cap is ignored). Clones of one
 parent share its starting state, so their survival is positively correlated and
 the true failure probability can be higher (or sometimes lower) than `p_fail`.
@@ -115,7 +121,7 @@ exactly as given, with no band adjustment.
 ## Conditioned trajectories and genealogy
 
 Every particle carries its own individual-level event records
-(`_ParticleState.records`) and a population trace (`trace_times`,
+(`_ParticleState.forward`) and a population trace (`trace_times`,
 `trace_populations`). At the end of the run, up to
 `config.n_conditioned_trajectories` surviving particles are converted to
 `SimulatedTree` objects (`_particle_to_tree`) — the spine is the individual
@@ -125,45 +131,77 @@ elsewhere. Parent-child lineage across enrichment steps is recorded in
 
 ## Linear (time-varying) rates
 
-`simulate_linear_survival_splitting(LinearSplittingConfig(...))` runs the same
-algorithm for piecewise-constant or piecewise-linear rates.
+`simulate_survival_splitting(SplittingConfig(...))` runs the same algorithm for
+piecewise-constant or piecewise-linear rate objects, as well as for floats.
 Two ingredients change; the levels, replicates, enrichment and restarts are
 shared with the constant-rate code.
 
 - **Survival probability.** For one individual at time 0,
-  $\Pr(Z_t > 0) = 1 / (1 + I(t))$ with
+  $\Pr(Z_t > 0) = 1 / (1 + I(t))$ (Kendall (1948)), where $Z_t$ is the number
+  alive at $t$,
   $I(t) = \int_0^t \mu(s) e^{-\Gamma(s)}\,ds$ and
   $\Gamma(s) = \int_0^s (\lambda - \mu)$ (`bdpinf`'s $\mathcal W$
   formulation).
+  TODO(author): locator for the survival formula in Kendall (1948)
   $I$ is computed in log space by Gauss-Legendre quadrature on panels short
   enough that the exponent changes by at most a few units, so cases with
   $1/\Pr$ of order $10^{300}$ stay accurate.
-  This replaces the closed form in the level grid, `R_i` and the restart cap.
+  It drives the level grid, `R_i` and the restart cap; for constant rates the
+  closed form is used instead.
 - **Dynamics.** Within a segment where both rates are linear, the next event
-  among $n$ individuals solves $a s + b s^2/2 = E$ with
-  $a = n(\lambda + \mu)$, $b = n(\lambda' + \mu')$.
+  among $n$ individuals solves $a s + b s^2/2 = E$, where $s$ is the offset from
+  the current time $t$, $E \sim \mathrm{Exp}(1)$,
+  $a = n(\lambda(t) + \mu(t))$ and $b = n(\lambda' + \mu')$ ($\lambda'$ and
+  $\mu'$ are the slopes on the segment).
   An event beyond the segment end is discarded and redrawn from the boundary
   (exact, by independent increments).
   A birth has probability $\lambda(t) / (\lambda(t) + \mu(t))$.
 
+## Closed form and the mean number born
+
+For constant rates $\lambda$ and $\mu$ write $g = \lambda - \mu$, so
+$\Gamma(s) = g s$ and
+$$
+I(t) = \int_0^t \mu e^{-g s}\,ds = \frac{\mu\,(1 - e^{-g t})}{g},
+$$
+with $I(t) = \mu t$ in the critical case $g = 0$ (used when $|g| t < 10^{-10}$).
+The survival probability is $1 / (1 + I(t))$, and `log_survival_probability`
+evaluates its logarithm in a form that stays stable for large $t$.
+
+The mean cumulative number of individuals ever born by $t$, the root included,
+is
+$$
+1 + \int_0^t \lambda(s) e^{\Gamma(s)}\,ds,
+$$
+computed by the same log-space quadrature as $I(t)$ with weight $\lambda$ and
+the opposite sign of $\Gamma$ (`log_mean_cumulative_individuals`).
+
 ## Reproducibility and RNG
 
 A single master `np.random.default_rng(config.random_seed)` seeds every
-particle's own child `Generator` (`_make_child_rng`), including clones
+particle's own child `Generator` (`_seeding.spawn`), including clones
 created during enrichment, so a run is fully reproducible from
 `config.random_seed` alone.
 
 ## Usage
 
 ```python
-from bdsurv import SplittingConfig, simulate_subcritical_survival_splitting
+from bdsurv import SplittingConfig, simulate_survival_splitting
 
 config = SplittingConfig(
     birth_rate=0.9, death_rate=1.0, terminal_time=100.0, n_particles=1000
 )
-result = simulate_subcritical_survival_splitting(config)
+result = simulate_survival_splitting(config)
 print(len(result.conditioned_trajectories))
 ```
 
 See the function docstring in `src/bdsurv/splitting.py` for the full
 parameter and return-value reference.
+
+## References
+
+- Kahn and Harris (1951): multilevel splitting.
+- Villen-Altamirano and Villen-Altamirano (1991): the RESTART variant of splitting.
+- Kendall (1948): the survival probability $1 / (1 + I(t))$.
+
+The full entries are in [`docs/references.md`](references.md).

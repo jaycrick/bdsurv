@@ -6,6 +6,81 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-16
+
+This release unifies the public API: the pairs of functions and config classes
+that differed only in whether rates were floats or rate objects are merged, and
+the two result types become one.
+There are no aliases for the old names.
+
+### Changed (breaking)
+
+| Old | New |
+| --- | --- |
+| `simulate_birth_death_process(birth_rates, death_rates, times, ...)`, `simulate_birth_death_linear(birth, death, ...)` | `simulate_birth_death(birth_rate, death_rate, terminal_time=None, random_seed=None, *, ensure_non_extinct=False, max_retries=100)` with `RateInput` rates |
+| `simulate_birth_death_process_from_contour_process`, `simulate_linear_rate_contour_process` | `simulate_contour_given_survival(birth_rate, death_rate, terminal_time=None, random_seed=None)` |
+| `SplittingConfig`, `LinearSplittingConfig` | one `SplittingConfig(birth_rate, death_rate, n_particles, terminal_time=None, ...)`, keyword-only |
+| `simulate_subcritical_survival_splitting`, `simulate_linear_survival_splitting` | `simulate_survival_splitting(config)` |
+| `select_level_times_for_band`, `compute_level_replicates`, `default_max_restarts` (float rates) | same names, `RateInput` rates, and an optional `terminal_time` |
+| `SimulatedTree` (NaN rates and `*_function` fields), `SimulatedProcess` | one `SimulatedTree(records, birth_rate, death_rate, terminal_time)` whose rates are always rate objects (a float input is stored as a one-epoch `PiecewiseConstant`) |
+| `bdsurv._extinction.pr_extinction(birth_rate, death_rate, terminal_time)` | public `bdsurv.log_survival_probability(birth_rate, death_rate, t, terminal_time=None)`; the extinction probability is `-math.expm1(...)` of it |
+| modules `bdsurv.linear_rates`, `bdsurv.gillespie` | `bdsurv.rates` (the rate types), `bdsurv.forward` (`simulate_birth_death`) |
+
+Further changes of the same kind:
+
+- **Rates** follow one rule in `simulate_birth_death`, `simulate_contour_given_survival`,
+  `simulate_contour_given_population`, `simulate_contour_given_ages`,
+  `simulate_survival_splitting`, the three level helpers and `log_survival_probability`:
+  each rate is a float or a rate object, finite and non-negative (zero is allowed),
+  and `terminal_time` is required when both rates are floats and otherwise must be
+  `None` or equal to the rate objects' common end time.
+  A float rate of exactly zero used to be rejected by the float functions and is now
+  accepted.
+  `simulate_contour_given_survival` raises `ValueError` when the death rate is
+  identically zero, for float rates as before for rate objects.
+  `simulate_birth_death_lifespans`, `simulate_birth_death_lifespans_arrays`,
+  `sample_conditioned_survival_process` and
+  `sample_conditioned_survival_per_posterior` keep their per-epoch array arguments and
+  still require strictly positive rates.
+- **Keyword-only options.** `simulate_contour_given_population(birth_rate, death_rate,
+  n_alive, terminal_time=None, random_seed=None, *, direction="auto")` and
+  `simulate_contour_given_ages(birth_rate, death_rate, ages, terminal_time=None,
+  random_seed=None, *, spine_index=None, direction="auto")`: `direction` and
+  `spine_index` can no longer be passed positionally, and `random_seed` moved before
+  `spine_index` in the ages function.
+- **`SplittingConfig` is keyword-only** (`@dataclass(frozen=True, kw_only=True)`) and
+  its fields are `birth_rate`, `death_rate`, `n_particles`, `terminal_time=None`, then
+  `level_times`, `n_levels`, `random_seed`, `n_conditioned_trajectories`, `replicates`,
+  `max_restarts`.
+  The field order changed, so positional construction would swap `terminal_time` and
+  `n_particles`; it now raises `TypeError`.
+- **One result type.** Every simulator returns `SimulatedTree`, including
+  `simulate_birth_death_lifespans` (whose records keep the `birth_epoch` column).
+  Its `birth_rate` and `death_rate` are rate objects: a rate object given by the caller
+  is stored as given, a float as `PiecewiseConstant([value], [terminal_time])`, and the
+  per-epoch arrays of the lifespan simulator as `PiecewiseConstant(values,
+  epoch_end_times)`.
+  What `SimulatedProcess` carried is recovered as `tree.birth_rate.epoch_end_times`,
+  `tree.birth_rate.values`, `tree.death_rate.values` and `tree.terminal_time`
+  (`start_time` was always 0 and `initial_population` always 1).
+  `simulate_birth_death` with rate objects no longer returns the merged segment
+  boundaries as `epoch_end_times`; the rates themselves are stored.
+  `birth_rate_function` and `death_rate_function` are removed.
+
+### Changed
+
+- Seeded output differs from 0.4.0 for every simulator: child generators are now
+  spawned with `SeedSequence.spawn` (`bdsurv._seeding`).
+- `parent_id` and `death_time` are always `float64` (NaN for none) in every records
+  table, and every simulator builds its table through `bdsurv.tree.build_records`.
+- Invalid inputs such as NaN or infinite rates and times now raise `ValueError`
+  instead of being accepted or hanging.
+- `sample_conditioned_survival_per_posterior` validates its arguments up front and no
+  longer turns exceptions into warnings.
+- An inconsistent lifespan event stream raises instead of producing wrong genealogy.
+- Python 3.13 is the minimum version.
+- Plain `pytest` skips the slow statistical tests (`pytest -m slow` runs them).
+
 ### Added
 
 - `scripts/figure_export.py`: `save_chart` (Altair via vl-convert) writes a figure and
@@ -13,9 +88,64 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   deletes figures no manifest lists. The benchmark notebooks now save each chart they
   display as a PDF in `figures/benchmarks/` (git-ignored); `vl-convert-python` joins the
   `bench` dependency group.
-- `benchmarks/method_comparison.qmd`: a talk-sized cost-per-tree chart over death rate at
-  `T = 60` (saved as `mc_cost_by_mu_T60_talk.pdf`), with the splitting-to-contour cost
-  ratios at the largest `mu`.
+- `benchmarks/method_comparison.qmd`: a talk-sized random-draws-per-tree chart over death
+  rate at `T = 60` (saved as `mc_draws_by_mu_T60_talk.pdf`), with the splitting-to-contour
+  draw ratios at the largest `mu`.
+
+### Removed
+
+- `SimulatedProcess`, `LinearSplittingConfig`, and the functions in the table above
+  under their old names.
+- Modules `bdsurv.gillespie`, `bdsurv.linear_rates` and `bdsurv._extinction`.
+
+### Migrating `bdpinf`
+
+- `simulate_birth_death_process(b, d, times, ...)`: write
+  `simulate_birth_death(PiecewiseConstant(b, times), PiecewiseConstant(d, times), ...)`;
+  for scalar rates, `simulate_birth_death(b, d, terminal_time, ...)`.
+  The seeded output is that of the old function under the same seed.
+- `simulate_birth_death_lifespans(...)`: unchanged call; it returns `SimulatedTree`, so
+  replace `process.epoch_end_times` by `tree.birth_rate.epoch_end_times` (or
+  `tree.terminal_time`), `process.birth_rates` by `tree.birth_rate.values` and
+  `process.death_rates` by `tree.death_rate.values`.
+- `simulate_birth_death_linear(birth, death, ...)`: write
+  `simulate_birth_death(birth, death, ...)`.
+- `SplittingConfig(birth_rate, death_rate, terminal_time, n_particles, ...)`: write
+  `SplittingConfig(birth_rate=..., death_rate=..., terminal_time=..., n_particles=...,
+  ...)` with keywords only.
+  `LinearSplittingConfig(birth, death, n_particles=..., ...)` becomes
+  `SplittingConfig(birth_rate=birth, death_rate=death, n_particles=..., ...)`, with no
+  `terminal_time`.
+  `config.terminal_time` is `None` for rate objects; read `result.level_times[-1]` or a
+  tree's `terminal_time` instead.
+- Contour entry points: `simulate_birth_death_process_from_contour_process(b, d, T, ...)`
+  and `simulate_linear_rate_contour_process(birth, death, ...)` become
+  `simulate_contour_given_survival(b, d, T, ...)` and
+  `simulate_contour_given_survival(birth, death, ...)`.
+  `simulate_contour_given_population` and `simulate_contour_given_ages` keep their
+  names; pass `direction=` and `spine_index=` by keyword.
+- Splitting entry points: `simulate_subcritical_survival_splitting(config)` and
+  `simulate_linear_survival_splitting(config)` become `simulate_survival_splitting(config)`.
+- `SplittingSimulationResult`: unchanged apart from `config`, which is typed
+  `SplittingConfig`.
+  `select_level_times_for_band`, `compute_level_replicates` and `default_max_restarts`
+  keep their names and keyword arguments and also take rate objects.
+- `SimulatedTree`: read `tree.birth_rate` and `tree.death_rate` as rate objects instead
+  of floats (for a float input, `tree.birth_rate.values[0]`), and drop any use of
+  `birth_rate_function` and `death_rate_function` or of NaN rates.
+- `SimulatedProcess`: use `SimulatedTree`, which has `records`, `birth_rate`,
+  `death_rate` and `terminal_time`; see the lifespan item above for the removed fields.
+- `bdsurv._extinction.pr_extinction(b, d, T)`: write
+  `-math.expm1(bdsurv.log_survival_probability(b, d, T))`.
+  `log_survival_probability` also takes rate objects, and its result is the log of the
+  survival probability.
+- `build_target_ranges`: unchanged.
+- `ConstantRateLike`, `LinearRateLike` (and `PiecewiseConstant`, `PiecewiseLinear`):
+  import them from `bdsurv` or `bdsurv.rates`, no longer from `bdsurv.linear_rates`.
+- Submodules: `bdsurv.splitting`, `bdsurv.lifespans`, `bdsurv.tree` and
+  `bdsurv.era_conditioning` keep their paths and names, apart from the changes above;
+  `bdsurv.linear_rates` is replaced by `bdsurv.rates` and `bdsurv.gillespie` by
+  `bdsurv.forward`.
 
 ## [0.4.0] - 2026-11-11
 

@@ -35,21 +35,17 @@ Usage
 
 import argparse
 import math
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-for _name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
-    os.environ.setdefault(_name, "1")
-os.environ.setdefault("JAX_PLATFORMS", "cpu")
-
+import _bench_common as common
 import bench_arley_comparison as arley
 import bench_method_comparison as base
 import pandas as pd
 
-from bdsurv import count_draws
+from bdsurv import count_draws, log_survival_probability
 
 DEFAULT_REPLICATES = 50
 DEFAULT_SHARDS_DIR = base.ROOT / "benchmarks" / "_shards_draws"
@@ -83,8 +79,8 @@ def _constant_runs(
             if not base.cell_is_feasible(mu, terminal_time):
                 continue
             weight = (
-                -base._log_survival_probability(  # pyright: ignore[reportPrivateUsage]
-                    birth_rate=base.LAMBDA, death_rate=mu, time=terminal_time
+                -log_survival_probability(
+                    base.LAMBDA, mu, terminal_time, terminal_time=terminal_time
                 )
                 / LN10
             )
@@ -105,7 +101,7 @@ def _constant_runs(
                             base.replicate_seed(unit, r),
                             weight,
                             unit,
-                        )  # fmt: skip
+                        )
                     )
     return runs
 
@@ -132,7 +128,7 @@ def _arley_runs(
                         arley.replicate_seed(unit, r),
                         cell.arley_value,
                         unit,
-                    )  # fmt: skip
+                    )
                 )
     return runs
 
@@ -165,10 +161,9 @@ def build_runs(
 def count_run(run: Run) -> dict[str, Any]:
     """Run once under the counter and return identifying fields, sizes and counts."""
     module = arley if run.model == "arley" else base
-    runner = module._run_contour if run.method == "contour" else module._run_splitting  # pyright: ignore[reportPrivateUsage]
     start = time.perf_counter()
     with count_draws() as counts:
-        result = runner(run.unit, run.seed)
+        result = module.run_replicate(run.unit, run.seed)
     return {
         "model": run.model,
         "cell_set": run.cell_set,
@@ -185,39 +180,37 @@ def count_run(run: Run) -> dict[str, Any]:
     }
 
 
+def _describe(run: Run, rows: list[dict[str, Any]], _summary: Any) -> str:
+    return (
+        f"{run.model} {run.method} mu={run.mu:g} T={run.time:g} "
+        f"rep={run.replicate} draws={rows[0]['draws_total']}"
+    )
+
+
 def run_shard(runs: list[Run], shard: int, n_shards: int, out_dir: Path) -> None:
     """Count this shard's runs and write them."""
-    out_dir.mkdir(parents=True, exist_ok=True)
-    mine = [run for index, run in enumerate(runs) if index % n_shards == shard]
-    rows: list[dict[str, Any]] = []
-    for position, run in enumerate(mine, start=1):
-        rows.append(count_run(run))
-        print(
-            f"[{shard}/{n_shards}] {position}/{len(mine)} {run.model} {run.method} "
-            f"mu={run.mu:g} T={run.time:g} rep={run.replicate} "
-            f"draws={rows[-1]['draws_total']}",
-            flush=True,
-        )
-    pd.DataFrame(rows).to_csv(out_dir / f"draws_rows_{shard}.csv", index=False)
+    common.run_shard(
+        runs,
+        shard,
+        n_shards,
+        out_dir,
+        lambda run, _host: ([count_run(run)], None),
+        common.ShardFiles("draws_", _describe, summaries=False),
+    )
 
 
 def merge_shards(shards_dir: Path, data_dir: Path) -> pd.DataFrame:
     """Concatenate shard files into ``draws.csv`` and return the rows."""
-    files = sorted(shards_dir.glob("draws_rows_*.csv"))
-    if not files:
-        msg = f"No shard files found in {shards_dir}"
-        raise FileNotFoundError(msg)
-    rows = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
-    rows = rows.sort_values(["model", "cell_set", "method", "mu", "T", "replicate"])
-    data_dir.mkdir(parents=True, exist_ok=True)
-    rows.to_csv(data_dir / OUT_FILE, index=False)
-    return rows
+    spec = common.MergeSpec(
+        "draws_", ["model", "cell_set", "method", "mu", "T", "replicate"], OUT_FILE
+    )
+    return common.merge_shards(shards_dir, data_dir, spec)
 
 
 def main(argv: list[str] | None = None) -> None:
     """Count draws for one shard, merge shard files, or (default) do both."""
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
-    parser.add_argument("--shard", type=base._parse_shard, help="run shard i/N only")  # pyright: ignore[reportPrivateUsage]
+    parser.add_argument("--shard", type=common.parse_shard, help="run shard i/N only")
     parser.add_argument("--merge", action="store_true", help="merge shard files")
     parser.add_argument("--quick", action="store_true", help="tiny grids for a draft")
     parser.add_argument("--replicates", type=int, default=DEFAULT_REPLICATES)

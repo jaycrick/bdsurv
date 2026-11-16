@@ -8,14 +8,12 @@ import pytest
 from bdsurv.era_conditioning import (
     _clone_particle,  # pyright: ignore[reportPrivateUsage]
     _count_era_survivors,  # pyright: ignore[reportPrivateUsage]
-    _EraLoopState,  # pyright: ignore[reportPrivateUsage]
     _extract_sample,  # pyright: ignore[reportPrivateUsage]
-    _make_initial_particle,  # pyright: ignore[reportPrivateUsage]
-    _simulate_era_core,  # pyright: ignore[reportPrivateUsage]
     build_target_ranges,
     sample_conditioned_survival_per_posterior,
     sample_conditioned_survival_process,
 )
+from bdsurv.lifespans import LoopState, advance_era, initial_state
 
 _SEED = 7
 _MAX_POP = 1_000  # small for fast unit tests
@@ -26,13 +24,13 @@ def _tiny_initial(
     epoch_end_times: jax.Array | None = None,
     death_rates: jax.Array | None = None,
     max_population: int = _MAX_POP,
-) -> _EraLoopState:
+) -> LoopState:
     """Make a tiny initial particle with one alive individual."""
     if epoch_end_times is None:
         epoch_end_times = jnp.array([10.0, 50.0], dtype=jnp.float64)
     if death_rates is None:
         death_rates = jnp.array([0.01, 0.01], dtype=jnp.float64)
-    return _make_initial_particle(death_rates, epoch_end_times, key, max_population)
+    return initial_state(death_rates, epoch_end_times, key, max_population)
 
 
 class TestBuildTargetRanges:
@@ -77,15 +75,15 @@ class TestBuildTargetRanges:
         assert ranges[0, 1] == 2**31 - 1
 
 
-class TestSimulaEraCore:
-    """Test _simulate_era_core per-era JIT event loop."""
+class TestAdvanceEraInConditioning:
+    """Test advance_era as the per-era event loop used by the sampler."""
 
     def test_time_advances_to_segment_end(self) -> None:
         key = jax.random.key(_SEED)
         et = jnp.array([10.0, 50.0], dtype=jnp.float64)
         dr = jnp.array([0.01, 0.01], dtype=jnp.float64)
         state = _tiny_initial(key, et, dr)
-        out = _simulate_era_core(
+        out = advance_era(
             jnp.float64(0.2), dr, et, jnp.int32(0), et[0], state, _MAX_POP
         )
         assert float(out.current_time) == pytest.approx(10.0)
@@ -95,7 +93,7 @@ class TestSimulaEraCore:
         et = jnp.array([20.0, 100.0], dtype=jnp.float64)
         dr = jnp.array([0.01, 0.01], dtype=jnp.float64)
         state = _tiny_initial(key, et, dr)
-        out = _simulate_era_core(
+        out = advance_era(
             jnp.float64(0.3), dr, et, jnp.int32(0), et[0], state, _MAX_POP
         )
         assert int(out.n_born) >= 1
@@ -107,12 +105,12 @@ class TestSimulaEraCore:
         dr = jnp.array([0.01, 0.01], dtype=jnp.float64)
         state = _tiny_initial(key, et, dr)
         # First run era 0
-        state0 = _simulate_era_core(
+        state0 = advance_era(
             jnp.float64(0.5), dr, et, jnp.int32(0), et[0], state, _MAX_POP
         )
         n0 = int(state0.n_born)
         # Run era 1
-        state1 = _simulate_era_core(
+        state1 = advance_era(
             jnp.float64(0.5), dr, et, jnp.int32(1), et[1], state0, _MAX_POP
         )
         n1 = int(state1.n_born)
@@ -128,7 +126,7 @@ class TestSimulaEraCore:
         et = jnp.array([200.0, 500.0], dtype=jnp.float64)
         dr = jnp.array([0.001, 0.001], dtype=jnp.float64)
         state = _tiny_initial(key, et, dr, max_population=tiny_max)
-        out = _simulate_era_core(
+        out = advance_era(
             jnp.float64(2.0),  # very high birth rate
             dr,
             et,
@@ -146,11 +144,11 @@ class TestSimulaEraCore:
         et = jnp.array([5.0, 50.0], dtype=jnp.float64)
         dr = jnp.array([0.005, 0.005], dtype=jnp.float64)
         state = _tiny_initial(key, et, dr)
-        state0 = _simulate_era_core(
+        state0 = advance_era(
             jnp.float64(0.1), dr, et, jnp.int32(0), et[0], state, _MAX_POP
         )
         death_after_era0 = np.asarray(state0.death_time_buf[0])
-        state1 = _simulate_era_core(
+        state1 = advance_era(
             jnp.float64(0.1), dr, et, jnp.int32(1), et[1], state0, _MAX_POP
         )
         death_after_era1 = np.asarray(state1.death_time_buf[0])
@@ -168,7 +166,7 @@ class TestCountEraSurvivors:
         # Very low death rate: root almost certainly survives
         dr = jnp.array([1e-9, 1e-9], dtype=jnp.float64)
         state = _tiny_initial(key, et, dr)
-        state0 = _simulate_era_core(
+        state0 = advance_era(
             jnp.float64(0.1), dr, et, jnp.int32(0), et[0], state, _MAX_POP
         )
         count = _count_era_survivors(state0, 0, float(et[-1]))
@@ -183,7 +181,7 @@ class TestCountEraSurvivors:
             et = jnp.array([50.0, 200.0], dtype=jnp.float64)
             dr = jnp.array([0.5, 0.5], dtype=jnp.float64)
             state = _tiny_initial(key, et, dr)
-            state0 = _simulate_era_core(
+            state0 = advance_era(
                 jnp.float64(0.01), dr, et, jnp.int32(0), et[0], state, _MAX_POP
             )
             counts.append(_count_era_survivors(state0, 0, float(et[-1])))
@@ -216,12 +214,8 @@ class TestCloneParticle:
         k1, k2 = jax.random.split(jax.random.key(99), 2)
         c1 = _clone_particle(state, k1)
         c2 = _clone_particle(state, k2)
-        out1 = _simulate_era_core(
-            jnp.float64(0.3), dr, et, jnp.int32(0), et[0], c1, _MAX_POP
-        )
-        out2 = _simulate_era_core(
-            jnp.float64(0.3), dr, et, jnp.int32(0), et[0], c2, _MAX_POP
-        )
+        out1 = advance_era(jnp.float64(0.3), dr, et, jnp.int32(0), et[0], c1, _MAX_POP)
+        out2 = advance_era(jnp.float64(0.3), dr, et, jnp.int32(0), et[0], c2, _MAX_POP)
         # With probability approaching 1, outcomes differ (different PRNG paths)
         # We just check the outputs are valid and n_born >= 1
         assert int(out1.n_born) >= 1
@@ -236,10 +230,10 @@ class TestExtractSample:
         et = jnp.array([10.0, 50.0], dtype=jnp.float64)
         dr = jnp.array([1e-9, 1e-9], dtype=jnp.float64)
         state = _tiny_initial(key, et, dr)
-        state0 = _simulate_era_core(
+        state0 = advance_era(
             jnp.float64(0.1), dr, et, jnp.int32(0), et[0], state, _MAX_POP
         )
-        state1 = _simulate_era_core(
+        state1 = advance_era(
             jnp.float64(0.1), dr, et, jnp.int32(1), et[1], state0, _MAX_POP
         )
         sample = _extract_sample(state1, 2, float(et[-1]))
@@ -458,6 +452,37 @@ class TestSampleConditionedSurvivalPerPosterior:
                 max_population=_MAX_POP,
             )
 
+    def test_unmatched_draw_is_flagged_not_raised(self) -> None:
+        impossible = np.array([[999_999, 999_999], [0, 2**31 - 1]], dtype=np.intp)
+        br, dr = self._make_posterior(2)
+        with pytest.warns(RuntimeWarning, match="max_attempts"):
+            df = sample_conditioned_survival_per_posterior(
+                br,
+                dr,
+                [10.0, 50.0],
+                impossible,
+                split_factor=2,
+                n_initial=3,
+                max_attempts=3,
+                random_seed=_SEED,
+                max_population=_MAX_POP,
+            )
+        assert len(df) == 2, "one row per draw"
+        assert not df["matched"].any(), "no draw can match an impossible range"
+
+    def test_unexpected_error_propagates(self) -> None:
+        """A single epoch is rejected by the sampler; the wrapper must not hide it."""
+        with pytest.raises(ValueError, match="At least 2 epochs"):
+            sample_conditioned_survival_per_posterior(
+                np.full((2, 1), 0.2),
+                np.full((2, 1), 0.01),
+                [50.0],
+                np.array([[0, 2**31 - 1]], dtype=np.intp),
+                split_factor=2,
+                n_initial=2,
+                max_population=_MAX_POP,
+            )
+
 
 @pytest.mark.slow
 class TestConditionedSurvivalRecovery:
@@ -536,7 +561,7 @@ class TestConditionedSurvivalRecovery:
         # of the unconditional forward proportion (within a factor of 5)
         assert conditioned_mean > 0.0, "Conditioned proportion is zero"
         assert conditioned_mean <= 1.0, "Conditioned proportion exceeds 1"
-        # Rough plausibility: not off by more than 10×
+        # Rough plausibility: not off by more than 10x
         ratio = max(conditioned_mean, forward_mean_prop) / max(
             min(conditioned_mean, forward_mean_prop), 1e-9
         )

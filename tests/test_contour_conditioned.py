@@ -10,27 +10,21 @@ import pytest
 from scipy import stats
 from scipy.integrate import quad
 
-from bdsurv import _linear_math as lm
-from bdsurv.contour import _seeded_rng, _validate_contour_process_list
+from bdsurv import _hazard as lm
+from bdsurv._seeding import root_rng
+from bdsurv.contour import Walker, join_pieces, validate_contour_process_list
 from bdsurv.contour_conditioned import (
     _ages_contour,
     _cut_at_last_downcrossing,
-    _join_pieces,
     _log_spine_weights,
     _log_survival_pair,
     _population_contour,
     _prefer_top,
-    _resolve_rates,
-    _Walker,
     simulate_contour_given_ages,
     simulate_contour_given_population,
 )
-from bdsurv.gillespie import simulate_birth_death_process
-from bdsurv.linear_rates import (
-    PiecewiseConstant,
-    PiecewiseLinear,
-    simulate_birth_death_linear,
-)
+from bdsurv.forward import simulate_birth_death
+from bdsurv.rates import PiecewiseConstant, PiecewiseLinear, as_rate, resolve_rates
 
 T = 4.0
 N_SEEDS = 200
@@ -78,8 +72,8 @@ def _tree(regime: str, n: int, seed: int, direction: str = "auto") -> Any:
 
 def _contour(regime: str, n: int, seed: int, direction: str) -> list[float]:
     birth, death = REGIMES[regime]
-    rates = _resolve_rates(birth, death, _terminal_time(birth))
-    walker = _Walker(rates.birth, rates.death, rates.terminal_time, _seeded_rng(seed))
+    rate_b, rate_d, horizon = resolve_rates(birth, death, _terminal_time(birth))
+    walker = Walker(rate_b, rate_d, horizon, root_rng(seed, "contour"))
     return _population_contour(walker, n, prefer_top=direction == "top")
 
 
@@ -93,8 +87,8 @@ class _FakeRng:
         return next(self._draws, 0.5)
 
 
-def _walker(rng: Any, birth: float = 1.0, death: float = 1.0) -> _Walker:
-    return _Walker(lm.as_rate(_const(birth)), lm.as_rate(_const(death)), T, rng)
+def _walker(rng: Any, birth: float = 1.0, death: float = 1.0) -> Walker:
+    return Walker(as_rate(_const(birth)), as_rate(_const(death)), T, rng)
 
 
 class TestJoinPieces:
@@ -102,12 +96,12 @@ class TestJoinPieces:
         first = [0.0, 3.5, 3.0, 4.0]  # reversed (4, 3, 3.5, 0)
         tt = [[4.0, 2.5, 4.0]]
         last = [4.0, 2.0, 3.3, 0.0]
-        assert _join_pieces(first, tt, last) == [
+        assert join_pieces(first, tt, last) == [
             0.0, 3.5, 3.0, 4.0, 2.5, 4.0, 2.0, 3.3, 0.0,
         ]  # fmt: skip
 
     def test_no_excursions(self) -> None:
-        assert _join_pieces([0.0, 4.0], [], [4.0, 1.0, 2.0, 0.0]) == [
+        assert join_pieces([0.0, 4.0], [], [4.0, 1.0, 2.0, 0.0]) == [
             0.0, 4.0, 1.0, 2.0, 0.0,
         ]  # fmt: skip
 
@@ -119,7 +113,7 @@ class TestContourValidity:
     def test_contour_structure(self, regime: str, direction: str, n: int) -> None:
         for seed in range(N_SEEDS):
             contour = _contour(regime, n, seed, direction)
-            _validate_contour_process_list(contour)
+            validate_contour_process_list(contour)
             assert all(x != y for x, y in pairwise(contour))
             assert contour[0] == 0.0
             assert contour[-1] == 0.0
@@ -164,14 +158,11 @@ class TestTreeValidity:
 
     def test_rates_stored(self) -> None:
         tree = _tree("subcritical", 2, 0)
-        assert (tree.birth_rate, tree.death_rate) == (0.8, 1.1)
-        assert tree.birth_rate_function is None
-        assert tree.death_rate_function is None
+        assert tree.birth_rate == PiecewiseConstant([0.8], [T])
+        assert tree.death_rate == PiecewiseConstant([1.1], [T])
         tree = _tree("arley", 2, 0)
-        assert np.isnan(tree.birth_rate)
-        assert np.isnan(tree.death_rate)
-        assert tree.birth_rate_function is ARLEY[0]
-        assert tree.death_rate_function is ARLEY[1]
+        assert tree.birth_rate is ARLEY[0]
+        assert tree.death_rate is ARLEY[1]
         assert tree.terminal_time == T
 
     def test_terminal_time_given_for_rate_likes(self) -> None:
@@ -179,12 +170,12 @@ class TestTreeValidity:
         assert tree.terminal_time == T
 
     def test_direction_rule(self) -> None:
-        birth, death = (lm.as_rate(r) for r in ARLEY)
+        birth, death = (as_rate(r) for r in ARLEY)
         fwd, rev = _log_survival_pair(birth, death, T)
         assert (rev > fwd) == _prefer_top(birth, death, T, "auto")
         growth = float(lm.cumulative(birth, T) - lm.cumulative(death, T))
         assert rev - fwd == pytest.approx(-growth)
-        critical = (lm.as_rate(_const(1.0)),) * 2
+        critical = (as_rate(_const(1.0)),) * 2
         assert not _prefer_top(*critical, T, "auto")  # tie -> bottom
 
     def test_zero_death_rate(self) -> None:
@@ -295,7 +286,7 @@ class TestInputErrors:
             simulate_contour_given_population(-1.0, 1.0, 1, T)
 
 
-# ---------------------------------------------------------------- ALG2 (T2)
+# Contours given the ages of the survivors.
 
 AGE_SETS: tuple[tuple[float, ...], ...] = (
     (1.5,),
@@ -333,8 +324,8 @@ def _ages_contour_of(
     spine_index: int | None = None,
 ) -> tuple[list[float], int]:
     birth, death = REGIMES[regime]
-    rates = _resolve_rates(birth, death, _terminal_time(birth))
-    walker = _Walker(rates.birth, rates.death, rates.terminal_time, _seeded_rng(seed))
+    rate_b, rate_d, horizon = resolve_rates(birth, death, _terminal_time(birth))
+    walker = Walker(rate_b, rate_d, horizon, root_rng(seed, "contour"))
     return _ages_contour(walker, ages, spine_index, prefer_top=direction == "top")
 
 
@@ -392,7 +383,7 @@ class TestAgesStructure:
     ) -> None:
         for seed in range(N_SEEDS):
             contour, _ = _ages_contour_of(regime, ages, seed, direction)
-            _validate_contour_process_list(contour)
+            validate_contour_process_list(contour)
             assert all(x != y for x, y in pairwise(contour))
             assert contour[0] == 0.0
             assert contour[-1] == 0.0
@@ -425,10 +416,10 @@ class TestAgesStructure:
 
     def test_rates_stored(self) -> None:
         tree = _ages_tree("subcritical", (1.0, 2.0), 0)
-        assert (tree.birth_rate, tree.death_rate) == (0.8, 1.1)
+        assert tree.birth_rate == PiecewiseConstant([0.8], [T])
+        assert tree.death_rate == PiecewiseConstant([1.1], [T])
         tree = _ages_tree("arley", (1.0, 2.0), 0)
-        assert np.isnan(tree.birth_rate)
-        assert tree.birth_rate_function is ARLEY[0]
+        assert tree.birth_rate is ARLEY[0]
         assert tree.terminal_time == T
 
 
@@ -464,7 +455,7 @@ def _quad_log_weights(regime: str, ages: tuple[float, ...]) -> np.ndarray:
     birth, death = REGIMES[regime]
     b_like = _const(birth) if isinstance(birth, float) else birth
     d_like = _const(death) if isinstance(death, float) else death
-    b, d = lm.as_rate(b_like), lm.as_rate(d_like)
+    b, d = as_rate(b_like), as_rate(d_like)
 
     def integral(t: float) -> float:
         def f(s: float) -> float:
@@ -486,24 +477,24 @@ class TestLogSpineWeights:
     @pytest.mark.parametrize("regime", ["subcritical", "supercritical", "arley"])
     def test_against_quad(self, regime: str) -> None:
         birth, death = REGIMES[regime]
-        rates = _resolve_rates(birth, death, _terminal_time(birth))
+        rate_b, rate_d, _ = resolve_rates(birth, death, _terminal_time(birth))
         ages = (0.3, 1.0, 2.5, 3.9, T)
-        got = _log_spine_weights(rates.birth, rates.death, T, ages)
+        got = _log_spine_weights(rate_b, rate_d, T, ages)
         assert got == pytest.approx(_quad_log_weights(regime, ages), rel=1e-7)
 
     def test_age_close_to_terminal_time_is_zero_level(self) -> None:
-        rates = _resolve_rates(1.2, 0.7, T)
-        exact = _log_spine_weights(rates.birth, rates.death, T, (T,))
-        near = _log_spine_weights(rates.birth, rates.death, T, (T - 1e-13,))
+        rate_b, rate_d, _ = resolve_rates(1.2, 0.7, T)
+        exact = _log_spine_weights(rate_b, rate_d, T, (T,))
+        near = _log_spine_weights(rate_b, rate_d, T, (T - 1e-13,))
         assert near == pytest.approx(exact)
 
     def test_zero_death_rate_gives_minus_inf(self) -> None:
-        rates = _resolve_rates(1.0, 0.0, T)
-        got = _log_spine_weights(rates.birth, rates.death, T, (1.0, 2.0))
+        rate_b, rate_d, _ = resolve_rates(1.0, 0.0, T)
+        got = _log_spine_weights(rate_b, rate_d, T, (1.0, 2.0))
         assert np.all(got == -np.inf)
 
     @regimes
-    def test_forced_spine_for_age_T(self, regime: str) -> None:
+    def test_forced_spine_for_age_terminal(self, regime: str) -> None:
         ages = (1.0, T, 2.0)
         for seed in range(50):
             _, index = _ages_contour_of(regime, ages, seed, "bottom")
@@ -528,11 +519,11 @@ class TestAgesInputErrors:
         with pytest.raises(ValueError, match="ages must lie"):
             simulate_contour_given_ages(1.0, 1.0, [1.0, bad], T)
 
-    def test_two_ages_at_T(self) -> None:
+    def test_two_ages_at_terminal(self) -> None:
         with pytest.raises(ValueError, match="at most one age"):
             simulate_contour_given_ages(1.0, 1.0, [T, T - 1e-12], T)
 
-    def test_spine_index_elsewhere_than_age_T(self) -> None:
+    def test_spine_index_elsewhere_than_age_terminal(self) -> None:
         with pytest.raises(ValueError, match="must point to it"):
             simulate_contour_given_ages(1.0, 1.0, [1.0, T], T, spine_index=0)
 
@@ -558,7 +549,7 @@ class TestAgesInputErrors:
         with pytest.raises(ValueError, match="birth_rate must not be identically"):
             simulate_contour_given_ages(birth, _const(1.0), [1.0], tt)
 
-    def test_zero_birth_rate_with_age_T_is_fine(self) -> None:
+    def test_zero_birth_rate_with_age_terminal_is_fine(self) -> None:
         tree = simulate_contour_given_ages(0.0, 1.0, [T], T, random_seed=0)
         assert len(tree.records) == 1
 
@@ -635,18 +626,17 @@ class TestSurvivalReversalIdentity:
         ids=["const_sub", "const_super", "linear_birth", "arley", "multi_segment"],
     )
     def test_matches_explicit_reversal(self, rates: tuple[Any, Any]) -> None:
-        birth, death = (lm.as_rate(r) for r in rates)
+        birth, death = (as_rate(r) for r in rates)
         _, log_s_rev = _log_survival_pair(birth, death, T)
-        rev_birth = lm.as_rate(_reverse_rate(rates[1], T))
-        rev_death = lm.as_rate(_reverse_rate(rates[0], T))
+        rev_birth = as_rate(_reverse_rate(rates[1], T))
+        rev_death = as_rate(_reverse_rate(rates[0], T))
         expected = lm.log_survival_probability(rev_birth, rev_death, T)
         assert log_s_rev == pytest.approx(expected, rel=1e-9, abs=1e-10)
 
 
 def _forward_run(birth: Any, death: Any, horizon: float, seed: int) -> Any:
-    if isinstance(birth, float):
-        return simulate_birth_death_process(birth, death, horizon, random_seed=seed)
-    return simulate_birth_death_linear(birth, death, random_seed=seed)
+    terminal_time = horizon if isinstance(birth, float) else None
+    return simulate_birth_death(birth, death, terminal_time, random_seed=seed)
 
 
 def _tree_summary(records: pd.DataFrame, horizon: float) -> tuple[int, list[float]]:
@@ -715,7 +705,10 @@ class TestAgainstRejection:
             a = [x for s in reference for x in pick(s)]
             b = [x for s in draws for x in pick(s)]
             p = stats.ks_2samp(a, b).pvalue
-            assert p > ALPHA, (case, n, name, p, np.mean(a), np.mean(b))
+            assert p > ALPHA, (
+                f"two-sample KS test of {name} ({case}, n={n}): p-value {p:.3g} "
+                f"<= threshold {ALPHA} (means {np.mean(a):.4g} vs {np.mean(b):.4g})"
+            )
 
 
 @pytest.mark.slow
@@ -736,7 +729,11 @@ class TestDirectionEquivalence:
         for transform in (lambda x: x, lambda x: x - n):  # total, extinct
             a = [transform(x) for x in sizes["top"]]
             b = [transform(x) for x in sizes["bottom"]]
-            assert stats.ks_2samp(a, b).pvalue > ALPHA, (regime, n)
+            p = stats.ks_2samp(a, b).pvalue
+            assert p > ALPHA, (
+                f"two-sample KS test of top vs bottom sizes ({regime}, n={n}): "
+                f"p-value {p:.3g} <= threshold {ALPHA}"
+            )
 
     @pytest.mark.parametrize("regime", ["subcritical", "supercritical", "arley"])
     @pytest.mark.parametrize(
@@ -760,7 +757,11 @@ class TestDirectionEquivalence:
         for transform in (lambda x: x, lambda x: x - n):
             a = [transform(x) for x in sizes["top"]]
             b = [transform(x) for x in sizes["bottom"]]
-            assert stats.ks_2samp(a, b).pvalue > ALPHA, (regime, ages, spine_index)
+            p = stats.ks_2samp(a, b).pvalue
+            assert p > ALPHA, (
+                f"two-sample KS test of top vs bottom sizes ({regime}, ages={ages}, "
+                f"spine_index={spine_index}): p-value {p:.3g} <= threshold {ALPHA}"
+            )
 
 
 @pytest.mark.slow
@@ -780,7 +781,11 @@ class TestComposition:
         reference = [
             len(_tree(regime, n, 2 * 10**5 + i).records) for i in range(n_draws)
         ]
-        assert stats.ks_2samp(composed, reference).pvalue > ALPHA, (regime, n)
+        p = stats.ks_2samp(composed, reference).pvalue
+        assert p > ALPHA, (
+            f"two-sample KS test of composed vs reference total sizes "
+            f"({regime}, n={n}): p-value {p:.3g} <= threshold {ALPHA}"
+        )
 
 
 @pytest.mark.slow
@@ -792,13 +797,17 @@ class TestSpineChoiceFrequency:
     def test_frequency(self, regime: str, ages: tuple[float, ...]) -> None:
         n_draws = 4000
         birth, death = REGIMES[regime]
-        rates = _resolve_rates(birth, death, _terminal_time(birth))
-        log_w = _log_spine_weights(rates.birth, rates.death, T, ages)
+        rate_b, rate_d, _ = resolve_rates(birth, death, _terminal_time(birth))
+        log_w = _log_spine_weights(rate_b, rate_d, T, ages)
         probs = np.exp(log_w - np.logaddexp.reduce(log_w))
         picks = [_ages_contour_of(regime, ages, i, "auto")[1] for i in range(n_draws)]
         hits = sum(1 for k in picks if k == 0)
         result = stats.binomtest(hits, n_draws, float(probs[0]))
-        assert result.pvalue > ALPHA, (regime, ages, hits / n_draws, probs[0])
+        assert result.pvalue > ALPHA, (
+            f"binomial test of spine choice ({regime}, ages={ages}): p-value "
+            f"{result.pvalue:.3g} <= threshold {ALPHA} "
+            f"(observed {hits / n_draws:.4g} vs expected {probs[0]:.4g})"
+        )
 
 
 def _spine_law(regime: str, n_grid: int = 4001) -> tuple[np.ndarray, np.ndarray, float]:
@@ -806,7 +815,7 @@ def _spine_law(regime: str, n_grid: int = 4001) -> tuple[np.ndarray, np.ndarray,
     birth, death = REGIMES[regime]
     b_like = _const(birth) if isinstance(birth, float) else birth
     d_like = _const(death) if isinstance(death, float) else death
-    b, d = lm.as_rate(b_like), lm.as_rate(d_like)
+    b, d = as_rate(b_like), as_rate(d_like)
 
     def mu_term(s: float) -> float:
         gam = float(lm.cumulative(b, s) - lm.cumulative(d, s))
@@ -815,7 +824,7 @@ def _spine_law(regime: str, n_grid: int = 4001) -> tuple[np.ndarray, np.ndarray,
     grid = np.linspace(0.0, T, n_grid)
     pieces = [
         quad(mu_term, x0, x1, epsabs=1e-13, epsrel=1e-13)[0]
-        for x0, x1 in zip(grid[:-1], grid[1:], strict=True)
+        for x0, x1 in pairwise(grid)
     ]
     i_of = np.concatenate([[0.0], np.cumsum(pieces)])
     u = (1.0 + i_of) / (1.0 + i_of[-1])
@@ -845,12 +854,43 @@ class TestSpineAgeLaw:
         spine_ages = np.array([_spine_age(_tree(regime, n, i)) for i in range(n_draws)])
         ages_grid, cdf_a, atom = _spine_law(regime)
         at_top = spine_ages >= T - 1e-9
-        assert stats.binomtest(int(at_top.sum()), n_draws, atom).pvalue > ALPHA, (
-            regime,
-            n,
-            at_top.mean(),
-            atom,
+        atom_test = stats.binomtest(int(at_top.sum()), n_draws, atom)
+        assert atom_test.pvalue > ALPHA, (
+            f"binomial test of the spine atom at T ({regime}, n={n}): p-value "
+            f"{atom_test.pvalue:.3g} <= threshold {ALPHA} "
+            f"(observed {at_top.mean():.4g} vs expected {atom:.4g})"
         )
         continuous = spine_ages[~at_top]
         result = stats.kstest(continuous, lambda x: np.interp(x, ages_grid, cdf_a))
-        assert result.pvalue > ALPHA, (regime, n, result.pvalue)
+        assert result.pvalue > ALPHA, (
+            f"KS test of the continuous spine age law ({regime}, n={n}): "
+            f"p-value {result.pvalue:.3g} <= threshold {ALPHA}"
+        )
+
+
+class TestKeywordOnlyOptions:
+    """``direction`` and ``spine_index`` cannot be passed positionally."""
+
+    def test_population_direction_is_keyword_only(self) -> None:
+        with pytest.raises(TypeError):
+            simulate_contour_given_population(1.0, 1.0, 2, T, 0, "top")
+        tree = simulate_contour_given_population(1.0, 1.0, 2, T, 0, direction="top")
+        assert tree.terminal_time == T
+
+    def test_ages_options_are_keyword_only(self) -> None:
+        with pytest.raises(TypeError):
+            simulate_contour_given_ages(1.0, 1.0, [1.0, 2.0], T, 0, 0)
+        with pytest.raises(TypeError):
+            simulate_contour_given_ages(
+                1.0,
+                1.0,
+                [1.0, 2.0],
+                T,
+                0,
+                None,
+                "top",
+            )
+        tree = simulate_contour_given_ages(
+            1.0, 1.0, [1.0, 2.0], T, 0, spine_index=0, direction="top"
+        )
+        assert tree.terminal_time == T
