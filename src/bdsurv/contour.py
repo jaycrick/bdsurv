@@ -1,10 +1,11 @@
 """Simulate a survival-conditioned birth-death tree via contour-process reconstruction.
 
-This is the "exact" method: the contour (Lukasiewicz-style exploration path)
-of a tree conditioned to survive to a terminal time ``T`` is generated
-directly, then decoded back into an individual-level genealogy via a
-two-stack reconstruction. See ``docs/contour_process.md`` for the full
-derivation.
+This is the "exact" method: the contour of a tree conditioned to survive to a
+terminal time ``T`` is generated directly, then decoded back into an
+individual-level genealogy via a two-stack reconstruction.
+See ``docs/contour_process.md`` for the construction and the reconstruction.
+Lambert (2010) is the standard reference for contour processes of splitting
+trees; see ``docs/references.md``.
 
 The contour alternates downward jumps (driven by the birth rate) and upward
 jumps (driven by the death rate) between ``0`` and ``T``.
@@ -66,6 +67,8 @@ class Walker:
 
     def down(self, x: float) -> float:
         """Return the next level below ``x``, snapped to ``0`` when close."""
+        # The level s < x with int_s^x lambda = E, E ~ Exp(1) (``docs/
+        # contour_conditioned.md``, section "Steps").
         while True:
             s = backward_hazard_time(self.birth, x, float(self.rng.exponential()))
             if close(s, 0.0):
@@ -75,6 +78,8 @@ class Walker:
 
     def up(self, y: float) -> float:
         """Return the next level above ``y``, snapped to ``T`` when close."""
+        # The level s > y with int_y^s mu = E, E ~ Exp(1) (``docs/
+        # contour_conditioned.md``, section "Steps").
         while True:
             s = forward_hazard_time(
                 self.death, y, float(self.rng.exponential()), self.terminal_time
@@ -165,8 +170,9 @@ def _survival_contour(walker: Walker) -> list[float]:
     """Generate the contour of a tree conditioned to survive to ``T``.
 
     The spine piece is the reversed first top excursion that ends at ``0``;
-    an excursion from ``T`` that returns to ``T`` first is rejected (this is
-    the reset rule of the spine) and the next one starts afresh from ``T``.
+    an excursion from ``T`` that returns to ``T`` first is rejected (the spine
+    restarts from ``T``; ``docs/contour_process.md``, section "Concepts") and the
+    next one starts afresh from ``T``.
     Further top excursions are then drawn; each one ending at ``T`` is another
     individual alive at ``T`` and is kept, and the first one ending at ``0`` is
     the last piece.
@@ -335,15 +341,18 @@ def simulate_contour_given_survival(
     The contour of the tree is generated directly by excursions of the
     :class:`Walker` between the levels ``0`` and ``T`` and decoded into a
     genealogy (see ``docs/contour_process.md``).
+    Lambert (2010) is the standard reference for contour processes of splitting
+    trees; see ``docs/references.md``.
     The exponential jumps of the constant-rate case are replaced by hazard
-    inversion at the absolute time of the jump.
+    inversion at the absolute time of the jump
+    (``docs/contour_process.md``, section "Linear (time-varying) rates").
     A downward jump from level $x$ goes to the time $s < x$ at which
     $\int_s^x \lambda = E$, and an upward jump from $y$ to the time $s > y$ at
     which $\int_y^s \mu = E$, where $E \sim \mathrm{Exp}(1)$; each is solved
     exactly as a quadratic within every linear segment, and as an exponential
     draw for a constant rate.
-    Upward jumps are capped at $T$, and the spine excursion resets when one
-    reaches $T$.
+    Upward jumps are capped at $T$, and a spine excursion that reaches $T$ is
+    discarded and redrawn from $T$.
 
     Parameters
     ----------

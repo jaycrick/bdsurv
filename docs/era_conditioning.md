@@ -11,6 +11,8 @@ alive at $T$, given observed per-era survivor counts.
 It is a multilevel-splitting / sequential-ABC scheme: simulate one era at a
 time, keep particles whose survivor count matches the target, and clone the
 ones that pass.
+Splitting in general goes back to Kahn and Harris (1951)
+(see [References](#references)).
 It uses the lifespan-at-birth engine from `bdsurv.lifespans`, so each
 individual's death time over the **full** piecewise hazard is known at birth
 and "survives to $T$" is well defined while the first eras are still running.
@@ -27,6 +29,7 @@ For eras $0, \dots, K-2$ (the last era is left unconditioned):
 2. Simulate the current era for every particle (`advance_era`).
 3. **Filter.** Count individuals born in this era whose death time exceeds $T$.
    Keep the particle if the count lies in `target_ranges[k]`.
+   Particles that overflow `max_population` are dropped.
 4. **Split.** Clone each passing particle `split_factor` times.
    Each clone gets a fresh PRNG key; the arrays are immutable, so cloning is
    cheap.
@@ -59,3 +62,9 @@ Each `MatchedSurvivalSample` holds `n_born`, `n_alive_present`,
   inspect `diagnostics` for the per-era acceptance rate.
 - `max_population` is the per-particle buffer size and, as in
   `bdsurv.lifespans`, a new value recompiles the kernel.
+
+## References
+
+- Kahn and Harris (1951): multilevel splitting, cited for splitting in general only.
+
+The full entry is in [`docs/references.md`](references.md).

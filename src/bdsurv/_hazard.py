@@ -9,15 +9,28 @@ $$
 $$
 
 - Survival: $\Pr(Z_t > 0) = 1 / (1 + I(t))$ with
-  $I(t) = \int_0^t \mu(s) e^{-\Gamma(s)} ds$.
+  $I(t) = \int_0^t \mu(s) e^{-\Gamma(s)} ds$ (Kendall (1948); see
+  ``docs/references.md``).
+  The formula is stated in ``docs/splitting.md``, section "Linear (time-varying)
+  rates".
 - Mean cumulative number of individuals ever born by $t$:
-  $1 + \int_0^t \lambda(s) e^{\Gamma(s)} ds$.
+  $1 + \int_0^t \lambda(s) e^{\Gamma(s)} ds$
+  (``docs/splitting.md``, section "Closed form and the mean number born").
 - Hazard inversion: the time $s$ at which a rate's integral from a start time
-  reaches an Exp(1) draw, forward or backward, segment by segment.
+  reaches an Exp(1) draw, forward or backward, segment by segment
+  (``docs/contour_process.md``, section "Linear (time-varying) rates").
 
 Integrals are computed in log space by composite Gauss-Legendre quadrature.
 Each panel is short enough that the exponent changes by at most a few units,
 so integrands of very large dynamic range stay accurate.
+
+The quadrature is written here rather than delegated to a library integrator
+because the integrand $\mu(s) e^{-\Gamma(s)}$ can span a very large dynamic
+range.
+The integral is therefore accumulated in log space, over panels short enough
+that the exponent changes by a bounded amount (``_PANEL_EXPONENT``).
+SciPy is a development dependency only: the tests use it to cross-check this
+code against ``scipy.integrate.quad``.
 """
 
 from __future__ import annotations
@@ -51,7 +64,13 @@ def close(a: float, b: float) -> bool:
 
 
 def next_event_offset(a: float, b: float, e: float) -> float:
-    """Solve ``a s + b s^2 / 2 = e`` for the smallest ``s >= 0``, or ``inf``."""
+    """Solve ``a s + b s^2 / 2 = e`` for the smallest ``s >= 0``, or ``inf``.
+
+    Here ``a`` and ``b`` are the value and slope of a rate that is linear in time,
+    and ``e`` is an Exp(1) draw (``docs/contour_process.md``, section "Linear
+    (time-varying) rates").
+    The stable root is ``s = 2 e / (a + sqrt(a^2 + 2 b e))``.
+    """
     disc = a * a + 2.0 * b * e
     if disc < 0.0:
         return math.inf
@@ -77,6 +96,8 @@ def value(rate: Rate, t: float | _Array) -> _Array:
 
 def cumulative(rate: Rate, t: float | _Array) -> _Array:
     """Exact integral of the rate over ``[0, t]`` (``t`` clipped to ``[0, T]``)."""
+    # Lambda(t) or M(t) of docs/contour_conditioned.md, section "Overview": the
+    # integral up to the segment start plus ``v0 d + slope d^2 / 2`` within it.
     t = np.clip(np.asarray(t, dtype=np.float64), 0.0, rate.end_time)
     k = _index(rate, t)
     d = t - rate.starts[k]
@@ -88,7 +109,8 @@ def forward_hazard_time(rate: Rate, start: float, e: float, cap: float) -> float
 
     Within a segment the equation is a quadratic, solved by the stable form in
     :func:`next_event_offset`; if the segment's hazard is
-    used up before ``e`` is reached, the remainder carries into the next one.
+    used up before ``e`` is reached, the remainder carries into the next one
+    (``docs/contour_process.md``, section "Linear (time-varying) rates").
     Plain Python floats and ``bisect`` are used: this runs once per contour step.
     """
     ends, starts, v0s, slopes = rate.py_ends, rate.py_starts, rate.py_v0, rate.py_slope
@@ -116,7 +138,11 @@ def forward_hazard_time(rate: Rate, start: float, e: float, cap: float) -> float
 
 
 def backward_hazard_time(rate: Rate, start: float, e: float) -> float:
-    """Largest ``s <= start`` with ``int_s^start rate = e``, or ``0`` if none."""
+    """Largest ``s <= start`` with ``int_s^start rate = e``, or ``0`` if none.
+
+    The mirror of :func:`forward_hazard_time`, walking the segments backwards
+    (``docs/contour_process.md``, section "Linear (time-varying) rates").
+    """
     ends, starts, v0s, slopes = rate.py_ends, rate.py_starts, rate.py_v0, rate.py_slope
     if len(ends) == 1 and slopes[0] == 0.0:  # constant rate: the jump is exponential
         v = v0s[0]
@@ -146,7 +172,17 @@ def log_integral(
     *,
     sign: float,
 ) -> float:
-    r"""Return $\ln \int_0^t w e^{\mathrm{sign}\,\Gamma}$ by panelled quadrature."""
+    r"""Return $\ln \int_0^t w e^{\mathrm{sign}\,\Gamma}$ by panelled quadrature.
+
+    Here $w$ is the rate ``weight``, $\Gamma = \Lambda - M$ is the integral of
+    ``birth`` minus that of ``death``, and ``sign`` is $\pm 1$.
+    With ``weight=death`` and ``sign=-1`` this is $\ln I(t)$ for
+    $I(t) = \int_0^t \mu e^{-\Gamma}$; with ``weight=birth`` and ``sign=+1`` it is
+    the integral in the mean cumulative number born
+    (``docs/splitting.md``, sections "Linear (time-varying) rates" and "Closed
+    form and the mean number born").
+    The panels are described in the module docstring.
+    """
     if t <= 0.0:
         return -math.inf
     edges = np.unique(
@@ -189,12 +225,23 @@ def log_survival_probability_constant(
     death_rate: float,
     time: float,
 ) -> float:
-    """Return ``log Pr(Z_t > 0)`` from one individual, stable for large ``t``."""
+    """Return ``log Pr(Z_t > 0)`` from one individual, stable for large ``t``.
+
+    With constant rates ``lam = birth_rate`` and ``mu = death_rate`` and
+    ``g = lam - mu``, the integral ``I(t)`` of ``mu * exp(-Gamma(s))`` over
+    ``[0, t]`` is ``mu (1 - exp(-g t)) / g``, or ``mu t`` when ``g t`` is
+    negligible (the critical case ``lam == mu``).
+    The survival probability is ``1 / (1 + I(t))`` (Kendall (1948); see
+    ``docs/references.md`` and ``docs/splitting.md``, section "Closed form and
+    the mean number born").
+    """
     if time <= 0.0:
         return 0.0
     growth_rate = birth_rate - death_rate
     x = growth_rate * time
-    # log of ``I(t)``, so that survival is 1 / (1 + I(t)).
+    # log_num is log I(t) with I(t) = mu (1 - exp(-g t)) / g, g = lam - mu
+    # (docs/splitting.md, section "Closed form and the mean number born"), so
+    # that survival is 1 / (1 + I(t)).
     if abs(x) < CRITICAL_TOLERANCE:
         log_num = math.log(death_rate) + math.log(time)
     elif x < 0.0:
@@ -213,7 +260,14 @@ def log_survival_probability_constant(
 
 
 def log_survival_probability_quadrature(birth: Rate, death: Rate, t: float) -> float:
-    r"""Return $\ln \Pr(Z_t > 0) = -\ln(1 + I(t))$ by panelled quadrature."""
+    r"""Return $\ln \Pr(Z_t > 0) = -\ln(1 + I(t))$ by panelled quadrature.
+
+    The survival probability is $1 / (1 + I(t))$ with
+    $I(t) = \int_0^t \mu(s) e^{-\Gamma(s)} ds$ and
+    $\Gamma(s) = \int_0^s (\lambda - \mu)$; the survival probability is that of
+    Kendall (1948), see ``docs/references.md`` and ``docs/splitting.md``,
+    section "Linear (time-varying) rates".
+    """
     if t <= 0.0:
         return 0.0
     log_i = log_integral(death, birth, death, t, sign=-1.0)
@@ -236,6 +290,8 @@ def log_survival_probability(birth: Rate, death: Rate, t: float) -> float:
     positive this is the closed form
     :func:`log_survival_probability_constant`; otherwise it is the quadrature
     :func:`log_survival_probability_quadrature`.
+    Both evaluate $\Pr(Z_t > 0) = 1 / (1 + I(t))$ (Kendall (1948); see
+    ``docs/references.md``).
     """
     if _is_constant(birth, positive=False) and _is_constant(death, positive=True):
         return log_survival_probability_constant(
@@ -245,7 +301,11 @@ def log_survival_probability(birth: Rate, death: Rate, t: float) -> float:
 
 
 def log_mean_cumulative_individuals(birth: Rate, death: Rate, t: float) -> float:
-    r"""Return $\ln\left(1 + \int_0^t \lambda(s) e^{\Gamma(s)} ds\right)$."""
+    r"""Return $\ln\left(1 + \int_0^t \lambda(s) e^{\Gamma(s)} ds\right)$.
+
+    Here $\lambda$ is the birth rate and $\Gamma(s) = \int_0^s (\lambda - \mu)$
+    (``docs/splitting.md``, section "Closed form and the mean number born").
+    """
     if t <= 0.0:
         return 0.0
     return float(np.logaddexp(0.0, log_integral(birth, birth, death, t, sign=1.0)))

@@ -3,6 +3,11 @@ r"""Forward simulation of birth-death processes with time-varying rates.
 :func:`simulate_birth_death` runs the one forward event kernel
 (:mod:`bdsurv._forward`) over rates that are piecewise constant or piecewise
 linear in time.
+The method is the exact event-by-event simulation of Gillespie (1977); see
+``docs/references.md``.
+The extension to rates that vary linearly within a segment is made here, by
+inverting the cumulative hazard of the segment, as below
+(``docs/lifespans.md``, section "Forward simulation and the other simulators").
 Within a segment where both rates are linear in time,
 the total hazard with $n$ individuals alive at $t_0$ is $a + b s$,
 where $s = t - t_0$, $a = n(\lambda(t_0) + \mu(t_0))$ and $b = n(\lambda' + \mu')$.
@@ -49,6 +54,10 @@ def simulate_birth_death(
     $s = 2E / (a + \sqrt{a^2 + 2bE})$ with $E \sim \mathrm{Exp}(1)$,
     where $a$ and $b$ are the total hazard and its slope, both scaled by the
     number alive.
+    This is the event-by-event method of Gillespie (1977); see
+    ``docs/references.md``.
+    The extension to rates linear within a segment is by inversion of the
+    cumulative hazard, not part of that reference.
     The event is a birth with probability $\lambda(t) / (\lambda(t) + \mu(t))$.
     The process is not conditioned on survival, so it may be extinct at ``T``.
 

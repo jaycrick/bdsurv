@@ -64,7 +64,8 @@ class LifespanSimulationArrays(NamedTuple):
 
         jnp.sum((birth_epochs == e) & survived)
 
-    This is the quantity required by the multilevel-splitting estimator.
+    This is the quantity the era-conditioned sampler
+    (:mod:`bdsurv.era_conditioning`) matches against observed counts.
 
     """
 
@@ -104,7 +105,10 @@ def sample_piecewise_exponential_death_time(
 
     Draws ``E ~ Exp(1)`` and walks the epoch boundaries starting from
     ``birth_time``, accumulating ``rate_e * duration_e`` per epoch until the
-    total hazard reaches ``E`` (inversion method).  Returns ``jnp.inf`` when
+    total hazard reaches ``E`` (inversion method; ``docs/lifespans.md``, section
+    "Algorithm", item "Death time at birth").
+    Here ``rate_e`` is the death rate on epoch ``e`` and ``duration_e`` the time
+    spent in it between the birth and the terminal time.  Returns ``jnp.inf`` when
     the total hazard over ``[birth_time, terminal_time]`` is less than ``E``
     (i.e. the individual survives to the terminal time).
 
@@ -112,7 +116,9 @@ def sample_piecewise_exponential_death_time(
 
     """
     key, subkey = jax.random.split(key)
-    # Draw the target cumulative hazard (exponential quantile)
+    # E ~ Exp(1) is the target value of the cumulative death hazard
+    # int_b^t mu(s) ds from the birth time b; the death time is the first t at
+    # which it reaches E (docs/lifespans.md, section "Algorithm").
     E = jax.random.exponential(subkey, dtype=jnp.float64)
 
     # Epoch start times: 0 for epoch 0, epoch_end_times[k-1] for epoch k
@@ -200,7 +206,7 @@ def initial_state(
 
 
 @functools.partial(jax.jit, static_argnums=(6,))
-def advance_era(  # noqa: PLR0913, PLR0917  # jitted kernel signature fixed by the plan
+def advance_era(  # noqa: PLR0913, PLR0917  # jitted kernel with a fixed signature
     birth_rate_k: jax.Array,
     death_rates: jax.Array,
     epoch_end_times: jax.Array,
@@ -211,7 +217,8 @@ def advance_era(  # noqa: PLR0913, PLR0917  # jitted kernel signature fixed by t
 ) -> LoopState:
     """Advance the event loop from ``state.current_time`` to ``segment_end``.
 
-    This is the one event kernel of the package.  Births occur at rate
+    This is the one JAX event kernel of the package (the forward numpy kernel is
+    :mod:`bdsurv._forward`).  Births occur at rate
     ``n_alive * birth_rate_k``, which is fixed for the era.  Each new
     individual's death time is sampled at birth over the **full** hazard
     (``death_rates`` on ``epoch_end_times``), so survival to the terminal time
@@ -252,6 +259,9 @@ def advance_era(  # noqa: PLR0913, PLR0917  # jitted kernel signature fixed by t
         key, k_birth_dt, k_death_time, k_insert = jax.random.split(s.key, 4)
 
         # ---- Next birth time ----
+        # With n alive the total birth rate is n * lambda_k, so the waiting
+        # time is E / (n lambda_k) with E ~ Exp(1) (docs/lifespans.md, section
+        # "Algorithm", item "Next birth").
         total_birth_rate = s.n_alive.astype(jnp.float64) * birth_rate_k
         dt_birth = jax.random.exponential(k_birth_dt, dtype=jnp.float64) / jnp.where(
             total_birth_rate > 0.0, total_birth_rate, jnp.float64(1.0)
@@ -476,14 +486,14 @@ def simulate_birth_death_lifespans_arrays(
 ) -> LifespanSimulationArrays:
     """Simulate a birth-death process and return raw per-individual arrays.
 
-    Runs the lifespan-at-birth Gillespie algorithm via a JIT-compiled JAX
-    event loop.  Each individual's death time is pre-sampled at birth from a
-    piecewise-exponential distribution, so the number of individuals surviving
-    from each epoch to the terminal time is directly accessible from the
-    returned arrays.
+    Runs the lifespan-at-birth algorithm (``docs/lifespans.md``) via a
+    JIT-compiled JAX event loop.  Each individual's death time is pre-sampled at
+    birth from a piecewise-exponential distribution, so the number of individuals
+    surviving from each epoch to the terminal time is directly accessible from
+    the returned arrays.
 
     This is the low-level entry point intended for downstream analysis such
-    as multilevel splitting.  For a full :class:`~bdsurv.tree.SimulatedTree` with
+    as era-conditioned sampling.  For a full :class:`~bdsurv.tree.SimulatedTree` with
     genealogy use :func:`simulate_birth_death_lifespans` instead.
 
     Parameters

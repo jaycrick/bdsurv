@@ -44,8 +44,16 @@ Era-conditioned sampling for multi-epoch processes (see
 individual is not extinct at a given time.
 ``count_draws`` counts the random draws a block of code makes.
 
-Importing the package sets ``jax_enable_x64`` and, unless it is already set,
-``JAX_PLATFORMS=cpu``.
+The methods rest on published work; see ``docs/references.md``.
+
+Side effects of ``import bdsurv``.
+Importing the package sets the environment variable ``JAX_PLATFORMS`` to
+``cpu`` if it is unset, and enables JAX 64-bit mode (``jax_enable_x64``) for the
+whole process, not only for ``bdsurv``.
+It does so because the simulators work in float64, and because a GPU build of
+JAX on a machine without a GPU fails at import unless the platform is set to
+CPU first.
+Set ``JAX_PLATFORMS`` before importing ``bdsurv`` to use another platform.
 """
 
 import importlib.metadata

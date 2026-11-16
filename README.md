@@ -80,6 +80,7 @@ The runtime dependencies are `numpy`, `pandas` and `jax`.
 
 See `docs/` for the mathematical derivation of each method:
 `contour_process.md`, `splitting.md`, `lifespans.md` and `era_conditioning.md`.
+The works the methods rest on are listed in `docs/references.md`.
 Wall-clock comparisons are in `benchmarks/simulator_speed.qmd`,
 `benchmarks/method_comparison.qmd` and, for Arley processes matched to the
 constant-rate cases, `benchmarks/arley_comparison.qmd`.

@@ -13,6 +13,11 @@ Rates are floats (then `terminal_time` is required) or piecewise constant /
 linear rate-likes on $[0, T]$.
 Write $\Lambda(t) = \int_0^t \lambda$, $M(t) = \int_0^t \mu$,
 $\Gamma = \Lambda - M$ and $I(t) = \int_0^t \mu(s) e^{-\Gamma(s)}\,ds$.
+The survival probability of the process to time $t$, from one individual, is
+$1 / (1 + I(t))$ (Kendall (1948)).
+Lambert (2010) is the standard reference for contour processes of splitting
+trees.
+See [References](#references).
 
 ## Pieces
 
@@ -46,7 +51,7 @@ whichever is cheaper to accept.
 A top excursion ends at 0 with probability $S_\mathrm{rev}$,
 the survival probability of the process with rates $(\mu(T - t), \lambda(T - t))$;
 a bottom excursion ends at $T$ with probability $S_\mathrm{fwd}$,
-the survival probability of the process itself.
+the survival probability of the process itself, $S_\mathrm{fwd} = 1 / (1 + I(T))$.
 They satisfy
 $$
 S_\mathrm{rev} = S_\mathrm{fwd}\, e^{-\Gamma(T)},
@@ -120,7 +125,8 @@ tree = simulate_contour_given_population(
     1.2, 0.7, n_alive=3, terminal_time=4.0, random_seed=0
 )
 
-# Survivors of ages 1.0 and 2.5 at T, with linear rates (Arley process).
+# Survivors of ages 1.0 and 2.5 at T, with linear rates (an Arley process:
+# constant birth rate, death rate mu(t) = m t with m = 0.8).
 birth = PiecewiseConstant([1.0], [4.0])
 death = PiecewiseLinear([0.0], [3.2], [4.0])
 tree = simulate_contour_given_ages(birth, death, ages=[1.0, 2.5], random_seed=0)
@@ -146,3 +152,12 @@ objects (a float rate as a one-epoch `PiecewiseConstant`).
   - composition: ages of an ALG1 tree fed to ALG2 reproduce ALG1's total size;
   - spine-choice frequency against the normalised weights;
   - the ALG1 spine age against the spine law above.
+
+## References
+
+- Kendall (1948): the survival probability $1 / (1 + I(t))$.
+- Lambert (2010): the standard reference for contour processes of splitting trees.
+- Arley (1943): the process with a constant birth rate and a death rate growing
+  linearly in time, $\mu(t) = m t$, called an Arley process here.
+
+The full entries are in [`docs/references.md`](references.md).

@@ -6,9 +6,13 @@ terminal time.  Rates are floats or piecewise constant / linear in time; for
 subcritical processes survival is rare, for supercritical ones it is likely but
 not certain.
 
-Implemented methods:
-- Multilevel splitting with exact Gillespie trajectory evolution, an adaptive
-  level grid, per-level replicate counts and capped restarts
+Implemented method: multilevel splitting with exact event-by-event trajectory
+evolution (the forward kernel of :mod:`bdsurv._forward`), an adaptive level
+grid, per-level replicate counts and capped restarts.
+Multilevel splitting goes back to Kahn and Harris (1951), and its RESTART
+variant to Villen-Altamirano and Villen-Altamirano (1991); see
+``docs/references.md``.
+The algorithm as implemented here is described in ``docs/splitting.md``.
 
 The method keeps the particles that survive to the terminal time and exposes
 level diagnostics and particle ancestry metadata; it does not estimate the
@@ -41,7 +45,9 @@ from bdsurv.rates import (
 from bdsurv.tree import SimulatedTree
 
 MIN_LEVEL_TIMES = 2
-# The band of allowed ratios Pr(t_i) / Pr(t_{i-1}), as logs and as ratios.
+# The band of allowed ratios r_i = Pr(t_i) / Pr(t_{i-1}), as logs and as ratios;
+# Pr(t) = P(Z_t > 0) for one individual (docs/splitting.md, section
+# "Level-grid selection").
 _LOG_BAND_LOWER: float = -2.0
 _LOG_BAND_UPPER: float = math.log(0.5)
 _BAND_LOWER: float = math.exp(_LOG_BAND_LOWER)
@@ -317,6 +323,8 @@ def _build_level_times(
 
 def _initial_level_count(log_pr_terminal: float) -> int:
     """Return ``K`` with ``Pr(T) ** (1 / K)`` closest to 1/3, and at least 1."""
+    # log Pr(T) / log(1/3) = K when Pr(T) = (1/3) ** K (docs/splitting.md,
+    # section "Level-grid selection").
     return max(1, round(log_pr_terminal / math.log(_TARGET_LEVEL_RATIO)))
 
 
@@ -443,6 +451,8 @@ def _refine_grid(
     times: list[float], log_pr: Callable[[float], float]
 ) -> tuple[list[float], list[float]]:
     """Bisect intervals whose ratio is below the band until none is."""
+    # Ratio r_i = Pr(t_i) / Pr(t_{i-1}), so log r_i = log_prs[i] - log_prs[i - 1];
+    # the band is [e^-2, 0.5] (docs/splitting.md, section "Level-grid selection").
     log_prs = [log_pr(t) for t in times]
     while True:
         new_times = [times[0]]
@@ -467,6 +477,9 @@ def _refine_grid(
 
 def _coarsen_grid(times: list[float], log_prs: list[float]) -> list[float]:
     """Drop points whose ratio is too large while the merged ratio stays in band."""
+    # r_i > 0.5 is too large; removing t_i merges two intervals into one with
+    # ratio Pr(t_{i+1}) / Pr(t_{i-1}), kept if it is at least e^-2
+    # (docs/splitting.md, section "Level-grid selection").
     changed = True
     while changed:
         changed = False
@@ -534,6 +547,9 @@ def _level_replicates(
     """Implement :func:`compute_level_replicates` for any ``log Pr(t)``."""
     times = _as_level_array(level_times)
     replicates = np.zeros(times.size - 1, dtype=np.int64)
+    # R_i is the smallest integer >= 2 with R_1 * ... * R_i * Pr(t_i) >= 1
+    # (docs/splitting.md, section "Replicates"); log_cumulative is
+    # log(R_1 * ... * R_{i-1}) and ``needed`` is -log(R_1 * ... * R_{i-1} Pr(t_i)).
     log_cumulative = 0.0
     for i in range(1, times.size):
         needed = -(log_pr(float(times[i])) + log_cumulative)
@@ -629,6 +645,10 @@ def _max_restarts(
     times = _as_level_array(level_times)
     reps = _check_replicates(replicates, times.size - 1)
     log_prs = [log_pr(float(t)) for t in times]
+    # Galton-Watson failure recursion F_{K+1} = 0,
+    # F_i = (1 - r_i + r_i F_{i+1}) ** R_i, with r_i = Pr(t_i) / Pr(t_{i-1});
+    # ``failure`` is F_{i+1} on entry to each pass and p_fail = F_1 at the end
+    # (docs/splitting.md, section "Restarts").
     failure = 0.0
     for i in range(reps.size, 0, -1):
         ratio = math.exp(log_prs[i] - log_prs[i - 1])
@@ -953,6 +973,7 @@ def _resolve_levels_and_replicates(
         return levels, replicates, False
 
     log_pr_terminal = dynamics.log_pr(terminal_time)
+    # Pr(T) > 0.5: nothing to split (docs/splitting.md, section "The easy case").
     if log_pr_terminal > _LOG_BAND_UPPER:
         return (
             np.array([0.0, terminal_time], dtype=np.float64),
@@ -974,6 +995,10 @@ def simulate_survival_splitting(
     config: SplittingConfig,
 ) -> SplittingSimulationResult:
     r"""Sample survival-conditioned trajectories by multilevel (RESTART) splitting.
+
+    Multilevel splitting is that of Kahn and Harris (1951) and its RESTART
+    variant that of Villen-Altamirano and Villen-Altamirano (1991); see
+    ``docs/references.md`` and ``docs/splitting.md``.
 
     Accepts rates that are floats or piecewise constant / linear in time, finite
     and non-negative.  Subcritical processes, where survival is rare, are the
@@ -1001,7 +1026,7 @@ def simulate_survival_splitting(
     **Each level k** is processed in three steps:
 
     1. **Evolve.** Every particle advances from ``t_{k-1}`` to ``t_k`` under
-       exact Gillespie dynamics.
+       exact event-by-event dynamics (the kernel of :mod:`bdsurv._forward`).
     2. **Cull.** Particles with no live individual at ``t_k`` are dropped.
     3. **Enrich.** Each survivor is copied ``R_{k+1}`` times (not after the
        last level).  If this exceeds ``config.n_particles`` the ensemble is
@@ -1021,9 +1046,11 @@ def simulate_survival_splitting(
     **Time-varying rates.** Two points matter when the rates are not constant.
 
     - *Survival probability.* A single individual alive at 0 has
-      $\Pr(Z_t > 0) = 1 / (1 + I(t))$ with
+      $\Pr(Z_t > 0) = 1 / (1 + I(t))$ (Kendall (1948); see
+      ``docs/references.md``) with
       $I(t) = \int_0^t \mu(s) e^{-\Gamma(s)} ds$ and
-      $\Gamma(s) = \int_0^s (\lambda - \mu)$, evaluated by panelled
+      $\Gamma(s) = \int_0^s (\lambda - \mu)$ (``docs/splitting.md``, section
+      "Linear (time-varying) rates"), evaluated by panelled
       Gauss-Legendre quadrature in log space (in closed form for constant
       rates).  It drives the level grid, the replicate counts and the default
       restart cap.

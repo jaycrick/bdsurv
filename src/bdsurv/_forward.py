@@ -1,5 +1,10 @@
 r"""The one forward event kernel of birth-death processes.
 
+This is the event-by-event exact simulation of Gillespie (1977); see
+``docs/references.md``.
+Its extension to rates that vary linearly within a segment is made here, by
+inverting the cumulative hazard of the segment.
+
 A process is advanced through the segments of :func:`bdsurv.rates.merged_segments`,
 on each of which both per-individual rates are linear in time.
 With $n$ individuals alive at time $t_0$ inside a segment, the total hazard is
@@ -11,6 +16,8 @@ An event past the end of the segment (or past the target time) is discarded and
 redrawn from the boundary, which is exact because the event process has
 independent increments.
 The event is a birth with probability $\lambda(t) / (\lambda(t) + \mu(t))$.
+The derivation is in ``docs/lifespans.md``, section "Forward simulation and the
+other simulators".
 
 Genealogy convention: a newborn is inserted into ``alive_ids`` at a uniform
 position at least 1, its parent is its left neighbour, and the spine is
@@ -31,7 +38,11 @@ from bdsurv.rates import Rate, merged_segments
 from bdsurv.tree import build_records
 
 type Segment = tuple[float, float, float, float, float, float]
-"""``(start, end, birth_0, birth_slope, death_0, death_slope)``."""
+"""``(start, end, lam_0, lam_slope, mu_0, mu_slope)``.
+
+``lam_0`` and ``mu_0`` are the birth and death rates at ``start``;
+``lam_slope`` and ``mu_slope`` are their slopes (``lambda'`` and ``mu'``).
+"""
 
 
 @dataclass
@@ -114,15 +125,19 @@ def _next_event_time(
     state: ForwardState, segment: Segment, rng: np.random.Generator
 ) -> float:
     """Return the next event time within ``segment`` (``inf`` if none)."""
-    start, _, b0, b1, d0, d1 = segment
+    start, _, lam_0, lam_slope, mu_0, mu_slope = segment
     n = len(state.alive_ids)
     local = state.current_time - start
-    a = n * ((b0 + b1 * local) + (d0 + d1 * local))
+    # a = n (lambda + mu) at the current time and b = n (lambda' + mu'), the
+    # total hazard being a + b s; the offset s solves a s + b s^2 / 2 = E with
+    # E ~ Exp(1) (docs/lifespans.md, section "Forward simulation and the other
+    # simulators").
+    a = n * ((lam_0 + lam_slope * local) + (mu_0 + mu_slope * local))
     exponential = float(rng.exponential())
-    if b1 == 0.0 and d1 == 0.0:
+    if lam_slope == 0.0 and mu_slope == 0.0:
         offset = exponential / a if a > 0.0 else float("inf")
     else:
-        offset = next_event_offset(a, n * (b1 + d1), exponential)
+        offset = next_event_offset(a, n * (lam_slope + mu_slope), exponential)
     return state.current_time + offset
 
 
@@ -134,7 +149,7 @@ def _run_segment(
     on_event: Callable[[ForwardState, float], None] | None,
 ) -> None:
     """Advance ``state`` inside ``segment`` to ``stop`` or until extinction."""
-    start, _, b0, b1, d0, d1 = segment
+    start, _, lam_0, lam_slope, mu_0, mu_slope = segment
     while state.current_time < stop and state.alive_ids:
         event_time = _next_event_time(state, segment, rng)
         if event_time >= stop:
@@ -142,8 +157,9 @@ def _run_segment(
             return
         state.current_time = event_time
         local = event_time - start
-        lam = b0 + b1 * local
-        mu = d0 + d1 * local
+        lam = lam_0 + lam_slope * local
+        mu = mu_0 + mu_slope * local
+        # The event is a birth with probability lam / (lam + mu).
         _apply_event(
             state,
             event_time,

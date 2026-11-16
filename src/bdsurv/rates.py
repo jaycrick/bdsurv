@@ -317,8 +317,10 @@ def as_rate_like(
 def merged_segments(
     birth: Rate, death: Rate
 ) -> list[tuple[float, float, float, float, float, float]]:
-    """Segments ``(start, end, birth_0, birth_slope, death_0, death_slope)``.
+    """Segments ``(start, end, lam_0, lam_slope, mu_0, mu_slope)``.
 
+    On a segment the birth rate is ``lam_0 + lam_slope * (t - start)`` and the
+    death rate ``mu_0 + mu_slope * (t - start)``.
     Segment boundaries are the union of both rates' epoch end times (and 0),
     with edges closer than ``MERGE_REL_TOL * T`` merged.
     The rates must have the same end time (see :func:`resolve_rates`).
@@ -338,7 +340,7 @@ def merged_segments(
 
     out: list[tuple[float, float, float, float, float, float]] = []
     for s, e in itertools.pairwise(edges):
-        b0, b1 = line(birth, float(s), float(e))
-        d0, d1 = line(death, float(s), float(e))
-        out.append((float(s), float(e), b0, b1, d0, d1))
+        lam_0, lam_slope = line(birth, float(s), float(e))
+        mu_0, mu_slope = line(death, float(s), float(e))
+        out.append((float(s), float(e), lam_0, lam_slope, mu_0, mu_slope))
     return out

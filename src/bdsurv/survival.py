@@ -1,4 +1,7 @@
-"""Survival probability of a birth-death process started from one individual."""
+"""Survival probability of a birth-death process started from one individual.
+
+The probability is $1 / (1 + I(t))$ (Kendall (1948); see ``docs/references.md``).
+"""
 
 from __future__ import annotations
 
@@ -27,6 +30,11 @@ def log_survival_probability(
     I(t) = \int_0^t \mu(s) e^{-\Gamma(s)} ds, \quad
     \Gamma(s) = \int_0^s (\lambda - \mu).
     $$
+
+    This is the survival probability of Kendall (1948); see
+    ``docs/references.md``.
+    Here $Z_t$ is the number of individuals alive at time $t$ and the formula is
+    stated in ``docs/splitting.md``, section "Linear (time-varying) rates".
 
     For constant rates the integral is closed-form and the result is stable for
     large ``t``; otherwise it is evaluated by panelled Gauss-Legendre quadrature

@@ -1,9 +1,12 @@
 """Conditioned survival sampling for multi-epoch birth-death processes.
 
-Estimates the proportion of ever-created individuals currently alive
-(surviving to the process terminal time) by conditioning forward simulations
-on observed per-era survivor counts via a multilevel-splitting / sequential-ABC
-scheme.
+Samples trajectories whose per-era survivor counts match observed counts, so
+that the proportion of ever-created individuals currently alive (surviving to
+the process terminal time) can be read off them.
+The conditioning is by a multilevel-splitting / sequential-ABC scheme.
+Splitting in general goes back to Kahn and Harris (1951); see
+``docs/references.md``.
+The scheme as implemented is described in ``docs/era_conditioning.md``.
 
 Algorithm
 ---------
@@ -12,7 +15,8 @@ For eras 0 ... K-2 (the last era is left unconditioned):
 1. Simulate ``n_initial`` independent era-0 particles, each a single root
    individual born at time 0.
 2. **Filter**: keep particles whose count of *born-in-era-0 individuals that
-   survive to the terminal time* lies within ``target_ranges[0]``.
+   survive to the terminal time* lies within ``target_ranges[0]``
+   (particles that overflow ``max_population`` are dropped).
 3. **Split**: clone each passing particle ``split_factor`` times (each clone
    receives a fresh PRNG key; JAX arrays are immutable so clones are O(1)).
 4. Simulate era 1 for each clone, filter on ``target_ranges[1]``, split.
@@ -138,7 +142,8 @@ class ConditionedSurvivalResult:
     diagnostics : list[EraConditioningDiagnostic]
         Per-era filter diagnostics from the **last** outer-loop iteration.
     n_outer_iterations : int
-        Number of outer-loop restarts (≥ 1).
+        Number of outer-loop iterations, each a fresh run of ``n_initial``
+        era-0 particles.
     n_total_era0_particles : int
         Total era-0 particles simulated across all outer-loop iterations.
     """
@@ -607,7 +612,7 @@ def sample_conditioned_survival_per_posterior(  # noqa: PLR0913  # public signat
             Per-era counts (``k`` in ``0 … n_epochs-1``; ``NaN`` when
             ``matched=False``).
         ``n_outer_iterations``
-            Restarts needed for this draw (0 when ``matched=False``).
+            Outer-loop iterations used for this draw (0 when ``matched=False``).
 
     Raises
     ------

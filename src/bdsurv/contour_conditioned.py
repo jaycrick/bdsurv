@@ -9,6 +9,11 @@ downward jumps driven by the birth rate and upward jumps by the death rate.
 The stepper (:class:`bdsurv.contour.Walker`) and the piece-joining and
 rejection helpers live in :mod:`bdsurv.contour`; the contour is validated once,
 by the decoder.
+
+Lambert (2010) is the standard reference for contour processes of splitting
+trees; see ``docs/references.md``.
+The construction, its steps and its exactness are in
+``docs/contour_conditioned.md``.
 """
 
 from __future__ import annotations
@@ -41,9 +46,12 @@ def _log_survival_pair(
     """Return ``(log_S_fwd, log_S_rev)``, the log survival probabilities to ``T``.
 
     ``log_S_fwd`` is for the given rates and ``log_S_rev`` for the time-reversed
-    rates ``(mu(T - t), lambda(T - t))``, using ``S_rev = S_fwd * exp(-Gamma(T))``.
+    rates ``(mu(T - t), lambda(T - t))``, using ``S_rev = S_fwd * exp(-Gamma(T))``
+    with ``Gamma(T)`` the integral of ``lambda - mu`` over ``[0, T]``
+    (``docs/contour_conditioned.md``, section "Direction rule").
     """
     log_s_fwd = log_survival_probability(birth, death, terminal_time)
+    # Gamma(T) = Lambda(T) - M(T), the integrals of the birth and death rates.
     growth = float(cumulative(birth, terminal_time) - cumulative(death, terminal_time))
     return log_s_fwd, log_s_fwd - growth
 
@@ -58,6 +66,8 @@ def _prefer_top(
     if direction != "auto":
         return direction == "top"
     log_s_fwd, log_s_rev = _log_survival_pair(birth, death, terminal_time)
+    # S_rev > S_fwd exactly when Gamma(T) < 0 (docs/contour_conditioned.md,
+    # section "Direction rule").
     return log_s_rev > log_s_fwd
 
 
@@ -110,8 +120,11 @@ def simulate_contour_given_population(
     The contour is made of a ``0`` to ``T`` piece, ``n_alive - 1`` excursions
     from ``T`` to ``T`` and a ``T`` to ``0`` piece, all independent.
     The end pieces are generated from the end at which they are cheaper to
-    obtain, chosen by comparing the extinction probabilities of the process and
-    of its time reversal (equivalently the sign of $\Gamma(T)$).
+    obtain, chosen by comparing the survival probabilities to ``T`` of the
+    process and of its time reversal, $S_\mathrm{fwd}$ and $S_\mathrm{rev}$
+    (equivalently the sign of $\Gamma(T)$, since
+    $S_\mathrm{rev} = S_\mathrm{fwd} e^{-\Gamma(T)}$; ``docs/contour_conditioned.md``,
+    section "Direction rule").
 
     Parameters
     ----------
@@ -171,8 +184,15 @@ def _log_spine_weights(
 ) -> np.ndarray:
     r"""Return $\ln w_i$ with $w_i = (I(T) - I(b_i)) / (1 + I(b_i))$, $b_i = T - a_i$.
 
-    Here $I(t) = \int_0^t \mu(s) e^{-\Gamma(s)} ds$; ``-inf`` entries are allowed.
+    Here $a_i$ is the age of survivor $i$, $b_i$ the level of its valley, and
+    $I(t) = \int_0^t \mu(s) e^{-\Gamma(s)} ds$ with
+    $\Gamma(s) = \int_0^s (\lambda - \mu)$; ``-inf`` entries are allowed.
+    The weights are those of ``docs/contour_conditioned.md``, section "ALG2:
+    given ages" (bullet "Spine choice").
     """
+    # log_i_t = ln I(T) and log_i_b = ln I(b); ln(I(T) - I(b)) is computed as
+    # ln I(T) + ln(1 - I(b) / I(T)) (docs/contour_conditioned.md, section
+    # "ALG2: given ages").
     log_i_t = log_integral(death, birth, death, terminal_time, sign=-1.0)
     out = np.full(len(ages), -np.inf)
     if log_i_t == -np.inf:
@@ -325,7 +345,8 @@ def simulate_contour_given_ages(  # noqa: PLR0913  # public signature
     the ``0`` to ``T`` piece. The spine is chosen among the ages with
     probability proportional to $(I(T) - I(b)) / (1 + I(b))$,
     $b = T - a$, $I(t) = \int_0^t \mu e^{-\Gamma}$, unless ``spine_index`` is
-    given or an age equals ``T`` (the root survived, which forces the spine).
+    given or an age equals ``T`` (the root survived, which forces the spine);
+    see ``docs/contour_conditioned.md``, section "ALG2: given ages".
 
     Parameters
     ----------

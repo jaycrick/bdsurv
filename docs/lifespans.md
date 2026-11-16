@@ -26,16 +26,45 @@ Each individual's whole lifespan is decided the moment it is born.
    is $\infty$ and the individual survives.
 2. **Next birth.** With $n$ individuals alive in an epoch with birth rate
    $\lambda$, the next birth is at $t + \mathrm{Exp}(1) / (n\lambda)$.
-3. **Next event.** The loop takes the earliest of the next birth, the earliest
-   pending death in the buffer, and the epoch end.
-   Crossing an epoch end only advances the epoch index.
-   Redrawing the birth waiting time at the boundary is exact because the
-   exponential is memoryless.
+3. **Next event.** Within one call of `advance_era` the loop takes the earliest of
+   the next birth, the earliest pending death in the buffer, and the epoch end,
+   and the call returns when it reaches the epoch end.
+   The host loop then starts the next epoch from the returned state.
+   The birth waiting time is redrawn at every iteration, including the first
+   one after an epoch end, which is exact because the exponential is memoryless.
 4. **Buffers.** Birth times, death times, birth epochs, insertion uniforms and
    the population just before each birth live in fixed-size arrays of length
    `max_population`.
    The loop sets an overflow flag instead of writing past the end, and the
    Python wrapper raises `RuntimeError`.
+
+## Forward simulation and the other simulators
+
+`simulate_birth_death` (`src/bdsurv/forward.py`, built on the kernel in
+`src/bdsurv/_forward.py`) is the exact event-by-event simulation of
+Gillespie (1977) (see [References](#references)): the next event of the whole
+population is drawn from its total hazard, and is a birth or a death with
+probability proportional to the rates.
+The extension to rates that vary linearly within a segment is made here, by
+inverting the cumulative hazard of the segment; it is not part of that reference.
+
+Within a segment on which both rates are linear, with $n$ individuals alive at
+$t_0$ and $s = t - t_0$, the total hazard is $a + b s$ with
+$a = n(\lambda(t_0) + \mu(t_0))$ and $b = n(\lambda' + \mu')$, where
+$\lambda'$ and $\mu'$ are the slopes of the rates.
+Its integral is $H(s) = a s + b s^2 / 2$, and the next event offset solves
+$H(s) = E$ with $E \sim \mathrm{Exp}(1)$:
+$$
+s = \frac{2E}{a + \sqrt{a^2 + 2 b E}},
+$$
+which is $E / a$ when $b = 0$.
+An event past the end of the segment is discarded and redrawn from the boundary,
+which is exact because the event process has independent increments.
+The event is a birth with probability $\lambda(t) / (\lambda(t) + \mu(t))$.
+
+The lifespan-at-birth engine of this page simulates the same process for piecewise
+constant rates, but draws each individual's death time when it is born instead
+of a single total hazard for the population.
 
 ## Genealogy
 
@@ -68,3 +97,9 @@ The spine is the first living individual at the terminal time.
   measure steady-state cost (see `benchmarks/simulator_speed.qmd`).
 - `import bdsurv` enables JAX 64-bit mode and defaults `JAX_PLATFORMS=cpu`
   unless the variable is already set.
+
+## References
+
+- Gillespie (1977): exact event-by-event simulation.
+
+The full entry is in [`docs/references.md`](references.md).
