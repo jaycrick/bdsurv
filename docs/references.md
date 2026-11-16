@@ -20,7 +20,10 @@ These are the works the methods in `bdsurv` rest on, with the modules and docs p
 
 - Lambert, A. (2010). The contour of splitting trees is a Levy process. *Annals of Probability* 38(1), 348-395.
 
-  TODO(author): confirm source of the contour construction
+  Lambert (2010) is cited as the standard reference for contour processes of splitting trees.
+  The contour construction implemented here is from the author's own paper, which is unpublished.
+
+  TODO(author): add the entry for that paper here once it is available, and cite it in `contour.py`, `contour_conditioned.py`, `docs/contour_process.md` and `docs/contour_conditioned.md`
 
   Used in: `contour.py`, `contour_conditioned.py`; `docs/contour_process.md`, `docs/contour_conditioned.md`.
 
