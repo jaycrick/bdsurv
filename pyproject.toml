@@ -107,11 +107,6 @@ convention = "numpy"
   "SLF001" # tests exercise private kernels directly
 ]
 
-# TEMPORARY: removed by step S6
-"src/bdsurv/gillespie.py" = ["C901", "PLR0912", "PLR0915"]
-"src/bdsurv/splitting.py" = ["C901", "PLR0913"]
-"tests/test_gillespie.py" = ["PT018"]
-"tests/test_splitting.py" = ["RUF007"]
 # TEMPORARY: removed by step S7
 "src/bdsurv/contour_conditioned.py" = ["C901", "PLR0912", "PLR0915", "PLR0917"]
 "tests/test_contour.py" = ["PT011"]

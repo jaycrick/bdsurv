@@ -5,9 +5,9 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-from bdsurv._seeding import root_rng, spawn
-from bdsurv.rates import epoch_rates
-from bdsurv.tree import SimulatedProcess, build_records
+from bdsurv._forward import simulate_forward
+from bdsurv.rates import PiecewiseConstant, as_rate, epoch_rates
+from bdsurv.tree import SimulatedProcess
 
 
 def simulate_birth_death_process(
@@ -63,114 +63,17 @@ def simulate_birth_death_process(
     birth_rates_arr, death_rates_arr, times_arr = epoch_rates(
         birth_rates, death_rates, times
     )
-
-    # Root RNG from which every attempt's generator is spawned
-    base_seed_rng = root_rng(random_seed, "seeding")
-
-    if ensure_non_extinct and max_retries < 0:
-        raise ValueError("max_retries must be a non-negative integer")
-
-    attempts_allowed = max_retries if ensure_non_extinct else 0
-    # We allow (attempts_allowed + 1) attempts: initial + retries
-    for _attempt in range(attempts_allowed + 1):
-        # Create a per-attempt RNG so retries produce different draws but are
-        # reproducible when `random_seed` is provided.
-        rng = spawn(base_seed_rng, "dynamics")
-
-        # Initialize tracking variables for this attempt
-        current_time = 0.0
-        individuals_alive: list[tuple[float, int]] = [
-            (0.0, 0),
-        ]  # (creation_time, individual_id)
-        # Per-individual columns, indexed by individual id
-        creation: list[float] = [0.0]
-        parent: list[int | None] = [None]
-        death_time: list[float | None] = [None]
-        new_individual_id = 1
-
-        # Initialize rate tracking
-        period_idx = 0
-        birth_rate = float(birth_rates_arr[period_idx])
-        death_rate = float(death_rates_arr[period_idx])
-        max_time = float(times_arr[-1])
-
-        birth_death_rate = birth_rate + death_rate
-        prop_birth = birth_rate / birth_death_rate
-        n_alive = len(individuals_alive)
-        total_rate = n_alive * birth_death_rate
-
-        while current_time < max_time:
-            if total_rate <= 0:
-                break
-
-            # Time to next event
-            dt = rng.exponential(1.0 / total_rate)
-            current_time += dt
-
-            # Check if we've crossed into a new period and update rates
-            if period_idx < len(times_arr) - 1 and current_time > times_arr[period_idx]:
-                # Set current time to the period boundary
-                current_time = times_arr[period_idx]
-                # Update to next period's parameters
-                period_idx += 1
-                birth_rate = float(birth_rates_arr[period_idx])
-                death_rate = float(death_rates_arr[period_idx])
-                birth_death_rate = birth_rate + death_rate
-                prop_birth = birth_rate / birth_death_rate
-                total_rate = len(individuals_alive) * birth_death_rate
-                # Continue to start of loop to generate dt with new rates
-                continue
-
-            if current_time >= max_time:
-                break
-
-            # Determine if event is birth or death
-            if rng.random() < prop_birth:
-                # Birth event
-                new_entry = (current_time, new_individual_id)
-                # Insert at a random position other than the first.
-                if len(individuals_alive) == 1:
-                    individuals_alive.append(new_entry)
-                    parent_id = individuals_alive[0][1]
-                else:
-                    insert_idx = int(rng.integers(1, len(individuals_alive) + 1))
-                    individuals_alive.insert(insert_idx, new_entry)
-                    parent_id = individuals_alive[insert_idx - 1][1]
-
-                creation.append(current_time)
-                parent.append(parent_id)
-                death_time.append(None)
-                new_individual_id += 1
-                total_rate += birth_death_rate
-            else:
-                # Death event
-                death_idx = rng.integers(0, len(individuals_alive))
-                _, dead_id = individuals_alive.pop(death_idx)
-
-                # Update the record
-                death_time[dead_id] = current_time
-
-                total_rate -= birth_death_rate
-
-        # Spine = first individual alive at the end
-        spine_id = individuals_alive[0][1] if individuals_alive else None
-        df = build_records(creation, parent, death_time, spine_id, max_time)
-        survived = df["survived"]
-
-        # Return the first draw, or the first non-extinct one if required.
-        if not ensure_non_extinct or survived.any():
-            return SimulatedProcess(
-                records=df,
-                birth_rates=birth_rates_arr,
-                death_rates=death_rates_arr,
-                epoch_end_times=times_arr,
-            )
-
-        # Otherwise, loop to retry until attempts exhausted.
-
-    # If we reach here, retries were exhausted without producing a non-extinct draw.
-    msg = (
-        f"simulate_birth_death_process: exhausted {attempts_allowed} retries "
-        "without producing a non-extinct population"
+    records, _ = simulate_forward(
+        as_rate(PiecewiseConstant(birth_rates_arr, times_arr)),
+        as_rate(PiecewiseConstant(death_rates_arr, times_arr)),
+        random_seed,
+        ensure_non_extinct=ensure_non_extinct,
+        max_retries=max_retries,
+        name="simulate_birth_death_process",
     )
-    raise RuntimeError(msg)
+    return SimulatedProcess(
+        records=records,
+        birth_rates=birth_rates_arr,
+        death_rates=death_rates_arr,
+        epoch_end_times=times_arr,
+    )

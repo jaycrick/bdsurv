@@ -23,17 +23,15 @@ from __future__ import annotations
 
 import numpy as np
 
-from bdsurv._hazard import next_event_offset
-from bdsurv._seeding import root_rng, spawn
+from bdsurv._forward import simulate_forward
 from bdsurv.rates import (
     ConstantRateLike,
     LinearRateLike,
     PiecewiseConstant,
     PiecewiseLinear,
-    merged_segments,
     resolve_rates,
 )
-from bdsurv.tree import SimulatedProcess, build_records
+from bdsurv.tree import SimulatedProcess
 
 # The rate types now live in ``bdsurv.rates``; they are re-exported here until
 # the module is removed.
@@ -93,58 +91,15 @@ def simulate_birth_death_linear(
 
     """
     birth, death, _ = resolve_rates(birth_rate, death_rate, None)
-    segments = merged_segments(birth, death)
-    max_time = segments[-1][1]
-    if ensure_non_extinct and max_retries < 0:
-        msg = "max_retries must be a non-negative integer"
-        raise ValueError(msg)
-
-    seeds = root_rng(random_seed, "seeding")
-    attempts = max_retries if ensure_non_extinct else 0
-    for _ in range(attempts + 1):
-        rng = spawn(seeds, "dynamics")
-        alive = [0]
-        creation = [0.0]
-        parent: list[int | None] = [None]
-        death_time: list[float | None] = [None]
-
-        for start, end, b0, b1, d0, d1 in segments:
-            t = start
-            while alive:
-                n = len(alive)
-                lam = b0 + b1 * (t - start)
-                mu = d0 + d1 * (t - start)
-                s = next_event_offset(n * (lam + mu), n * (b1 + d1), rng.exponential())
-                t += s
-                if t >= end:
-                    break
-                lam = b0 + b1 * (t - start)
-                mu = d0 + d1 * (t - start)
-                if rng.random() * (lam + mu) < lam:
-                    new_id = len(creation)
-                    pos = 1 if n == 1 else int(rng.integers(1, n + 1))
-                    parent.append(alive[pos - 1])
-                    creation.append(t)
-                    death_time.append(None)
-                    alive.insert(pos, new_id)
-                else:
-                    death_time[alive.pop(int(rng.integers(0, n)))] = t
-            if not alive:
-                break
-
-        if ensure_non_extinct and not alive:
-            continue
-
-        df = build_records(
-            creation, parent, death_time, alive[0] if alive else None, max_time
-        )
-        return SimulatedProcess(
-            records=df,
-            epoch_end_times=np.array([seg[1] for seg in segments]),
-        )
-
-    msg = (
-        f"simulate_birth_death_linear: exhausted {attempts} retries "
-        "without producing a non-extinct population"
+    records, segments = simulate_forward(
+        birth,
+        death,
+        random_seed,
+        ensure_non_extinct=ensure_non_extinct,
+        max_retries=max_retries,
+        name="simulate_birth_death_linear",
     )
-    raise RuntimeError(msg)
+    return SimulatedProcess(
+        records=records,
+        epoch_end_times=np.array([seg[1] for seg in segments]),
+    )

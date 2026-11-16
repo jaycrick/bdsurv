@@ -57,7 +57,8 @@ class TestSimulation:
         # Create process objects from simulation results
         surviving1 = h.surviving_records(df1)
         surviving2 = h.surviving_records(df2)
-        assert surviving1 is not None and surviving2 is not None
+        assert surviving1 is not None
+        assert surviving2 is not None
         creation_times1 = surviving1["creation_time"].tolist()
         creation_times2 = surviving2["creation_time"].tolist()
 
@@ -85,7 +86,8 @@ class TestSimulation:
             # If both have records, they should be different
             surviving1 = h.surviving_records(df1)
             surviving2 = h.surviving_records(df2)
-            assert surviving1 is not None and surviving2 is not None
+            assert surviving1 is not None
+            assert surviving2 is not None
             creation_times1 = surviving1["creation_time"].tolist()
             creation_times2 = surviving2["creation_time"].tolist()
             assert not df1.records.equals(df2.records) or len(creation_times1) != len(
@@ -217,7 +219,8 @@ class TestSimulation:
         # high birth rate should generally produce more surviving records
         high_surv = h.surviving_records(df_high_birth)
         low_surv = h.surviving_records(df_low_birth)
-        assert high_surv is not None and low_surv is not None
+        assert high_surv is not None
+        assert low_surv is not None
         surviving_high = len(high_surv)
         surviving_low = len(low_surv)
 
@@ -429,7 +432,8 @@ class TestMultiEpochSimulation:
         if h.n_individuals(df_scalar) > 0:
             scalar_records = df_scalar.records
             array_records = df_array.records
-            assert scalar_records is not None and array_records is not None
+            assert scalar_records is not None
+            assert array_records is not None
             np.testing.assert_array_almost_equal(
                 sorted(scalar_records["creation_time"]),
                 sorted(array_records["creation_time"]),

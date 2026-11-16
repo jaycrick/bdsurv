@@ -20,16 +20,16 @@ import math
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 import pandas as pd
 
+from bdsurv._forward import ForwardState, Segment, advance
 from bdsurv._hazard import (
     close,
     log_survival_probability,
     log_survival_probability_constant,
-    next_event_offset,
 )
 from bdsurv._seeding import bump, root_rng, spawn
 from bdsurv.rates import (
@@ -41,7 +41,7 @@ from bdsurv.rates import (
     merged_segments,
     resolve_rates,
 )
-from bdsurv.tree import SimulatedTree, build_records
+from bdsurv.tree import SimulatedTree
 
 MIN_LEVEL_TIMES = 2
 # The band of allowed ratios Pr(t_i) / Pr(t_{i-1}), as logs and as ratios.
@@ -259,21 +259,14 @@ class SplittingSimulationResult:
 
 @dataclass
 class _ParticleState:
-    """Mutable per-particle state for exact event simulation.
+    """Mutable per-particle state: the forward population plus its trace.
 
     Parameters
     ----------
     particle_id : int
         Unique identifier assigned to the particle instance.
-    current_time : float
-        Current simulated time for this particle.
-    next_individual_id : int
-        Next available individual identifier for descendants.
-    alive_ids : list[int]
-        List of individual ids currently alive within the particle.
-    records : dict[int, dict[str, Any]]
-        Mapping from individual id to a record dict containing creation and
-        death metadata.
+    forward : ForwardState
+        The population (alive individuals and every individual's record).
     trace_times : list[float]
         Times at which the particle trace population was recorded.
     trace_populations : list[int]
@@ -284,10 +277,7 @@ class _ParticleState:
     """
 
     particle_id: int
-    current_time: float
-    next_individual_id: int
-    alive_ids: list[int]
-    records: dict[int, dict[str, Any]]
+    forward: ForwardState
     trace_times: list[float]
     trace_populations: list[int]
     rng: np.random.Generator
@@ -444,8 +434,14 @@ def _select_level_times(
         n_levels=n_levels,
     )
     times = [float(t) for t in grid]
+    times, log_prs = _refine_grid(times, log_pr)
+    return np.asarray(_coarsen_grid(times, log_prs), dtype=np.float64)
 
-    # --- Refine: bisect intervals whose ratio is too small ---
+
+def _refine_grid(
+    times: list[float], log_pr: Callable[[float], float]
+) -> tuple[list[float], list[float]]:
+    """Bisect intervals whose ratio is below the band until none is."""
     log_prs = [log_pr(t) for t in times]
     while True:
         new_times = [times[0]]
@@ -465,9 +461,11 @@ def _select_level_times(
             msg = f"Level grid refinement exceeded {_MAX_GRID_POINTS} points."
             raise ValueError(msg)
         if not changed:
-            break
+            return times, log_prs
 
-    # --- Coarsen: drop points whose ratio is too large, keeping the band ---
+
+def _coarsen_grid(times: list[float], log_prs: list[float]) -> list[float]:
+    """Drop points whose ratio is too large while the merged ratio stays in band."""
     changed = True
     while changed:
         changed = False
@@ -480,8 +478,7 @@ def _select_level_times(
                 changed = True  # re-examine the new interval at position i
             else:
                 i += 1
-
-    return np.asarray(times, dtype=np.float64)
+    return times
 
 
 def compute_level_replicates(
@@ -644,19 +641,9 @@ def _initialize_particle(
     particle_id: int,
     seed_rng: np.random.Generator,
 ) -> _ParticleState:
-    root_record = {
-        "individual_id": 0,
-        "parent_id": None,
-        "creation_time": 0.0,
-        "death_time": None,
-        "is_spine": False,
-    }
     return _ParticleState(
         particle_id=particle_id,
-        current_time=0.0,
-        next_individual_id=1,
-        alive_ids=[0],
-        records={0: root_record},
+        forward=ForwardState.root(),
         trace_times=[0.0],
         trace_populations=[1],
         rng=spawn(seed_rng, "dynamics"),
@@ -672,128 +659,26 @@ def _append_trace_point(
         msg = "time_point must be monotone in particle trace"
         raise RuntimeError(msg)
     if close(time_point, state.trace_times[-1]):
-        state.trace_populations[-1] = len(state.alive_ids)
+        state.trace_populations[-1] = len(state.forward.alive_ids)
         return
     state.trace_times.append(time_point)
-    state.trace_populations.append(len(state.alive_ids))
+    state.trace_populations.append(len(state.forward.alive_ids))
 
 
-def _simulate_to_level(
-    *,
-    state: _ParticleState,
-    birth_rate: float,
-    death_rate: float,
-    target_time: float,
+def _advance_particle(
+    particle: _ParticleState, segments: list[Segment], target_time: float
 ) -> None:
-    if target_time < state.current_time:
-        msg = "target_time cannot be less than current_time"
-        raise ValueError(msg)
-
-    birth_probability = birth_rate / (birth_rate + death_rate)
-
-    while state.current_time < target_time:
-        if len(state.alive_ids) == 0:
-            state.current_time = target_time
-            _append_trace_point(state=state, time_point=target_time)
-            return
-
-        total_rate = len(state.alive_ids) * (birth_rate + death_rate)
-        dt = float(state.rng.exponential(1.0 / total_rate))
-        event_time = state.current_time + dt
-
-        if event_time >= target_time:
-            state.current_time = target_time
-            _append_trace_point(state=state, time_point=target_time)
-            return
-
-        state.current_time = event_time
-        is_birth = state.rng.uniform() < birth_probability
-        _apply_event(state, event_time=event_time, is_birth=is_birth)
-
-
-def _apply_event(state: _ParticleState, *, event_time: float, is_birth: bool) -> None:
-    """Apply a birth or death at ``event_time`` to a uniformly chosen individual."""
-    bump("events")
-    if is_birth:
-        child_id = state.next_individual_id
-        state.next_individual_id += 1
-        # Insert at a random position >= 1 so index-0 lineage is never
-        # displaced — matching a Gillespie birth-death simulator's
-        # convention. Parent is the left neighbour at insert_idx - 1.
-        if len(state.alive_ids) == 1:
-            state.alive_ids.append(child_id)
-            parent_id = state.alive_ids[0]
-        else:
-            insert_idx = int(state.rng.integers(1, len(state.alive_ids) + 1))
-            state.alive_ids.insert(insert_idx, child_id)
-            parent_id = state.alive_ids[insert_idx - 1]
-        state.records[child_id] = {
-            "individual_id": child_id,
-            "parent_id": parent_id,
-            "creation_time": event_time,
-            "death_time": None,
-            "is_spine": False,
-        }
-    else:
-        death_idx = int(state.rng.integers(0, len(state.alive_ids)))
-        dead_id = state.alive_ids.pop(death_idx)
-        # Replace rather than mutate: clones share record dicts (copy-on-write).
-        state.records[dead_id] = {**state.records[dead_id], "death_time": event_time}
-
-    _append_trace_point(state=state, time_point=event_time)
-
-
-def _simulate_to_level_linear(
-    *,
-    state: _ParticleState,
-    segments: list[tuple[float, float, float, float, float, float]],
-    target_time: float,
-) -> None:
-    """Advance a particle to ``target_time`` under linear-in-time rates.
-
-    ``segments`` are ``(start, end, birth_0, birth_slope, death_0, death_slope)``
-    as built by :func:`bdsurv.rates.merged_segments`.  Within a segment the next
-    event time inverts the cumulative total hazard; an event past the segment
-    end is discarded and redrawn from the boundary, which is exact.
-    """
-    if target_time < state.current_time:
-        msg = "target_time cannot be less than current_time"
-        raise ValueError(msg)
-
-    for start, end, b0, b1, d0, d1 in segments:
-        if end <= state.current_time:
-            continue
-        stop = min(end, target_time)
-        while state.current_time < stop:
-            n = len(state.alive_ids)
-            if n == 0:
-                state.current_time = target_time
-                _append_trace_point(state=state, time_point=target_time)
-                return
-            local = state.current_time - start
-            lam = b0 + b1 * local
-            mu = d0 + d1 * local
-            offset = next_event_offset(
-                n * (lam + mu), n * (b1 + d1), float(state.rng.exponential())
-            )
-            event_time = state.current_time + offset
-            if event_time >= stop:
-                state.current_time = stop
-                break
-            state.current_time = event_time
-            local = event_time - start
-            lam = b0 + b1 * local
-            mu = d0 + d1 * local
-            _apply_event(
-                state,
-                event_time=event_time,
-                is_birth=state.rng.uniform() * (lam + mu) < lam,
-            )
-        if stop >= target_time:
-            break
-
-    state.current_time = target_time
-    _append_trace_point(state=state, time_point=target_time)
+    """Advance a particle to ``target_time``, tracing its population."""
+    advance(
+        particle.forward,
+        segments,
+        target_time,
+        particle.rng,
+        on_event=lambda _state, event_time: _append_trace_point(
+            state=particle, time_point=event_time
+        ),
+    )
+    _append_trace_point(state=particle, time_point=target_time)
 
 
 def _clone_particle(
@@ -803,13 +688,10 @@ def _clone_particle(
     seed_rng: np.random.Generator,
 ) -> _ParticleState:
     bump("clones")
-    bump("records_copied", len(donor.records))
+    bump("records_copied", donor.forward.n_individuals)
     return _ParticleState(
         particle_id=particle_id,
-        current_time=float(donor.current_time),
-        next_individual_id=int(donor.next_individual_id),
-        alive_ids=donor.alive_ids.copy(),
-        records=donor.records.copy(),  # record dicts are never mutated, so share them
+        forward=donor.forward.copy(),
         trace_times=donor.trace_times.copy(),
         trace_populations=donor.trace_populations.copy(),
         rng=spawn(seed_rng, "dynamics"),
@@ -825,19 +707,8 @@ def _particle_to_tree(
     birth_rate_function: ConstantRateLike | LinearRateLike | None = None,
     death_rate_function: ConstantRateLike | LinearRateLike | None = None,
 ) -> SimulatedTree:
-    # Records are inserted in individual-id order (0..n-1) and only replaced
-    # in place, so iteration order is id order.
-    records = list(state.records.values())
-    records_df = build_records(
-        [record["creation_time"] for record in records],
-        [record["parent_id"] for record in records],
-        [record["death_time"] for record in records],
-        state.alive_ids[0] if state.alive_ids else None,
-        terminal_time,
-    )
-
     return SimulatedTree(
-        records=records_df,
+        records=state.forward.to_records(terminal_time),
         birth_rate=float(birth_rate),
         death_rate=float(death_rate),
         terminal_time=float(terminal_time),
@@ -852,7 +723,7 @@ class _Dynamics:
 
     terminal_time: float
     log_pr: Callable[[float], float]
-    evolve: Callable[[_ParticleState, float], None]
+    segments: list[Segment]
     tree_rates: dict[str, Any]
 
 
@@ -863,7 +734,9 @@ def _build_conditioned_trajectories(
     seed_rng: np.random.Generator,
     dynamics: _Dynamics,
 ) -> list[ConditionedTrajectory]:
-    survivors = [particle for particle in particles if len(particle.alive_ids) > 0]
+    survivors = [
+        particle for particle in particles if len(particle.forward.alive_ids) > 0
+    ]
     if not survivors:
         return []
 
@@ -894,26 +767,29 @@ def _build_conditioned_trajectories(
     return trajectories
 
 
+class _Level(NamedTuple):
+    """A level boundary: its 1-based index and its time."""
+
+    number: int
+    time: float
+
+
 def _enrich_survivors(
     *,
-    survivors: np.ndarray,
     particles: list[_ParticleState],
     splitting_factor: int,
     n_particles_cap: int,
     seed_rng: np.random.Generator,
     particle_id_counter: int,
-    level_index: int,
-    target_time: float,
-    lineage_rows: list[dict[str, Any]],
-) -> tuple[list[_ParticleState], int, int]:
+    level: _Level,
+) -> tuple[list[_ParticleState], int, int, list[dict[str, Any]]]:
     """Clone survivors R-fold; subsample to cap if needed.
 
     Parameters
     ----------
-    survivors : np.ndarray
-        Indices into ``particles`` of survivors at the current level.
     particles : list[_ParticleState]
-        Full particle list at the current level boundary.
+        Full particle list at the current level boundary; those with a live
+        individual are the survivors.
     splitting_factor : int
         Number of copies made of each survivor.
     n_particles_cap : int
@@ -922,20 +798,19 @@ def _enrich_survivors(
         Master RNG used to draw child seeds.
     particle_id_counter : int
         Next available particle identifier.
-    level_index : int
-        Current level index (used in lineage records).
-    target_time : float
-        Current level boundary time (used in lineage records).
-    lineage_rows : list[dict[str, Any]]
-        Appended in-place with parent-child lineage entries.
+    level : _Level
+        Current level (index and time, used in lineage records).
 
     Returns
     -------
-    tuple[list[_ParticleState], int, int]
-        The enriched particle list, the updated ``particle_id_counter`` and the
-        number of clones dropped by the cap (0 if it did not bind).
+    tuple[list[_ParticleState], int, int, list[dict[str, Any]]]
+        The enriched particle list, the updated ``particle_id_counter``, the
+        number of clones dropped by the cap (0 if it did not bind) and the
+        parent-child lineage rows, one per clone.
 
     """
+    survivors = np.flatnonzero([len(p.forward.alive_ids) > 0 for p in particles])
+    lineage_rows: list[dict[str, Any]] = []
     target_count = splitting_factor * int(survivors.size)
     n_dropped = max(0, target_count - n_particles_cap)
     if n_dropped == 0:
@@ -956,15 +831,15 @@ def _enrich_survivors(
         next_particles.append(child_particle)
         lineage_rows.append(
             {
-                "level_index": level_index,
-                "time": target_time,
+                "level_index": level.number,
+                "time": level.time,
                 "child_slot": child_slot,
                 "parent_slot": parent_slot,
                 "child_particle_id": child_particle.particle_id,
                 "parent_particle_id": parent_particle.particle_id,
             },
         )
-    return next_particles, particle_id_counter, n_dropped
+    return next_particles, particle_id_counter, n_dropped, lineage_rows
 
 
 @dataclass
@@ -1008,10 +883,10 @@ def _run_attempt(
         bump("particle_steps", n_entering)
 
         for particle in particles:
-            dynamics.evolve(particle, target_time)
+            _advance_particle(particle, dynamics.segments, target_time)
 
         populations_at_level = np.asarray(
-            [len(particle.alive_ids) for particle in particles],
+            [len(particle.forward.alive_ids) for particle in particles],
             dtype=np.int64,
         )
         survivors = np.flatnonzero(populations_at_level > 0)
@@ -1034,17 +909,15 @@ def _run_attempt(
 
         # Enrich for the next interval; nothing to enrich after the last one.
         if level_index < len(levels) - 1:
-            particles, particle_id_counter, n_dropped = _enrich_survivors(
-                survivors=survivors,
+            particles, particle_id_counter, n_dropped, new_rows = _enrich_survivors(
                 particles=particles,
                 splitting_factor=int(replicates[level_index]),
                 n_particles_cap=n_particles_cap,
                 seed_rng=seed_rng,
                 particle_id_counter=particle_id_counter,
-                level_index=level_index,
-                target_time=target_time,
-                lineage_rows=lineage_rows,
+                level=_Level(level_index, target_time),
             )
+            lineage_rows.extend(new_rows)
             if n_dropped:
                 diagnostics[-1] = replace(diagnostics[-1], n_dropped_by_cap=n_dropped)
                 n_dropped_by_cap += n_dropped
@@ -1189,16 +1062,14 @@ def simulate_subcritical_survival_splitting(
     check_positive_rates(birth_rate, death_rate)
     check_terminal_time(float(config.terminal_time))
     _check_n_particles(int(config.n_particles))
+    terminal_time = float(config.terminal_time)
     dynamics = _Dynamics(
-        terminal_time=float(config.terminal_time),
+        terminal_time=terminal_time,
         log_pr=lambda t: log_survival_probability_constant(
             birth_rate=birth_rate, death_rate=death_rate, time=t
         ),
-        evolve=lambda state, target: _simulate_to_level(
-            state=state,
-            birth_rate=birth_rate,
-            death_rate=death_rate,
-            target_time=target,
+        segments=merged_segments(
+            *resolve_rates(birth_rate, death_rate, terminal_time)[:2]
         ),
         tree_rates={"birth_rate": birth_rate, "death_rate": death_rate},
     )
@@ -1248,13 +1119,10 @@ def simulate_linear_survival_splitting(
         config.birth_rate, config.death_rate, None
     )
     _check_n_particles(config.n_particles)
-    segments = merged_segments(birth, death)
     dynamics = _Dynamics(
         terminal_time=terminal_time,
         log_pr=lambda t: log_survival_probability(birth, death, t),
-        evolve=lambda state, target: _simulate_to_level_linear(
-            state=state, segments=segments, target_time=target
-        ),
+        segments=merged_segments(birth, death),
         tree_rates={
             "birth_rate": math.nan,
             "death_rate": math.nan,
@@ -1327,7 +1195,9 @@ def _run_splitting(
         dynamics=dynamics,
     )
 
-    final_survivor_count = int(sum(len(p.alive_ids) > 0 for p in outcome.particles))
+    final_survivor_count = int(
+        sum(len(p.forward.alive_ids) > 0 for p in outcome.particles)
+    )
     particle_genealogy = pd.DataFrame(outcome.lineage_rows)
     if particle_genealogy.empty:
         particle_genealogy = pd.DataFrame(

@@ -1,5 +1,7 @@
 """Tests for splitting-based conditioned survival simulation."""
 
+import itertools
+
 import numpy as np
 import pytest
 
@@ -150,7 +152,7 @@ def _reference_grid(
     while True:
         out = [times[0]]
         added = False
-        for left, right in zip(times, times[1:], strict=False):
+        for left, right in itertools.pairwise(times):
             if log_pr(right) - log_pr(left) < -2.0:
                 out.append(0.5 * (left + right))
                 added = True
