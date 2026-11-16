@@ -35,7 +35,7 @@ from bdsurv.linear_rates import (
     _next_event_offset,  # pyright: ignore[reportPrivateUsage]
     _segments,  # pyright: ignore[reportPrivateUsage]
 )
-from bdsurv.tree import SimulatedTree
+from bdsurv.tree import SimulatedTree, build_records
 
 MIN_LEVEL_TIMES = 2
 _BAND_LOWER: float = np.e**-2.0  # lowest allowed Pr(t_i) / Pr(t_{i-1})
@@ -832,34 +832,15 @@ def _particle_to_tree(
     birth_rate_function: ConstantRateLike | LinearRateLike | None = None,
     death_rate_function: ConstantRateLike | LinearRateLike | None = None,
 ) -> SimulatedTree:
-    records_df = pd.DataFrame(state.records.values())
-    if records_df.empty:
-        records_df = pd.DataFrame(
-            columns=[
-                "individual_id",
-                "parent_id",
-                "creation_time",
-                "death_time",
-                "is_spine",
-            ],
-        )
-
-    records_df["is_spine"] = False
-    if state.alive_ids:
-        spine_id = state.alive_ids[0]
-        records_df.loc[records_df["individual_id"] == spine_id, "is_spine"] = True
-
-    records_df["survived"] = records_df["death_time"].isna()
-    records_df["age"] = np.where(
-        records_df["survived"],
-        terminal_time - records_df["creation_time"].to_numpy(dtype=np.float64),
-        np.nan,
-    )
-    records_df["lifespan"] = np.where(
-        ~records_df["survived"],
-        records_df["death_time"].to_numpy(dtype=np.float64)
-        - records_df["creation_time"].to_numpy(dtype=np.float64),
-        np.nan,
+    # Records are inserted in individual-id order (0..n-1) and only replaced
+    # in place, so iteration order is id order.
+    records = list(state.records.values())
+    records_df = build_records(
+        [record["creation_time"] for record in records],
+        [record["parent_id"] for record in records],
+        [record["death_time"] for record in records],
+        state.alive_ids[0] if state.alive_ids else None,
+        terminal_time,
     )
 
     return SimulatedTree(

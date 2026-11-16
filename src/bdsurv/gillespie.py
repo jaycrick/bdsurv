@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import numpy as np
-import pandas as pd
 from numpy.typing import NDArray
 
-from bdsurv.tree import SimulatedProcess
+from bdsurv.tree import SimulatedProcess, build_records
 
 
 def simulate_birth_death_process(
@@ -100,15 +97,10 @@ def simulate_birth_death_process(
         individuals_alive: list[tuple[float, int]] = [
             (0.0, 0),
         ]  # (creation_time, individual_id)
-        all_records: list[dict[str, Any]] = [
-            {
-                "individual_id": 0,
-                "parent_id": None,
-                "creation_time": 0.0,
-                "death_time": None,
-                "is_spine": False,
-            },
-        ]  # Record of all records
+        # Per-individual columns, indexed by individual id
+        creation: list[float] = [0.0]
+        parent: list[int | None] = [None]
+        death_time: list[float | None] = [None]
         new_individual_id = 1
 
         # Initialize rate tracking
@@ -160,15 +152,9 @@ def simulate_birth_death_process(
                     individuals_alive.insert(insert_idx, new_entry)
                     parent_id = individuals_alive[insert_idx - 1][1]
 
-                all_records.append(
-                    {
-                        "individual_id": new_individual_id,
-                        "parent_id": parent_id,
-                        "creation_time": current_time,
-                        "death_time": None,
-                        "is_spine": False,
-                    },
-                )
+                creation.append(current_time)
+                parent.append(parent_id)
+                death_time.append(None)
                 new_individual_id += 1
                 total_rate += birth_death_rate
             else:
@@ -177,40 +163,17 @@ def simulate_birth_death_process(
                 _, dead_id = individuals_alive.pop(death_idx)
 
                 # Update the record
-                for individual in all_records:
-                    if individual["individual_id"] == dead_id:
-                        individual["death_time"] = current_time
-                        break
+                death_time[dead_id] = current_time
 
                 total_rate -= birth_death_rate
 
-        # Process surviving records
+        # Spine = first individual alive at the end
         spine_id = individuals_alive[0][1] if individuals_alive else None
-        if spine_id is not None:
-            for individual in all_records:
-                if individual["individual_id"] == spine_id:
-                    individual["is_spine"] = True
-                    break
-
-        # Create DataFrame and add derived columns
-        df = pd.DataFrame(all_records)
-        df["death_time"] = df["death_time"].astype(float)
-
-        # Add survived column (True if death_time is None)
-        df["survived"] = df["death_time"].isna()
-
-        # Add age column for surviving records (vectorized)
-        df["age"] = np.where(df["survived"], max_time - df["creation_time"], np.nan)
-
-        # Add lifespan column for dead records (vectorized)
-        df["lifespan"] = np.where(
-            ~df["survived"],
-            df["death_time"] - df["creation_time"],
-            np.nan,
-        )
+        df = build_records(creation, parent, death_time, spine_id, max_time)
+        survived = df["survived"]
 
         # Return the first draw, or the first non-extinct one if required.
-        if not ensure_non_extinct or df["survived"].any():
+        if not ensure_non_extinct or survived.any():
             return SimulatedProcess(
                 records=df,
                 birth_rates=birth_rates_arr,

@@ -10,16 +10,14 @@ derivation.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
 
 import numpy as np
-import pandas as pd
 
 from bdsurv import _linear_math
 from bdsurv._numerics import close
 from bdsurv._rng_counter import bump, make_rng
 from bdsurv.linear_rates import ConstantRateLike, LinearRateLike
-from bdsurv.tree import SimulatedTree
+from bdsurv.tree import SimulatedTree, build_records
 
 _Step = Callable[[float, np.random.Generator], float]
 
@@ -259,15 +257,9 @@ def _contour_process_list_to_tree(
     values = [float(value) for value in contour_process_list]
     terminal_time = float(max(values))
 
-    records: list[dict[str, Any]] = [
-        {
-            "individual_id": 0,
-            "parent_id": None,
-            "creation_time": values[0],
-            "death_time": float("nan"),
-            "is_spine": False,
-        },
-    ]
+    creation = [values[0]]
+    parent: list[int | None] = [None]
+    death_time = [float("nan")]
 
     birth_times_stack = [values[0]]
     individual_number_stack = [0]
@@ -282,13 +274,11 @@ def _contour_process_list_to_tree(
         if index % 2 == 1:
             if close(current_value, terminal_time):
                 # Individual that 'dies' at terminal time is considered alive
-                records[individual_number_stack[-1]]["death_time"] = float(
-                    "nan",
-                )
+                death_time[individual_number_stack[-1]] = float("nan")
                 if spine_individual_id is None:
                     spine_individual_id = individual_number_stack[-1]
             else:
-                records[individual_number_stack[-1]]["death_time"] = current_value
+                death_time[individual_number_stack[-1]] = current_value
             continue
 
         # Even indices are birth times: pop ancestors with birth times >=
@@ -300,39 +290,18 @@ def _contour_process_list_to_tree(
         if not individual_number_stack:
             raise ValueError("contour_process_list is not valid for reconstruction")
 
-        records.append(
-            {
-                "individual_id": next_individual_id,
-                "parent_id": individual_number_stack[-1],
-                "creation_time": current_value,
-                "death_time": float("nan"),
-                "is_spine": False,
-            },
-        )
+        creation.append(current_value)
+        parent.append(individual_number_stack[-1])
+        death_time.append(float("nan"))
 
         birth_times_stack.append(current_value)
         individual_number_stack.append(next_individual_id)
         next_individual_id += 1
 
-    records_df = pd.DataFrame(records)
-
     # Records with death_time == terminal_time are considered alive.
-    records_df["survived"] = records_df["death_time"].isna()
-    records_df["age"] = np.where(
-        records_df["survived"],
-        terminal_time - records_df["creation_time"],
-        np.nan,
+    records_df = build_records(
+        creation, parent, death_time, spine_individual_id, terminal_time
     )
-    records_df["lifespan"] = np.where(
-        ~records_df["survived"],
-        records_df["death_time"] - records_df["creation_time"],
-        np.nan,
-    )
-
-    # Mark the spine: the individual last-born when T was first reached.
-    records_df["is_spine"] = False
-    if spine_individual_id is not None:
-        records_df.loc[spine_individual_id, "is_spine"] = True
 
     return SimulatedTree(
         records=records_df,

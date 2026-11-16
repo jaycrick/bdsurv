@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -29,7 +29,7 @@ import pandas as pd
 from jax import lax
 from numpy.typing import NDArray
 
-from bdsurv.tree import SimulatedProcess
+from bdsurv.tree import SimulatedProcess, build_records
 
 
 class LifespanSimulationArrays(NamedTuple):
@@ -378,7 +378,6 @@ def _reconstruct_genealogy(
 
     """
     n_born = len(birth_times)
-    survived_mask = ~np.isfinite(death_times) | (death_times > terminal_time)
 
     # ---- Build chronological event list ----
     # Each element: (time, kind, individual_id)
@@ -391,7 +390,6 @@ def _reconstruct_genealogy(
     events.sort(key=lambda e: (e[0], e[1]))
 
     # ---- Replay ----
-    records: list[dict[str, Any]] = []
     alive_list: list[int] = []  # ordered list of alive individual IDs
     parent_map: dict[int, int | None] = {}
 
@@ -419,30 +417,15 @@ def _reconstruct_genealogy(
     spine_id = alive_list[0] if alive_list else None
 
     # ---- Build records DataFrame ----
-    for i in range(n_born):
-        raw_death = float(death_times[i])
-        died = np.isfinite(raw_death) and raw_death <= terminal_time
-        records.append(
-            {
-                "individual_id": i,
-                "parent_id": parent_map.get(i),
-                "creation_time": float(birth_times[i]),
-                "death_time": raw_death if died else None,
-                "is_spine": i == spine_id,
-                "survived": survived_mask[i],
-                "age": (
-                    terminal_time - float(birth_times[i])
-                    if survived_mask[i]
-                    else np.nan
-                ),
-                "lifespan": (raw_death - float(birth_times[i])) if died else np.nan,
-                "birth_epoch": int(birth_epochs[i]),
-            }
-        )
-
-    df = pd.DataFrame(records)
-    df["death_time"] = df["death_time"].astype(float)
-    return df
+    died = np.isfinite(death_times) & (death_times <= terminal_time)
+    return build_records(
+        birth_times,
+        [parent_map.get(i) for i in range(n_born)],
+        np.where(died, death_times, np.nan),
+        spine_id,
+        terminal_time,
+        birth_epoch=np.asarray(birth_epochs, dtype=np.int64),
+    )
 
 
 def simulate_birth_death_lifespans_arrays(

@@ -10,10 +10,6 @@ The expected column list and dtypes are data, one entry per simulator, because
 the simulators do not all produce the same schema today:
 
 - ``simulate_birth_death_lifespans`` adds a ``birth_epoch`` column.
-- ``parent_id`` is ``float64`` (NaN for the root) in every simulator, except in
-  a frame holding only the root, where all of them give ``object`` (``None``).
-- ``death_time`` is ``float64``, except that the two splitting simulators give
-  ``object`` (all ``None``) when no individual in the tree has died.
 """
 
 from __future__ import annotations
@@ -89,19 +85,12 @@ class Simulator:
     regimes: tuple[str, ...]
     dtypes: dict[str, str]
     run: Callable[[str, int | None], Runs]
-    # Whether a frame in which nobody died has an ``object`` ``death_time``.
-    no_deaths_death_time_is_object: bool = False
     # Whether the simulator can return an extinct process.
     can_go_extinct: bool = False
 
-    def schema_for(self, records: pd.DataFrame) -> dict[str, str]:
-        """Return the expected dtypes for these records, as data."""
-        dtypes = dict(self.dtypes)
-        if len(records) == 1:  # a root-only frame has an all-None parent_id
-            dtypes["parent_id"] = "object"
-        if self.no_deaths_death_time_is_object and records["survived"].all():
-            dtypes["death_time"] = "object"
-        return dtypes
+    def schema_for(self) -> dict[str, str]:
+        """Return the expected dtypes of this simulator's records, as data."""
+        return dict(self.dtypes)
 
 
 def _process(regime: str, seed: int | None) -> Runs:
@@ -199,7 +188,6 @@ def _sim(
     run: Callable[[str, int | None], Runs],
     *,
     forward: bool = False,
-    splitting: bool = False,
 ) -> Simulator:
     """Build a simulator entry; ``forward`` ones can go extinct."""
     return Simulator(
@@ -207,7 +195,6 @@ def _sim(
         regimes,
         LIFESPAN_DTYPES if name == "simulate_birth_death_lifespans" else BASE_DTYPES,
         run,
-        no_deaths_death_time_is_object=splitting,
         can_go_extinct=forward,
     )
 
@@ -242,13 +229,11 @@ SIMULATORS = [
         "simulate_subcritical_survival_splitting",
         CONSTANT,
         _splitting,
-        splitting=True,
     ),
     _sim(
         "simulate_linear_survival_splitting",
         WITH_ARLEY,
         _linear_splitting,
-        splitting=True,
     ),
 ]
 
@@ -262,9 +247,7 @@ CASES = [
 def _check(sim: Simulator, runs: Runs) -> None:
     assert runs, f"{sim.name} returned no records"
     for records, terminal_time in runs:
-        assert_valid_records(
-            records, terminal_time, expected_dtypes=sim.schema_for(records)
-        )
+        assert_valid_records(records, terminal_time, expected_dtypes=sim.schema_for())
 
 
 @pytest.mark.parametrize(("sim", "regime"), CASES)

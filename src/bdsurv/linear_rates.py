@@ -29,10 +29,9 @@ from typing import NamedTuple, Protocol
 
 import jax
 import numpy as np
-import pandas as pd
 from numpy.typing import NDArray
 
-from bdsurv.tree import SimulatedProcess
+from bdsurv.tree import SimulatedProcess, build_records
 
 _RelTol = 1e-12
 
@@ -241,20 +240,8 @@ def simulate_birth_death_linear(
         if ensure_non_extinct and not alive:
             continue
 
-        df = pd.DataFrame(
-            {
-                "individual_id": np.arange(len(creation)),
-                "parent_id": parent,
-                "creation_time": creation,
-                "death_time": death_time,
-            }
-        )
-        df["death_time"] = df["death_time"].astype(float)
-        df["is_spine"] = df["individual_id"] == (alive[0] if alive else -1)
-        df["survived"] = df["death_time"].isna()
-        df["age"] = np.where(df["survived"], max_time - df["creation_time"], np.nan)
-        df["lifespan"] = np.where(
-            df["survived"], np.nan, df["death_time"] - df["creation_time"]
+        df = build_records(
+            creation, parent, death_time, alive[0] if alive else None, max_time
         )
         return SimulatedProcess(
             records=df,
