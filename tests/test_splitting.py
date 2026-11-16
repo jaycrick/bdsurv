@@ -429,7 +429,7 @@ class TestOverrides:
             n_particles=200,
             level_times=[0.0, 20.0],
             replicates=[2],
-            random_seed=5,
+            random_seed=15,
             max_restarts=100,
         )
         with pytest.warns(RuntimeWarning, match="No particle survived"):

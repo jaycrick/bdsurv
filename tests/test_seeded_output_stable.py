@@ -60,8 +60,8 @@ class TestSeededOutputs:
     @pytest.mark.parametrize(
         ("seed", "expected"),
         [
-            (1, [169, 4, 1219.1315482308883, 1333.5796881079948, 1.0]),
-            (2, [98, 24, 1047.767986043143, 776.7077183066651, 1.0]),
+            (1, [42, 2, 285.22691705762065, 301.159843050245, 1.0]),
+            (2, [107, 8, 858.6619580099759, 838.9802443762617, 1.0]),
         ],
     )
     def test_constant_contour(self, seed: int, expected: list[float]) -> None:
@@ -73,8 +73,8 @@ class TestSeededOutputs:
     @pytest.mark.parametrize(
         ("seed", "expected"),
         [
-            (1, [35, 2, 94.77814507692689, 115.229770030539, 1.0]),
-            (2, [69, 7, 255.3754298349648, 261.45144086413035, 1.0]),
+            (1, [20, 3, 63.61825352429334, 64.86647536153421, 1.0]),
+            (2, [29, 1, 90.45824745145643, 106.67347497445284, 1.0]),
         ],
     )
     def test_linear_contour(self, seed: int, expected: list[float]) -> None:
@@ -92,13 +92,13 @@ class TestSeededOutputs:
             len(result.replicates),
             result.final_survivor_count,
         ] == [
-            5,
+            1,
             8,
-            3,
+            12,
         ]
         _check(
             result.conditioned_trajectories[0].process.records,
-            [28, 1, 121.11721121713245, 132.32771273325469, 1.0],
+            [19, 1, 77.14673158264206, 83.79439924882608, 1.0],
         )
 
     def test_linear_splitting(self) -> None:
@@ -112,13 +112,13 @@ class TestSeededOutputs:
             len(result.replicates),
             result.final_survivor_count,
         ] == [
-            5,
             3,
             3,
+            6,
         ]
         _check(
             result.conditioned_trajectories[0].process.records,
-            [26, 1, 61.04204663194287, 74.9515368674886, 1.0],
+            [34, 1, 79.25211379095654, 101.20468192704998, 1.0],
         )
 
 
@@ -138,8 +138,8 @@ class TestSeededForwardOutputs:
     @pytest.mark.parametrize(
         ("seed", "expected", "parent_id_sum"),
         [
-            (1, [16, 7, 30.737271931419592, 23.477966775788325, 1.0], 68),
-            (2, [12, 7, 27.57141350097904, 12.361988080781476, 1.0], 38),
+            (1, [7, 2, 12.965153575756315, 12.393864627083243, 1.0], 7),
+            (2, [6, 0, 11.116018231543297, 17.866882013197998, 0.0], 7),
         ],
     )
     def test_gillespie(
@@ -153,9 +153,8 @@ class TestSeededForwardOutputs:
     @pytest.mark.parametrize(
         ("seed", "expected", "parent_id_sum", "birth_epoch_sum"),
         [
-            # Seed 1 goes extinct, so this pins the no-spine case too.
-            (1, [5, 0, 3.270825749036394, 6.783972028255517, 0.0], 2, 0),
-            (2, [8, 3, 11.490354257091717, 9.452960978580496, 1.0], 9, 1),
+            (1, [11, 7, 24.141982974716907, 11.006915536528556, 1.0], 37, 6),
+            (2, [6, 1, 6.559275103268879, 8.213494626179076, 1.0], 7, 1),
         ],
     )
     def test_lifespans(
@@ -174,8 +173,8 @@ class TestSeededForwardOutputs:
     @pytest.mark.parametrize(
         ("seed", "expected", "parent_id_sum"),
         [
-            (1, [18, 2, 45.09248583023237, 63.024201157719936, 1.0], 88),
-            (2, [19, 3, 60.73872011813883, 69.69757615203609, 1.0], 85),
+            (1, [9, 0, 21.636116034544536, 36.92982001999652, 0.0], 13),
+            (2, [9, 1, 24.269645880678187, 33.589325318372644, 1.0], 8),
         ],
     )
     def test_linear(self, seed: int, expected: list[float], parent_id_sum: int) -> None:
@@ -189,8 +188,8 @@ class TestSeededConditionedContourOutputs:
     @pytest.mark.parametrize(
         ("seed", "expected", "parent_id_sum"),
         [
-            (1, [36, 3, 100.62110826343981, 115.229770030539, 1.0], 536),
-            (2, [17, 3, 42.839345506614464, 39.87996018421805, 1.0], 79),
+            (1, [20, 3, 63.61825352429334, 64.86647536153421, 1.0], 129),
+            (2, [35, 3, 122.32761498642452, 128.75144934188975, 1.0], 447),
         ],
     )
     def test_given_population(
@@ -202,8 +201,8 @@ class TestSeededConditionedContourOutputs:
     @pytest.mark.parametrize(
         ("seed", "expected", "parent_id_sum"),
         [
-            (1, [22, 3, 48.293128295198066, 53.1805059002459, 1.0], 171),
-            (2, [76, 3, 182.90537902967893, 230.03008820965204, 1.0], 2551),
+            (1, [22, 3, 64.5884897373746, 67.97628203765409, 1.0], 158),
+            (2, [23, 3, 61.83765057964648, 66.82969077054324, 1.0], 153),
         ],
     )
     def test_given_ages(
@@ -220,8 +219,8 @@ class TestSeededEraConditioningOutputs:
         ("seed", "samples", "n_filter_passing"),
         [
             # (n_born, n_alive_present, per_era_survivors) of each sample.
-            (1, [(4, 4, [1, 3]), (5, 4, [1, 3])], 4),
-            (2, [(4, 1, [1, 0]), (11, 6, [1, 5])], 5),
+            (1, [(9, 6, [2, 4]), (9, 6, [2, 4])], 8),
+            (2, [(15, 11, [3, 8]), (23, 15, [3, 12])], 3),
         ],
     )
     def test_conditioned_survival_process(

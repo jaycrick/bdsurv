@@ -31,7 +31,7 @@ from bdsurv._hazard import (
     log_survival_probability_constant,
     next_event_offset,
 )
-from bdsurv._rng_counter import bump, make_rng
+from bdsurv._seeding import bump, root_rng, spawn
 from bdsurv.rates import (
     ConstantRateLike,
     LinearRateLike,
@@ -355,14 +355,6 @@ def _build_level_times(
     return levels
 
 
-def _make_child_rng(
-    *,
-    seed_rng: np.random.Generator,
-) -> np.random.Generator:
-    child_seed = int(seed_rng.integers(0, 2**31 - 1))
-    return make_rng(child_seed, "dynamics")
-
-
 def _initial_level_count(log_pr_terminal: float) -> int:
     """Return ``K`` with ``Pr(T) ** (1 / K)`` closest to 1/3, and at least 1."""
     return max(1, round(log_pr_terminal / math.log(_TARGET_LEVEL_RATIO)))
@@ -667,7 +659,7 @@ def _initialize_particle(
         records={0: root_record},
         trace_times=[0.0],
         trace_populations=[1],
-        rng=_make_child_rng(seed_rng=seed_rng),
+        rng=spawn(seed_rng, "dynamics"),
     )
 
 
@@ -820,7 +812,7 @@ def _clone_particle(
         records=donor.records.copy(),  # record dicts are never mutated, so share them
         trace_times=donor.trace_times.copy(),
         trace_populations=donor.trace_populations.copy(),
-        rng=_make_child_rng(seed_rng=seed_rng),
+        rng=spawn(seed_rng, "dynamics"),
     )
 
 
@@ -1297,7 +1289,7 @@ def _run_splitting(
             msg = f"max_restarts must be >= 1, got {config.max_restarts}."
             raise ValueError(msg)
 
-    seed_rng = make_rng(config.random_seed, "seeding")
+    seed_rng = root_rng(config.random_seed, "seeding")
 
     n_attempts = 0
     total_dropped = 0

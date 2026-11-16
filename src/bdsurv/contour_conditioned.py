@@ -24,9 +24,9 @@ from bdsurv._hazard import (
     log_integral,
     log_survival_probability,
 )
+from bdsurv._seeding import root_rng
 from bdsurv.contour import (
     contour_process_list_to_tree,
-    seeded_rng,
     validate_contour_process_list,
 )
 from bdsurv.rates import PiecewiseConstant, Rate, RateInput, resolve_rates
@@ -244,7 +244,7 @@ def simulate_contour_given_population(
     if n_alive > 1 and cumulative(birth, horizon) <= 0.0:
         msg = "birth_rate must not be identically zero when n_alive > 1"
         raise ValueError(msg)
-    walker = _Walker(birth, death, horizon, seeded_rng(random_seed))
+    walker = _Walker(birth, death, horizon, root_rng(random_seed, "contour"))
     contour = _population_contour(walker, n_alive, prefer_top=prefer_top)
     tree_args = _tree_args(birth_rate, death_rate, horizon)
     return contour_process_list_to_tree(contour, **tree_args)  # pyright: ignore[reportArgumentType]
@@ -442,7 +442,7 @@ def simulate_contour_given_ages(  # noqa: PLR0913
         if not np.isfinite(log_w[0]):
             msg = "the age at spine_index has zero spine weight"
             raise ValueError(msg)
-    walker = _Walker(birth, death, horizon, seeded_rng(random_seed))
+    walker = _Walker(birth, death, horizon, root_rng(random_seed, "contour"))
     contour, _ = _ages_contour(walker, age_list, spine_index, prefer_top=prefer_top)
     tree_args = _tree_args(birth_rate, death_rate, horizon)
     return contour_process_list_to_tree(contour, **tree_args)  # pyright: ignore[reportArgumentType]

@@ -14,7 +14,7 @@ from collections.abc import Callable
 import numpy as np
 
 from bdsurv._hazard import backward_hazard_time, close, cumulative, forward_hazard_time
-from bdsurv._rng_counter import bump, make_rng
+from bdsurv._seeding import bump, root_rng
 from bdsurv.rates import (
     ConstantRateLike,
     LinearRateLike,
@@ -305,14 +305,6 @@ def contour_process_list_to_tree(
     )
 
 
-def seeded_rng(random_seed: int | None) -> np.random.Generator:
-    """Return the contour generator, seeded through a child seed when given."""
-    if random_seed is None:
-        return make_rng(None, "contour")
-    base_seed_rng = make_rng(random_seed, "seeding")
-    return make_rng(int(base_seed_rng.integers(0, 2**31 - 1)), "contour")
-
-
 def simulate_birth_death_process_from_contour_process(
     birth_rate: float,
     death_rate: float,
@@ -330,7 +322,7 @@ def simulate_birth_death_process_from_contour_process(
     check_positive_rates(birth_rate, death_rate)
     check_terminal_time(terminal_time)
 
-    rng = seeded_rng(random_seed)
+    rng = root_rng(random_seed, "contour")
 
     spine_component = _generate_spine_component(
         birth_rate=float(birth_rate),
@@ -407,7 +399,7 @@ def simulate_linear_rate_contour_process(
     def up(y: float, rng: np.random.Generator) -> float:
         return forward_hazard_time(death, y, float(rng.exponential()), terminal_time)
 
-    rng = seeded_rng(random_seed)
+    rng = root_rng(random_seed, "contour")
     spine_component = _generate_component(
         down_step=down,
         up_step=up,

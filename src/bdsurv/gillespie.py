@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
+from bdsurv._seeding import root_rng, spawn
 from bdsurv.rates import epoch_rates
 from bdsurv.tree import SimulatedProcess, build_records
 
@@ -63,8 +64,8 @@ def simulate_birth_death_process(
         birth_rates, death_rates, times
     )
 
-    # Base RNG used to derive per-attempt seeds for reproducibility
-    base_seed_rng = np.random.default_rng(random_seed)
+    # Root RNG from which every attempt's generator is spawned
+    base_seed_rng = root_rng(random_seed, "seeding")
 
     if ensure_non_extinct and max_retries < 0:
         raise ValueError("max_retries must be a non-negative integer")
@@ -74,11 +75,7 @@ def simulate_birth_death_process(
     for _attempt in range(attempts_allowed + 1):
         # Create a per-attempt RNG so retries produce different draws but are
         # reproducible when `random_seed` is provided.
-        if random_seed is None:
-            rng = np.random.default_rng()
-        else:
-            child_seed = int(base_seed_rng.integers(0, 2**31 - 1))
-            rng = np.random.default_rng(child_seed)
+        rng = spawn(base_seed_rng, "dynamics")
 
         # Initialize tracking variables for this attempt
         current_time = 0.0

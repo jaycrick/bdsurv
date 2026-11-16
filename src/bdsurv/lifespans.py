@@ -29,6 +29,7 @@ import pandas as pd
 from jax import lax
 from numpy.typing import NDArray
 
+from bdsurv._seeding import jax_key, root_rng
 from bdsurv.rates import epoch_rates
 from bdsurv.tree import SimulatedProcess, build_records
 
@@ -499,10 +500,7 @@ def simulate_birth_death_lifespans_arrays(
     dr_jax = jnp.array(death_rates_arr, dtype=jnp.float64)
     et_jax = jnp.array(times_arr, dtype=jnp.float64)
 
-    if random_seed is None:
-        key = jax.random.key(int(np.random.default_rng().integers(0, 2**31 - 1)))
-    else:
-        key = jax.random.key(int(random_seed))
+    key = jax_key(root_rng(random_seed, "seeding"))
 
     final_state = _simulate_lifespans_core(br_jax, dr_jax, et_jax, key, max_population)
 
@@ -601,14 +599,11 @@ def simulate_birth_death_lifespans(
     dr_jax = jnp.array(death_rates_arr, dtype=jnp.float64)
     et_jax = jnp.array(times_arr, dtype=jnp.float64)
 
-    base_rng = np.random.default_rng(random_seed)
+    base_rng = root_rng(random_seed, "seeding")
     attempts = max_retries if ensure_non_extinct else 0
 
     for _attempt in range(attempts + 1):
-        if random_seed is None:
-            key = jax.random.key(int(np.random.default_rng().integers(0, 2**31 - 1)))
-        else:
-            key = jax.random.key(int(base_rng.integers(0, 2**31 - 1)))
+        key = jax_key(base_rng)
 
         final_state = _simulate_lifespans_core(
             br_jax, dr_jax, et_jax, key, max_population

@@ -44,7 +44,7 @@ import jax
 # The simulators work in float64 throughout.
 jax.config.update("jax_enable_x64", True)
 
-from bdsurv._rng_counter import DrawCounts, count_draws  # noqa: E402
+from bdsurv._seeding import DrawCounts, count_draws  # noqa: E402
 from bdsurv.contour import (  # noqa: E402
     simulate_birth_death_process_from_contour_process,
     simulate_linear_rate_contour_process,

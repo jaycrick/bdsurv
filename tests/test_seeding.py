@@ -1,5 +1,6 @@
-"""Test the random-draw counter."""
+"""Test the seeding module: spawned generators, JAX keys and draw counting."""
 
+import jax
 import numpy as np
 import pytest
 
@@ -14,7 +15,15 @@ from bdsurv import (
     simulate_linear_survival_splitting,
     simulate_subcritical_survival_splitting,
 )
-from bdsurv._rng_counter import CountingGenerator, DrawCounts, bump, make_rng
+from bdsurv._seeding import (
+    CountingGenerator,
+    DrawCounts,
+    bump,
+    child_seed,
+    jax_key,
+    root_rng,
+    spawn,
+)
 
 BIRTH = PiecewiseConstant(np.array([1.0]), np.array([6.0]))
 DEATH = PiecewiseLinear(np.array([0.0]), np.array([3.0]), np.array([6.0]))
@@ -52,22 +61,22 @@ class TestCountingGenerator:
 
 class TestContext:
     def test_inactive_by_default(self) -> None:
-        assert not isinstance(make_rng(1, "contour"), CountingGenerator)
+        assert not isinstance(root_rng(1, "contour"), CountingGenerator)
         bump("events")  # no-op, must not raise
 
     def test_nesting_and_exception_safety(self) -> None:
         with count_draws() as outer:
-            make_rng(1, "contour").exponential()
+            root_rng(1, "contour").exponential()
             with count_draws() as inner:
-                make_rng(1, "contour").exponential()
+                root_rng(1, "contour").exponential()
                 bump("events", 3)
             assert inner.total_draws == 1
             assert inner.extras["events"] == 3
-            make_rng(1, "contour").exponential()
+            root_rng(1, "contour").exponential()
         assert outer.total_draws == 2
         with pytest.raises(RuntimeError), count_draws():
             raise RuntimeError
-        assert not isinstance(make_rng(1, "contour"), CountingGenerator)
+        assert not isinstance(root_rng(1, "contour"), CountingGenerator)
 
     def test_as_row_has_every_field(self) -> None:
         row = DrawCounts().as_row()
@@ -87,7 +96,7 @@ class TestCountedRunsAreUnchanged:
                 0.9, 1.0, 15.0, random_seed=3
             )
         assert plain.records.equals(counted.records)
-        assert counts.by_role("seeding") == 1
+        assert counts.by_role("seeding") == 0
         assert counts.by_role("contour") > 0
         assert counts.extras["contour_steps"] > 0
 
@@ -130,3 +139,61 @@ class TestCountedRunsAreUnchanged:
         assert counts.total_draws > 0
         # one exponential per event hazard draw, one uniform per event type
         assert counts.draws[("dynamics", "uniform")] == counts.extras["events"]
+
+
+class TestSpawn:
+    def test_children_differ_from_each_other_and_the_parent(self) -> None:
+        parent = root_rng(7, "seeding")
+        first = spawn(parent, "dynamics")
+        second = spawn(parent, "dynamics")
+        draws = [g.random(4).tolist() for g in (parent, first, second)]
+        assert len({tuple(d) for d in draws}) == 3
+
+    def test_same_seed_same_children(self) -> None:
+        def children() -> list[list[float]]:
+            parent = root_rng(7, "seeding")
+            return [spawn(parent, "dynamics").random(3).tolist() for _ in range(3)]
+
+        assert children() == children()
+
+    def test_spawn_does_not_advance_the_parent(self) -> None:
+        spawned_from = root_rng(3, "seeding")
+        spawn(spawned_from, "dynamics")
+        assert spawned_from.random() == root_rng(3, "seeding").random()
+
+    def test_unseeded_roots_differ(self) -> None:
+        assert root_rng(None, "seeding").random() != root_rng(None, "seeding").random()
+
+    def test_child_seed_is_a_nonnegative_int64(self) -> None:
+        rng = root_rng(1, "seeding")
+        seeds = [child_seed(rng) for _ in range(50)]
+        assert len(set(seeds)) == 50
+        assert all(0 <= x <= np.iinfo(np.int64).max for x in seeds)
+
+    def test_jax_key_is_accepted_by_jax_random(self) -> None:
+        key = jax_key(root_rng(5, "seeding"))
+        draw = jax.random.uniform(key)
+        assert 0.0 <= float(draw) < 1.0
+        again = jax.random.uniform(jax_key(root_rng(5, "seeding")))
+        assert float(draw) == float(again)
+        other = jax.random.uniform(jax_key(root_rng(6, "seeding")))
+        assert float(draw) != float(other)
+
+    def test_counted_generators_spawn_and_add_no_draws(self) -> None:
+        with count_draws() as counts:
+            parent = root_rng(2, "seeding")
+            assert isinstance(parent, CountingGenerator)
+            child = spawn(parent, "dynamics")
+            assert isinstance(child, CountingGenerator)
+            jax_key(parent)
+            child_seed(child)
+            assert counts.total_draws == 0
+            child.exponential()
+        assert counts.draws[("dynamics", "exponential")] == 1
+        assert counts.total_draws == 1
+
+    def test_counted_children_match_uncounted_children(self) -> None:
+        plain = spawn(root_rng(4, "seeding"), "dynamics").random(3)
+        with count_draws():
+            counted = spawn(root_rng(4, "seeding"), "dynamics").random(3)
+        assert np.array_equal(plain, counted)

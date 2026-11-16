@@ -70,6 +70,7 @@ import pandas as pd
 from jax import lax
 from numpy.typing import NDArray
 
+from bdsurv._seeding import child_seed, jax_key, root_rng
 from bdsurv.lifespans import TIE_TOLERANCE, sample_piecewise_exponential_death_time
 from bdsurv.rates import (
     check_epoch_ends,
@@ -470,7 +471,7 @@ def build_target_ranges(
 
     # Last era always passes
     ranges[-1, 0] = 0
-    ranges[-1, 1] = 2**31 - 1
+    ranges[-1, 1] = int(np.iinfo(np.int32).max)
 
     return ranges
 
@@ -593,7 +594,7 @@ def sample_conditioned_survival_process(
     if max_attempts is None:
         max_attempts = n_initial * 1000
 
-    rng = np.random.default_rng(random_seed)
+    rng = root_rng(random_seed, "seeding")
 
     samples_collected: list[MatchedSurvivalSample] = []
     last_diagnostics: list[EraConditioningDiagnostic] = []
@@ -615,9 +616,7 @@ def sample_conditioned_survival_process(
         diagnostics: list[EraConditioningDiagnostic] = []
 
         # ---- Era-0: seed n_initial independent particles ----
-        init_keys = jax.random.split(
-            jax.random.key(int(rng.integers(0, 2**31))), n_initial
-        )
+        init_keys = jax.random.split(jax_key(rng), n_initial)
         particles: list[_EraLoopState] = [
             _make_initial_particle(dr_jax, et_jax, k, max_population) for k in init_keys
         ]
@@ -662,7 +661,7 @@ def sample_conditioned_survival_process(
 
             # Split: clone each passing particle split_factor times
             split_keys = jax.random.split(
-                jax.random.key(int(rng.integers(0, 2**31))),
+                jax_key(rng),
                 len(passing) * split_factor,
             )
             particles = [
@@ -808,11 +807,11 @@ def sample_conditioned_survival_per_posterior(
     _check_sampler_arguments(
         target_ranges, n_epochs, split_factor=split_factor, n_initial=n_initial
     )
-    rng = np.random.default_rng(random_seed)
+    rng = root_rng(random_seed, "seeding")
     rows: list[dict[str, object]] = []
 
     for i in range(n_draws):
-        seed_i = int(rng.integers(0, 2**31))
+        seed_i = child_seed(rng)
         try:
             result = sample_conditioned_survival_process(
                 br_arr[i],

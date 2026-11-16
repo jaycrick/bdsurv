@@ -24,6 +24,7 @@ from __future__ import annotations
 import numpy as np
 
 from bdsurv._hazard import next_event_offset
+from bdsurv._seeding import root_rng, spawn
 from bdsurv.rates import (
     ConstantRateLike,
     LinearRateLike,
@@ -98,12 +99,10 @@ def simulate_birth_death_linear(
         msg = "max_retries must be a non-negative integer"
         raise ValueError(msg)
 
-    seeds = np.random.default_rng(random_seed)
+    seeds = root_rng(random_seed, "seeding")
     attempts = max_retries if ensure_non_extinct else 0
     for _ in range(attempts + 1):
-        rng = np.random.default_rng(
-            None if random_seed is None else int(seeds.integers(0, 2**31 - 1))
-        )
+        rng = spawn(seeds, "dynamics")
         alive = [0]
         creation = [0.0]
         parent: list[int | None] = [None]

@@ -11,7 +11,8 @@ from scipy import stats
 from scipy.integrate import quad
 
 from bdsurv import _hazard as lm
-from bdsurv.contour import seeded_rng, validate_contour_process_list
+from bdsurv._seeding import root_rng
+from bdsurv.contour import validate_contour_process_list
 from bdsurv.contour_conditioned import (
     _ages_contour,
     _cut_at_last_downcrossing,
@@ -79,7 +80,7 @@ def _tree(regime: str, n: int, seed: int, direction: str = "auto") -> Any:
 def _contour(regime: str, n: int, seed: int, direction: str) -> list[float]:
     birth, death = REGIMES[regime]
     rate_b, rate_d, horizon = resolve_rates(birth, death, _terminal_time(birth))
-    walker = _Walker(rate_b, rate_d, horizon, seeded_rng(seed))
+    walker = _Walker(rate_b, rate_d, horizon, root_rng(seed, "contour"))
     return _population_contour(walker, n, prefer_top=direction == "top")
 
 
@@ -334,7 +335,7 @@ def _ages_contour_of(
 ) -> tuple[list[float], int]:
     birth, death = REGIMES[regime]
     rate_b, rate_d, horizon = resolve_rates(birth, death, _terminal_time(birth))
-    walker = _Walker(rate_b, rate_d, horizon, seeded_rng(seed))
+    walker = _Walker(rate_b, rate_d, horizon, root_rng(seed, "contour"))
     return _ages_contour(walker, ages, spine_index, prefer_top=direction == "top")
 
 
