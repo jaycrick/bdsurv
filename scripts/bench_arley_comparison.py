@@ -26,7 +26,8 @@ Cells whose Arley trees would be too large (mean individuals ever born above
 ``10^MAX_LOG10_CUMULATIVE``) are listed in the slope table with
 ``feasible = False`` but not run.
 
-All the maths is in ``bdsurv._linear_math`` (ported from ``bdpinf``).
+All the maths is in ``bdsurv._hazard`` (public entry point
+``bdsurv.log_survival_probability``).
 The work is split into units and sharded exactly as in
 ``bench_method_comparison.py``; this script reuses that module's constants,
 sharding and environment record.

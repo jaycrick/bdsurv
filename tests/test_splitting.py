@@ -1,6 +1,7 @@
 """Tests for splitting-based conditioned survival simulation."""
 
 import itertools
+import warnings
 
 import numpy as np
 import pytest
@@ -406,19 +407,34 @@ class TestRestarts:
     def test_restarts_happen_and_succeed(self) -> None:
         # With R_1 small attempts often fail; some seed needs a restart.
         attempts = []
-        for seed in range(8):
-            config = SplittingConfig(
-                birth_rate=0.9,
-                death_rate=1.0,
-                terminal_time=30.0,
-                n_particles=200,
-                random_seed=seed,
-            )
-            result = simulate_survival_splitting(config)
-            attempts.append(result.n_attempts)
-            assert result.n_attempts <= result.max_restarts
-            if result.n_attempts < result.max_restarts or result.final_survivor_count:
-                assert result.final_survivor_count > 0
+        exhausted = 0
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            for seed in range(8):
+                config = SplittingConfig(
+                    birth_rate=0.9,
+                    death_rate=1.0,
+                    terminal_time=30.0,
+                    n_particles=200,
+                    random_seed=seed,
+                )
+                result = simulate_survival_splitting(config)
+                attempts.append(result.n_attempts)
+                assert result.n_attempts <= result.max_restarts
+                if result.final_survivor_count == 0:
+                    exhausted += 1
+                if (
+                    result.n_attempts < result.max_restarts
+                    or result.final_survivor_count
+                ):
+                    assert result.final_survivor_count > 0
+        # A seed that exhausts the restart cap warns; the warning is expected.
+        assert all(
+            issubclass(w.category, RuntimeWarning)
+            and "No particle survived" in str(w.message)
+            for w in caught
+        )
+        assert len(caught) == exhausted
         assert max(attempts) > 1
 
 
