@@ -5,21 +5,22 @@ Estimates the proportion of ever-created individuals currently alive
 on observed per-era survivor counts via a multilevel-splitting / sequential-ABC
 scheme.
 
-Algorithm (user's specification)
----------------------------------
-For eras 0 … K-2 (the last era is left unconditioned):
+Algorithm
+---------
+For eras 0 ... K-2 (the last era is left unconditioned):
 
-1. Simulate ``n_initial`` independent era-0 particles from a single-root
-   initialisation.
+1. Simulate ``n_initial`` independent era-0 particles, each a single root
+   individual born at time 0.
 2. **Filter**: keep particles whose count of *born-in-era-0 individuals that
    survive to the terminal time* lies within ``target_ranges[0]``.
 3. **Split**: clone each passing particle ``split_factor`` times (each clone
-   receives a fresh PRNGKey; JAX arrays are immutable so clones are O(1)).
-4. Simulate era 1 for each clone → filter on ``target_ranges[1]`` → split.
-5. Repeat for eras 2 … K-2.
+   receives a fresh PRNG key; JAX arrays are immutable so clones are O(1)).
+4. Simulate era 1 for each clone, filter on ``target_ranges[1]``, split.
+5. Repeat for eras 2 ... K-2.
 6. Simulate the final era (K-1) **unconditioned**.
-7. Collect matched trajectories.  If fewer than ``n_samples`` are collected,
-   restart from step 1 (bounded by ``max_attempts``).
+7. Collect the resulting trajectories.  If fewer than ``n_samples`` are
+   collected, or no particle passed a filter, restart from step 1 (bounded by
+   ``max_attempts`` era-0 particles in total).
 
 Per-era match criterion
 -----------------------
@@ -32,24 +33,23 @@ is required.
 
 Engine
 ------
-The JAX lifespan-at-birth engine from
-:func:`~bdsurv.lifespans.simulate_birth_death_lifespans_arrays`
-is the simulation substrate.  A new single-era JIT core
-(:func:`_simulate_era_core`) seeds from an arbitrary alive-population state
-and advances the event loop to the era boundary, sampling new births' death
-times over the **full** piecewise hazard so survival-to-present is always
+The particles are advanced by the one JAX event kernel of the package,
+:func:`bdsurv.lifespans.advance_era`, starting from
+:func:`bdsurv.lifespans.initial_state`.  The kernel advances an arbitrary
+alive-population state to the era boundary and samples every new birth's death
+time over the **full** piecewise hazard, so survival-to-present is always
 well-defined.
 
 Public API
 ----------
-- :func:`build_target_ranges` — construct per-era ``[lo, hi]`` bounds from
+- :func:`build_target_ranges`: construct per-era ``[lo, hi]`` bounds from
   observed counts (optionally widened by a tolerance).
-- :func:`sample_conditioned_survival_process` — draw ``n_samples`` matched
+- :func:`sample_conditioned_survival_process`: draw ``n_samples`` matched
   trajectories for a fixed set of rates.
-- :func:`sample_conditioned_survival_per_posterior` — one matched trajectory
+- :func:`sample_conditioned_survival_per_posterior`: one matched trajectory
   per posterior draw; returns a tidy ``pd.DataFrame``.
-- :class:`MatchedSurvivalSample` — per-trajectory result dataclass.
-- :class:`ConditionedSurvivalResult` — collection of samples plus diagnostics.
+- :class:`MatchedSurvivalSample`: per-trajectory result dataclass.
+- :class:`ConditionedSurvivalResult`: collection of samples plus diagnostics.
 """
 
 # JAX's jit/while_loop wrappers are untyped, which strict mode reports as
@@ -58,48 +58,22 @@ Public API
 
 from __future__ import annotations
 
-import functools
 import warnings
 from dataclasses import dataclass, field
-from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pandas as pd
-from jax import lax
 from numpy.typing import NDArray
 
 from bdsurv._seeding import child_seed, jax_key, root_rng
-from bdsurv.lifespans import TIE_TOLERANCE, sample_piecewise_exponential_death_time
+from bdsurv.lifespans import LoopState, advance_era, initial_state
 from bdsurv.rates import (
     check_epoch_ends,
     check_positive_rates,
     epoch_rates,
 )
-
-# ---------------------------------------------------------------------------
-# JAX state type for the per-era while_loop
-# ---------------------------------------------------------------------------
-
-
-class _EraLoopState(NamedTuple):
-    """State carried through the within-era ``jax.lax.while_loop``.
-
-    Mirrors the relevant fields of ``_LifespanLoopState`` from
-    ``lifespans.py``, but without ``epoch_idx`` and genealogy fields —
-    those are not needed for the conditioning algorithm.
-    """
-
-    key: jax.Array  # PRNGKey
-    current_time: jax.Array  # float64 scalar
-    n_alive: jax.Array  # int32 scalar — individuals alive at current_time
-    n_born: jax.Array  # int32 scalar — total ever born (next free slot)
-    overflow: jax.Array  # bool scalar
-    birth_time_buf: jax.Array  # float64 [max_population]
-    death_time_buf: jax.Array  # float64 [max_population]  (inf = survives)
-    birth_epoch_buf: jax.Array  # int32 [max_population]
-
 
 # ---------------------------------------------------------------------------
 # Result types
@@ -176,179 +150,41 @@ class ConditionedSurvivalResult:
 
 
 # ---------------------------------------------------------------------------
-# JIT-compiled single-era event loop
-# ---------------------------------------------------------------------------
-
-
-@functools.partial(jax.jit, static_argnums=(6,))
-def _simulate_era_core(
-    birth_rate_k: jax.Array,  # float64 scalar — birth rate for this era
-    death_rates: jax.Array,  # float64 [n_epochs] — FULL hazard grid
-    epoch_end_times: jax.Array,  # float64 [n_epochs] — FULL epoch ends
-    era_idx: jax.Array,  # int32 scalar — era tag written to birth_epoch_buf
-    segment_end: jax.Array,  # float64 scalar — this era's end time
-    state: _EraLoopState,  # initial carry (from previous era or seed)
-    max_population: int,  # STATIC — buffer capacity; determines JIT variants
-) -> _EraLoopState:
-    """Advance the birth-death event loop to ``segment_end``.
-
-    Uses a ``jax.lax.while_loop`` to process births and pre-scheduled deaths
-    within a single era.  The birth rate is fixed at ``birth_rate_k`` for the
-    duration.  New births receive their death time sampled over the **full**
-    ``epoch_end_times`` hazard grid via
-    :func:`~bdsurv.lifespans.sample_piecewise_exponential_death_time`,
-    so survival-to-present is always well-defined regardless of the current
-    era.
-
-    Parameters
-    ----------
-    birth_rate_k : jax.Array
-        Per-individual birth rate λ for the current era (float64 scalar).
-    death_rates : jax.Array
-        Full per-epoch death rates μ, shape ``[n_epochs]``.
-    epoch_end_times : jax.Array
-        Full epoch end times, shape ``[n_epochs]``; last entry = terminal time.
-    era_idx : jax.Array
-        Current era index (int32 scalar); written into ``birth_epoch_buf`` for
-        every individual born in this era.
-    segment_end : jax.Array
-        End time of the current era (float64 scalar).
-    state : _EraLoopState
-        Carry-in from the previous era (or the seeded initial state for era 0).
-    max_population : int
-        **Static** buffer capacity.  Determines the compiled kernel variant.
-
-    Returns
-    -------
-    _EraLoopState
-        Updated loop state at ``current_time == segment_end``.  ``overflow``
-        is set if the buffer would have been exceeded.
-    """
-    terminal_time: jax.Array = epoch_end_times[-1]
-
-    def _cond(s: _EraLoopState) -> jax.Array:
-        return (s.current_time < segment_end) & ~s.overflow
-
-    def _body(s: _EraLoopState) -> _EraLoopState:
-        key, k_birth_dt, k_death_time = jax.random.split(s.key, 3)
-
-        # ---- Next birth time (linear-rate exponential inter-arrival) ----
-        total_birth_rate = s.n_alive.astype(jnp.float64) * birth_rate_k
-        dt_birth = jax.random.exponential(k_birth_dt, dtype=jnp.float64) / jnp.where(
-            total_birth_rate > 0.0, total_birth_rate, jnp.float64(1.0)
-        )
-        next_birth = jnp.where(
-            total_birth_rate > 0.0,
-            s.current_time + dt_birth,
-            jnp.inf,
-        )
-
-        # ---- Next pre-scheduled death (smallest future death in buffer) ----
-        indices = jnp.arange(max_population)
-        future_death_mask = (
-            (indices < s.n_born)
-            & jnp.isfinite(s.death_time_buf)
-            & (s.death_time_buf > s.current_time)
-        )
-        next_death = jnp.min(jnp.where(future_death_mask, s.death_time_buf, jnp.inf))
-
-        # ---- Choose next event ----
-        next_event = jnp.minimum(jnp.minimum(next_birth, next_death), segment_end)
-
-        is_epoch = next_event >= segment_end - jnp.float64(TIE_TOLERANCE)
-        is_death = (~is_epoch) & (next_death <= next_birth)
-        is_birth = (~is_epoch) & (~is_death)
-
-        new_time = jnp.where(next_event >= segment_end, segment_end, next_event)
-
-        # ---- Birth event ----
-        can_do_birth = is_birth & (s.n_born < max_population)
-        new_overflow = s.overflow | (is_birth & (s.n_born >= max_population))
-
-        new_indiv_death = sample_piecewise_exponential_death_time(
-            birth_time=next_event,
-            death_rates=death_rates,
-            epoch_end_times=epoch_end_times,
-            terminal_time=terminal_time,
-            key=k_death_time,
-        )
-
-        safe_write_idx = jnp.minimum(s.n_born, max_population - 1)
-        new_birth_time_buf = jnp.where(
-            can_do_birth,
-            s.birth_time_buf.at[safe_write_idx].set(next_event),
-            s.birth_time_buf,
-        )
-        new_death_time_buf = jnp.where(
-            can_do_birth,
-            s.death_time_buf.at[safe_write_idx].set(new_indiv_death),
-            s.death_time_buf,
-        )
-        new_birth_epoch_buf = jnp.where(
-            can_do_birth,
-            s.birth_epoch_buf.at[safe_write_idx].set(era_idx),
-            s.birth_epoch_buf,
-        )
-        new_n_born = jnp.where(can_do_birth, s.n_born + 1, s.n_born)
-
-        # ---- Update n_alive ----
-        new_n_alive = jnp.where(
-            is_birth & can_do_birth,
-            s.n_alive + 1,
-            jnp.where(is_death, jnp.maximum(s.n_alive - 1, 0), s.n_alive),
-        )
-
-        return _EraLoopState(
-            key=key,
-            current_time=new_time,
-            n_alive=new_n_alive,
-            n_born=new_n_born,
-            overflow=new_overflow,
-            birth_time_buf=new_birth_time_buf,
-            death_time_buf=new_death_time_buf,
-            birth_epoch_buf=new_birth_epoch_buf,
-        )
-
-    return lax.while_loop(_cond, _body, state)
-
-
-# ---------------------------------------------------------------------------
 # Host-side helper functions
 # ---------------------------------------------------------------------------
 
 
-def _make_initial_particle(
-    death_rates: jax.Array,
-    epoch_end_times: jax.Array,
-    key: jax.Array,
-    max_population: int,
-) -> _EraLoopState:
-    """Initialise one era-0 particle from a single root born at t=0."""
-    terminal_time: jax.Array = epoch_end_times[-1]
-    key, k_root = jax.random.split(key)
-    root_death = sample_piecewise_exponential_death_time(
-        jnp.float64(0.0), death_rates, epoch_end_times, terminal_time, k_root
-    )
-    birth_time_buf = (
-        jnp.full(max_population, jnp.inf, dtype=jnp.float64).at[0].set(jnp.float64(0.0))
-    )
-    death_time_buf = (
-        jnp.full(max_population, jnp.inf, dtype=jnp.float64).at[0].set(root_death)
-    )
-    birth_epoch_buf = jnp.zeros(max_population, dtype=jnp.int32)
-    return _EraLoopState(
-        key=key,
-        current_time=jnp.float64(0.0),
-        n_alive=jnp.int32(1),
-        n_born=jnp.int32(1),
-        overflow=jnp.bool_(False),
-        birth_time_buf=birth_time_buf,
-        death_time_buf=death_time_buf,
-        birth_epoch_buf=birth_epoch_buf,
-    )
+@dataclass(frozen=True)
+class _EraGrid:
+    """The rates and sizes shared by every particle and era of one sampler call."""
+
+    birth_rates: jax.Array  # float64 [n_epochs]
+    death_rates: jax.Array  # float64 [n_epochs]
+    epoch_end_times: jax.Array  # float64 [n_epochs]
+    max_population: int
+
+    @property
+    def n_epochs(self) -> int:
+        return int(self.epoch_end_times.shape[0])
+
+    @property
+    def terminal_time(self) -> float:
+        return float(self.epoch_end_times[-1])
+
+    def advance(self, era_k: int, state: LoopState) -> LoopState:
+        """Advance ``state`` through era ``era_k``."""
+        return advance_era(
+            self.birth_rates[era_k],
+            self.death_rates,
+            self.epoch_end_times,
+            jnp.int32(era_k),
+            self.epoch_end_times[era_k],
+            state,
+            self.max_population,
+        )
 
 
-def _count_era_survivors(state: _EraLoopState, era_k: int, terminal_time: float) -> int:
+def _count_era_survivors(state: LoopState, era_k: int, terminal_time: float) -> int:
     """Count individuals born in era *k* that survive to *terminal_time*.
 
     Materialises only the first ``n_born`` entries of the birth-epoch and
@@ -360,18 +196,18 @@ def _count_era_survivors(state: _EraLoopState, era_k: int, terminal_time: float)
     return int(np.sum((be == era_k) & (dt > terminal_time)))
 
 
-def _clone_particle(state: _EraLoopState, new_key: jax.Array) -> _EraLoopState:
+def _clone_particle(state: LoopState, new_key: jax.Array) -> LoopState:
     """Clone a particle by assigning a fresh PRNGKey.
 
     JAX arrays are immutable, so the buffer references are shared O(1).
-    :func:`_simulate_era_core` creates new arrays on every write, so there
+    :func:`~bdsurv.lifespans.advance_era` creates new arrays on every write, so there
     is no aliasing hazard.
     """
     return state._replace(key=new_key)
 
 
 def _extract_sample(
-    state: _EraLoopState, n_epochs: int, terminal_time: float
+    state: LoopState, n_epochs: int, terminal_time: float
 ) -> MatchedSurvivalSample:
     """Extract a :class:`MatchedSurvivalSample` from a completed trajectory."""
     n = int(state.n_born)
@@ -476,6 +312,84 @@ def build_target_ranges(
     return ranges
 
 
+def _run_conditioned_eras(
+    grid: _EraGrid,
+    target_ranges: NDArray[np.intp],
+    rng: np.random.Generator,
+    *,
+    n_initial: int,
+    split_factor: int,
+) -> tuple[list[LoopState] | None, list[EraConditioningDiagnostic]]:
+    """Run eras ``0 ... K-2`` for one outer iteration.
+
+    Seeds ``n_initial`` root particles, then for each conditioned era simulates
+    every particle through it, keeps those that did not overflow and whose era
+    survivor count lies in the era's target range, records the diagnostic, and
+    clones each passing particle ``split_factor`` times with fresh keys.
+
+    Returns
+    -------
+    particles, diagnostics
+        The particles entering the final era, or ``None`` if no particle passed
+        some filter (a restart is needed); and the diagnostics recorded so far.
+    """
+    init_keys = jax.random.split(jax_key(rng), n_initial)
+    particles: list[LoopState] = [
+        initial_state(grid.death_rates, grid.epoch_end_times, k, grid.max_population)
+        for k in init_keys
+    ]
+    diagnostics: list[EraConditioningDiagnostic] = []
+
+    for era_k in range(grid.n_epochs - 1):
+        simulated = [grid.advance(era_k, p) for p in particles]
+
+        lo = int(target_ranges[era_k, 0])
+        hi = int(target_ranges[era_k, 1])
+        passing = [
+            p
+            for p in simulated
+            if not bool(p.overflow)
+            and lo <= _count_era_survivors(p, era_k, grid.terminal_time) <= hi
+        ]
+        diagnostics.append(
+            EraConditioningDiagnostic(
+                era_index=era_k,
+                n_entering=len(simulated),
+                n_passing_filter=len(passing),
+                acceptance_rate=(len(passing) / len(simulated) if simulated else 0.0),
+            )
+        )
+        if not passing:
+            return None, diagnostics
+
+        split_keys = jax.random.split(jax_key(rng), len(passing) * split_factor)
+        particles = [
+            _clone_particle(p, split_keys[i * split_factor + j])
+            for i, p in enumerate(passing)
+            for j in range(split_factor)
+        ]
+    return particles, diagnostics
+
+
+def _run_final_era(
+    grid: _EraGrid, particles: list[LoopState], n_wanted: int
+) -> list[MatchedSurvivalSample]:
+    """Run the last, unconditioned era and collect up to ``n_wanted`` samples.
+
+    Particles that overflow are dropped.  Stops as soon as ``n_wanted`` samples
+    are collected.
+    """
+    samples: list[MatchedSurvivalSample] = []
+    for p in particles:
+        final_state = grid.advance(grid.n_epochs - 1, p)
+        if bool(final_state.overflow):
+            continue
+        samples.append(_extract_sample(final_state, grid.n_epochs, grid.terminal_time))
+        if len(samples) >= n_wanted:
+            break
+    return samples
+
+
 # ---------------------------------------------------------------------------
 # Per-process conditioned sampler
 # ---------------------------------------------------------------------------
@@ -501,7 +415,7 @@ def _check_sampler_arguments(
         raise ValueError(msg)
 
 
-def sample_conditioned_survival_process(
+def sample_conditioned_survival_process(  # noqa: PLR0913  # public signature
     birth_rates: NDArray[np.float64] | list[float],
     death_rates: NDArray[np.float64] | list[float],
     epoch_end_times: NDArray[np.float64] | list[float],
@@ -584,13 +498,12 @@ def sample_conditioned_survival_process(
         msg = "n_samples must be a positive integer"
         raise ValueError(msg)
 
-    br_jax = jnp.array(br, dtype=jnp.float64)
-    dr_jax = jnp.array(dr, dtype=jnp.float64)
-    et_jax = jnp.array(et, dtype=jnp.float64)
-
-    terminal_time = float(et[-1])
-    n_conditioned = n_epochs - 1  # eras 0 … n_epochs-2 are filtered
-
+    grid = _EraGrid(
+        birth_rates=jnp.array(br, dtype=jnp.float64),
+        death_rates=jnp.array(dr, dtype=jnp.float64),
+        epoch_end_times=jnp.array(et, dtype=jnp.float64),
+        max_population=max_population,
+    )
     if max_attempts is None:
         max_attempts = n_initial * 1000
 
@@ -613,91 +526,15 @@ def sample_conditioned_survival_process(
             break
 
         n_outer += 1
-        diagnostics: list[EraConditioningDiagnostic] = []
-
-        # ---- Era-0: seed n_initial independent particles ----
-        init_keys = jax.random.split(jax_key(rng), n_initial)
-        particles: list[_EraLoopState] = [
-            _make_initial_particle(dr_jax, et_jax, k, max_population) for k in init_keys
-        ]
         total_era0 += n_initial
-
-        # ---- Conditioned eras 0 … n_conditioned-1 ----
-        restart = False
-        for era_k in range(n_conditioned):
-            segment_end = et_jax[era_k]
-            br_k = br_jax[era_k]
-            era_idx_jax = jnp.int32(era_k)
-
-            # Simulate era_k for every particle
-            simulated: list[_EraLoopState] = [
-                _simulate_era_core(
-                    br_k, dr_jax, et_jax, era_idx_jax, segment_end, p, max_population
-                )
-                for p in particles
-            ]
-
-            # Filter: keep particles within target_ranges[era_k]
-            lo = int(target_ranges[era_k, 0])
-            hi = int(target_ranges[era_k, 1])
-            passing: list[_EraLoopState] = [
-                p
-                for p in simulated
-                if not bool(p.overflow)
-                and lo <= _count_era_survivors(p, era_k, terminal_time) <= hi
-            ]
-
-            diag = EraConditioningDiagnostic(
-                era_index=era_k,
-                n_entering=len(simulated),
-                n_passing_filter=len(passing),
-                acceptance_rate=(len(passing) / len(simulated) if simulated else 0.0),
-            )
-            diagnostics.append(diag)
-
-            if not passing:
-                restart = True
-                break
-
-            # Split: clone each passing particle split_factor times
-            split_keys = jax.random.split(
-                jax_key(rng),
-                len(passing) * split_factor,
-            )
-            particles = [
-                _clone_particle(p, split_keys[i * split_factor + j])
-                for i, p in enumerate(passing)
-                for j in range(split_factor)
-            ]
-
-        if restart:
-            last_diagnostics = diagnostics
+        particles, last_diagnostics = _run_conditioned_eras(
+            grid, target_ranges, rng, n_initial=n_initial, split_factor=split_factor
+        )
+        if particles is None:
             continue
-
-        # ---- Final (unconditioned) era ----
-        final_era = n_epochs - 1
-        segment_end_final = et_jax[final_era]
-        br_final = br_jax[final_era]
-        era_idx_final = jnp.int32(final_era)
-
-        for p in particles:
-            final_state = _simulate_era_core(
-                br_final,
-                dr_jax,
-                et_jax,
-                era_idx_final,
-                segment_end_final,
-                p,
-                max_population,
-            )
-            if bool(final_state.overflow):
-                continue
-            sample = _extract_sample(final_state, n_epochs, terminal_time)
-            samples_collected.append(sample)
-            if len(samples_collected) >= n_samples:
-                break
-
-        last_diagnostics = diagnostics
+        samples_collected += _run_final_era(
+            grid, particles, n_samples - len(samples_collected)
+        )
 
     return ConditionedSurvivalResult(
         samples=samples_collected,
@@ -712,7 +549,7 @@ def sample_conditioned_survival_process(
 # ---------------------------------------------------------------------------
 
 
-def sample_conditioned_survival_per_posterior(
+def sample_conditioned_survival_per_posterior(  # noqa: PLR0913  # public signature
     posterior_birth_rates: NDArray[np.float64],
     posterior_death_rates: NDArray[np.float64],
     epoch_end_times: NDArray[np.float64] | list[float],
@@ -728,8 +565,10 @@ def sample_conditioned_survival_per_posterior(
 
     For each row in ``posterior_birth_rates`` / ``posterior_death_rates``,
     calls :func:`sample_conditioned_survival_process` with ``n_samples=1``.
-    Draws that exhaust ``max_attempts`` are flagged (``matched=False``) and
-    skipped rather than raising, so the DataFrame always has one row per draw.
+    A draw that exhausts ``max_attempts`` is not an error: the sampler warns
+    (``RuntimeWarning``) and returns no sample, and the draw is flagged
+    ``matched=False``, so the DataFrame always has one row per draw.  Any other
+    exception propagates.
 
     Parameters
     ----------
@@ -776,8 +615,9 @@ def sample_conditioned_survival_per_posterior(
         If the posterior arrays are not 2-D arrays of the same shape, a
         posterior rate is not finite and positive, ``epoch_end_times`` is
         invalid or not of length ``n_epochs``, ``target_ranges`` does not have
-        shape ``(n_epochs, 2)``, or ``split_factor`` or ``n_initial`` is less
-        than 1.  These are checked once, before any draw.
+        shape ``(n_epochs, 2)``, ``split_factor`` or ``n_initial`` is less
+        than 1, or there are fewer than 2 epochs.  All but the last are checked
+        once, before any draw.
     """
     br_arr = np.asarray(posterior_birth_rates, dtype=np.float64)
     dr_arr = np.asarray(posterior_death_rates, dtype=np.float64)
@@ -793,7 +633,6 @@ def sample_conditioned_survival_per_posterior(
         raise ValueError(msg)
 
     n_draws, n_epochs = br_arr.shape
-    # Checked once here: the per-draw ``except`` below turns errors into warnings.
     check_positive_rates(
         br_arr, dr_arr, label="posterior_birth_rates and posterior_death_rates"
     )
@@ -811,28 +650,18 @@ def sample_conditioned_survival_per_posterior(
     rows: list[dict[str, object]] = []
 
     for i in range(n_draws):
-        seed_i = child_seed(rng)
-        try:
-            result = sample_conditioned_survival_process(
-                br_arr[i],
-                dr_arr[i],
-                epoch_end_times,
-                target_ranges,
-                n_samples=1,
-                split_factor=split_factor,
-                n_initial=n_initial,
-                max_attempts=max_attempts,
-                random_seed=seed_i,
-                max_population=max_population,
-            )
-        except Exception as exc:
-            warnings.warn(
-                f"sample_conditioned_survival_per_posterior: draw {i} raised "
-                f"{type(exc).__name__}: {exc}",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            result = ConditionedSurvivalResult()
+        result = sample_conditioned_survival_process(
+            br_arr[i],
+            dr_arr[i],
+            epoch_end_times,
+            target_ranges,
+            n_samples=1,
+            split_factor=split_factor,
+            n_initial=n_initial,
+            max_attempts=max_attempts,
+            random_seed=child_seed(rng),
+            max_population=max_population,
+        )
 
         if result.samples:
             s = result.samples[0]

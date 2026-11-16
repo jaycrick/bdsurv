@@ -22,7 +22,13 @@ from bdsurv import (
     simulate_birth_death_process,
 )
 from bdsurv._extinction import pr_extinction
-from bdsurv.lifespans import sample_piecewise_exponential_death_time
+from bdsurv.lifespans import (
+    LoopState,
+    _reconstruct_genealogy,  # pyright: ignore[reportPrivateUsage]
+    advance_era,
+    initial_state,
+    sample_piecewise_exponential_death_time,
+)
 from bdsurv.tree import SimulatedProcess
 
 _SEED = 42
@@ -329,7 +335,7 @@ class TestLifespanDeathTimeSampling:
         if len(dead) < 50:
             pytest.skip("too few dead samples to compute mean")
 
-        # E[death | death < T] = (1/rate) - T * exp(-rate*T) / (1 - exp(-rate*T))
+        # The truncated-exponential mean is 1/rate minus T * exp(-rate*T) / p_die.
         p_die = 1.0 - np.exp(-rate * T)
         theoretical_mean = (1.0 / rate) - T * np.exp(-rate * T) / p_die
         empirical_mean = float(np.mean(dead))
@@ -389,6 +395,132 @@ class TestLifespanArraysEntryPoint:
         np.testing.assert_array_equal(
             np.asarray(r1.birth_times), np.asarray(r2.birth_times)
         )
+
+
+_KERNEL_MAX_POP = 64  # one compiled variant for every kernel test below
+_KERNEL_ENDS = jnp.array([5.0, 12.0], dtype=jnp.float64)
+_KERNEL_DEATH = jnp.array([0.05, 0.05], dtype=jnp.float64)
+
+
+def _kernel_start(seed: int = 0, max_population: int = _KERNEL_MAX_POP) -> LoopState:
+    return initial_state(
+        _KERNEL_DEATH, _KERNEL_ENDS, jax.random.key(seed), max_population
+    )
+
+
+def _kernel_era(
+    state: LoopState,
+    era: int,
+    birth_rate: float = 0.4,
+    max_population: int = _KERNEL_MAX_POP,
+) -> LoopState:
+    return advance_era(
+        jnp.float64(birth_rate),
+        _KERNEL_DEATH,
+        _KERNEL_ENDS,
+        jnp.int32(era),
+        _KERNEL_ENDS[era],
+        state,
+        max_population,
+    )
+
+
+class TestAdvanceEraKernel:
+    """Unit tests for initial_state and the one event kernel advance_era."""
+
+    def test_initial_state_has_one_individual_born_at_zero(self) -> None:
+        state = _kernel_start()
+        assert int(state.n_born) == 1, "exactly one individual should exist"
+        assert int(state.n_alive) == 1, "the root should be alive"
+        assert float(state.current_time) == 0.0, "the clock should start at 0"
+        assert not bool(state.overflow), "overflow must start False"
+        assert float(state.birth_time_buf[0]) == 0.0, "the root is born at time 0"
+        assert float(state.death_time_buf[0]) > 0.0, "the root dies after birth"
+        assert state.birth_time_buf.shape == (_KERNEL_MAX_POP,), "buffer size"
+
+    def test_advance_ends_at_segment_end(self) -> None:
+        out = _kernel_era(_kernel_start(1), 0)
+        assert float(out.current_time) == float(_KERNEL_ENDS[0]), (
+            "advance_era must stop exactly at segment_end"
+        )
+        out = _kernel_era(out, 1)
+        assert float(out.current_time) == float(_KERNEL_ENDS[1]), (
+            "the second era must stop at its own end"
+        )
+
+    def test_births_tagged_with_their_era(self) -> None:
+        state0 = _kernel_era(_kernel_start(2), 0)
+        n0 = int(state0.n_born)
+        state1 = _kernel_era(state0, 1)
+        n1 = int(state1.n_born)
+        assert n0 > 1, "rates chosen so era 0 has births"
+        assert n1 > n0, "rates chosen so era 1 has births"
+        epochs = np.asarray(state1.birth_epoch_buf[:n1])
+        assert np.all(epochs[:n0] == 0), "era-0 tags must be untouched by era 1"
+        assert np.all(epochs[n0:] == 1), "births in era 1 must be tagged 1"
+        np.testing.assert_array_equal(
+            np.asarray(state1.birth_time_buf[:n0]),
+            np.asarray(state0.birth_time_buf[:n0]),
+            err_msg="era-0 birth times must be untouched by era 1",
+        )
+        births = np.asarray(state1.birth_time_buf[n0:n1])
+        assert np.all((births >= _KERNEL_ENDS[0]) & (births <= _KERNEL_ENDS[1])), (
+            "era-1 births must fall inside era 1"
+        )
+
+    def test_zero_birth_rate_gives_no_births(self) -> None:
+        out = _kernel_era(_kernel_start(3), 0, birth_rate=0.0)
+        assert int(out.n_born) == 1, "nobody can be born at birth rate 0"
+        assert not bool(out.overflow), "no births means no overflow"
+
+    def test_buffers_beyond_n_born_untouched_without_births(self) -> None:
+        start = _kernel_start(4)
+        out = _kernel_era(start, 0, birth_rate=0.0)
+        for name in LoopState._fields:
+            if not name.endswith("_buf"):
+                continue
+            np.testing.assert_array_equal(
+                np.asarray(getattr(out, name)),
+                np.asarray(getattr(start, name)),
+                err_msg=f"{name} changed although nobody was born",
+            )
+
+    def test_tiny_max_population_sets_overflow(self) -> None:
+        out = _kernel_era(
+            _kernel_start(5, max_population=2), 0, birth_rate=2.0, max_population=2
+        )
+        assert bool(out.overflow), "a buffer of 2 cannot hold a fast-growing era"
+        assert int(out.n_born) == 2, "the buffer should be full, not overrun"
+
+    def test_same_key_same_state_different_keys_differ(self) -> None:
+        a = _kernel_era(_kernel_start(6), 0)
+        b = _kernel_era(_kernel_start(6), 0)
+        c = _kernel_era(_kernel_start(7), 0)
+        for name in LoopState._fields:
+            if name == "key":
+                continue
+            np.testing.assert_array_equal(
+                np.asarray(getattr(a, name)),
+                np.asarray(getattr(b, name)),
+                err_msg=f"{name} differs for the same key",
+            )
+        assert not np.array_equal(
+            np.asarray(a.death_time_buf), np.asarray(c.death_time_buf)
+        ), "different keys should give different trajectories"
+
+
+class TestReconstructGenealogy:
+    def test_inconsistent_event_stream_raises(self) -> None:
+        """An individual that dies before it is born is an inconsistent stream."""
+        with pytest.raises(ValueError, match="inconsistent event stream"):
+            _reconstruct_genealogy(
+                birth_times=np.array([0.0, 5.0]),
+                death_times=np.array([np.inf, 3.0]),
+                insert_uniforms=np.array([0.0, 0.5]),
+                birth_epochs=np.array([0, 0]),
+                n_alive_at_birth=np.array([0, 1]),
+                terminal_time=10.0,
+            )
 
 
 @pytest.mark.slow
@@ -484,5 +616,5 @@ class TestLifespanEquivalence:
         assert abs(empirical_extinct - theoretical_extinct) < 4 * binom_std, (
             f"Empirical extinction {empirical_extinct:.3f} vs "
             f"theoretical {theoretical_extinct:.3f} "
-            f"(4σ bound = {4 * binom_std:.3f})"
+            f"(4 sigma bound = {4 * binom_std:.3f})"
         )
