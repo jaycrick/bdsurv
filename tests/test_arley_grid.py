@@ -43,12 +43,12 @@ class TestGridCells:
     def test_survival_matches_the_constant_rate_at_the_matching_time(
         self, grid_cells
     ) -> None:
-        from bdsurv.splitting import _log_survival_probability
+        from bdsurv._hazard import log_survival_probability_constant
 
         at_t = [c for c in grid_cells if c.time == arley.SURVIVAL_T]
         assert len(at_t) == len(arley.GRID_SLOPES)
         for c in at_t:
-            constant = -_log_survival_probability(
+            constant = -log_survival_probability_constant(
                 birth_rate=arley.LAMBDA, death_rate=c.mu, time=c.time
             ) / math.log(10)
             assert c.arley_value == pytest.approx(constant, rel=3e-3)

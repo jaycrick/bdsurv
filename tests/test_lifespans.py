@@ -22,9 +22,7 @@ from bdsurv import (
     simulate_birth_death_process,
 )
 from bdsurv._extinction import pr_extinction
-from bdsurv.lifespans import (
-    _sample_piecewise_exponential_death_time,  # pyright: ignore[reportPrivateUsage]
-)
+from bdsurv.lifespans import sample_piecewise_exponential_death_time
 from bdsurv.tree import SimulatedProcess
 
 _SEED = 42
@@ -256,7 +254,7 @@ class TestLifespanDeathTimeSampling:
             1
             for seed in range(50)
             if not jnp.isfinite(
-                _sample_piecewise_exponential_death_time(
+                sample_piecewise_exponential_death_time(
                     jnp.float64(0.0), dr, et, terminal, self._make_key(seed)
                 )
             )
@@ -273,7 +271,7 @@ class TestLifespanDeathTimeSampling:
             1
             for seed in range(50)
             if jnp.isfinite(
-                _sample_piecewise_exponential_death_time(
+                sample_piecewise_exponential_death_time(
                     jnp.float64(0.0), dr, et, terminal, self._make_key(seed)
                 )
             )
@@ -287,7 +285,7 @@ class TestLifespanDeathTimeSampling:
         terminal = jnp.float64(50.0)
         birth = jnp.float64(10.0)
         for seed in range(30):
-            dt = _sample_piecewise_exponential_death_time(
+            dt = sample_piecewise_exponential_death_time(
                 birth, dr, et, terminal, self._make_key(seed)
             )
             if jnp.isfinite(dt):
@@ -301,7 +299,7 @@ class TestLifespanDeathTimeSampling:
         terminal = jnp.float64(100.0)
         birth = jnp.float64(0.0)
         for seed in range(30):
-            dt = _sample_piecewise_exponential_death_time(
+            dt = sample_piecewise_exponential_death_time(
                 birth, dr, et, terminal, self._make_key(seed)
             )
             if jnp.isfinite(dt):
@@ -321,7 +319,7 @@ class TestLifespanDeathTimeSampling:
         keys = jax.random.split(self._make_key(0), n)
         samples = np.asarray(
             jax.vmap(
-                lambda key: _sample_piecewise_exponential_death_time(
+                lambda key: sample_piecewise_exponential_death_time(
                     birth, dr, et, terminal, key
                 )
             )(keys)

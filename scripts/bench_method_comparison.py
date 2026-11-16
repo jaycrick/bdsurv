@@ -58,7 +58,7 @@ from bdsurv import (
     simulate_birth_death_process_from_contour_process,
     simulate_subcritical_survival_splitting,
 )
-from bdsurv.splitting import _log_survival_probability
+from bdsurv._hazard import log_survival_probability_constant
 
 LAMBDA = 1.0
 MUS = (
@@ -113,7 +113,7 @@ def expected_population(mu: float, terminal_time: float) -> float:
 
     ``E[Z_T | Z_T > 0] = exp((lambda - mu) T) / Pr(T)``.
     """
-    log_pr = _log_survival_probability(
+    log_pr = log_survival_probability_constant(
         birth_rate=LAMBDA, death_rate=mu, time=terminal_time
     )
     return math.exp((LAMBDA - mu) * terminal_time - log_pr)

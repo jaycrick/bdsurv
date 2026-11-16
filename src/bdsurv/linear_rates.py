@@ -21,132 +21,28 @@ The event is a birth with probability $\lambda(t) / (\lambda(t) + \mu(t))$.
 
 from __future__ import annotations
 
-import itertools
-import math
-from collections.abc import Sequence
-from dataclasses import dataclass
-from typing import NamedTuple, Protocol
-
-import jax
 import numpy as np
-from numpy.typing import NDArray
 
+from bdsurv._hazard import next_event_offset
+from bdsurv.rates import (
+    ConstantRateLike,
+    LinearRateLike,
+    PiecewiseConstant,
+    PiecewiseLinear,
+    merged_segments,
+    resolve_rates,
+)
 from bdsurv.tree import SimulatedProcess, build_records
 
-_RelTol = 1e-12
-
-_Floats = Sequence[float] | NDArray[np.float64] | jax.Array
-
-
-class ConstantRateLike(Protocol):
-    """A piecewise-constant rate: ``values[k]`` on the k-th epoch."""
-
-    @property
-    def values(self) -> _Floats:
-        """Rate in each epoch."""
-        ...
-
-    @property
-    def epoch_end_times(self) -> _Floats:
-        """Strictly increasing epoch end times."""
-        ...
-
-
-class LinearRateLike(Protocol):
-    """A piecewise-linear rate, from ``start_values[k]`` to ``end_values[k]``."""
-
-    @property
-    def start_values(self) -> _Floats:
-        """Rate at the start of each epoch."""
-        ...
-
-    @property
-    def end_values(self) -> _Floats:
-        """Rate at the end of each epoch."""
-        ...
-
-    @property
-    def epoch_end_times(self) -> _Floats:
-        """Strictly increasing epoch end times."""
-        ...
-
-
-@dataclass(frozen=True)
-class PiecewiseConstant:
-    """Numpy implementation of :class:`ConstantRateLike`."""
-
-    values: _Floats
-    epoch_end_times: _Floats
-
-
-@dataclass(frozen=True)
-class PiecewiseLinear:
-    """Numpy implementation of :class:`LinearRateLike`."""
-
-    start_values: _Floats
-    end_values: _Floats
-    epoch_end_times: _Floats
-
-
-class _LinearArrays(NamedTuple):
-    start_values: np.ndarray
-    end_values: np.ndarray
-    epoch_end_times: np.ndarray
-
-
-def _as_linear(rate: ConstantRateLike | LinearRateLike) -> _LinearArrays:
-    ends = np.atleast_1d(np.asarray(rate.epoch_end_times, dtype=np.float64))
-    if hasattr(rate, "values"):
-        v = np.atleast_1d(np.asarray(rate.values, dtype=np.float64))  # type: ignore[union-attr]
-        return _LinearArrays(v, v, ends)
-    return _LinearArrays(
-        np.atleast_1d(np.asarray(rate.start_values, dtype=np.float64)),  # type: ignore[union-attr]
-        np.atleast_1d(np.asarray(rate.end_values, dtype=np.float64)),  # type: ignore[union-attr]
-        ends,
-    )
-
-
-def _segments(
-    birth: _LinearArrays, death: _LinearArrays
-) -> list[tuple[float, float, float, float, float, float]]:
-    """Segments ``(start, end, birth_0, birth_slope, death_0, death_slope)``.
-
-    Segment boundaries are the union of both rates' epoch end times.
-    """
-    b_ends = np.asarray(birth.epoch_end_times)
-    d_ends = np.asarray(death.epoch_end_times)
-    if not np.isclose(b_ends[-1], d_ends[-1]):
-        msg = "birth and death rates must have the same end time"
-        raise ValueError(msg)
-    edges = np.union1d(np.concatenate([[0.0], b_ends]), np.concatenate([d_ends]))
-    edges = edges[np.concatenate([[True], np.diff(edges) > _RelTol * edges[-1]])]
-
-    def line(rate: _LinearArrays, start: float, end: float) -> tuple[float, float]:
-        ends = np.asarray(rate.epoch_end_times)
-        k = min(int(np.searchsorted(ends, 0.5 * (start + end))), len(ends) - 1)
-        k_start = 0.0 if k == 0 else float(ends[k - 1])
-        v0 = float(np.asarray(rate.start_values)[k])
-        v1 = float(np.asarray(rate.end_values)[k])
-        slope = (v1 - v0) / (float(ends[k]) - k_start)
-        return v0 + slope * (start - k_start), slope
-
-    out: list[tuple[float, float, float, float, float, float]] = []
-    for s, e in itertools.pairwise(edges):
-        b0, b1 = line(birth, float(s), float(e))
-        d0, d1 = line(death, float(s), float(e))
-        out.append((float(s), float(e), b0, b1, d0, d1))
-    return out
-
-
-def _next_event_offset(a: float, b: float, e: float) -> float:
-    """Solve ``a s + b s^2 / 2 = e`` for the smallest ``s >= 0``, or ``inf``."""
-    disc = a * a + 2.0 * b * e
-    if disc < 0.0:
-        return math.inf
-    denom = a + math.sqrt(disc)
-    if denom <= 0.0:
-        return math.inf
-    return 2.0 * e / denom
+# The rate types now live in ``bdsurv.rates``; they are re-exported here until
+# the module is removed.
+__all__ = [
+    "ConstantRateLike",
+    "LinearRateLike",
+    "PiecewiseConstant",
+    "PiecewiseLinear",
+    "simulate_birth_death_linear",
+]
 
 
 def simulate_birth_death_linear(
@@ -189,14 +85,14 @@ def simulate_birth_death_linear(
     Raises
     ------
     ValueError
-        If the end times differ or ``max_retries`` is negative.
+        If a rate has negative or non-finite values or invalid epoch end times,
+        the end times differ, or ``max_retries`` is negative.
     RuntimeError
         If every retry went extinct.
 
     """
-    birth = _as_linear(birth_rate)
-    death = _as_linear(death_rate)
-    segments = _segments(birth, death)
+    birth, death, _ = resolve_rates(birth_rate, death_rate, None)
+    segments = merged_segments(birth, death)
     max_time = segments[-1][1]
     if ensure_non_extinct and max_retries < 0:
         msg = "max_retries must be a non-negative integer"
@@ -219,7 +115,7 @@ def simulate_birth_death_linear(
                 n = len(alive)
                 lam = b0 + b1 * (t - start)
                 mu = d0 + d1 * (t - start)
-                s = _next_event_offset(n * (lam + mu), n * (b1 + d1), rng.exponential())
+                s = next_event_offset(n * (lam + mu), n * (b1 + d1), rng.exponential())
                 t += s
                 if t >= end:
                     break

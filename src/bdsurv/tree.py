@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike
 
-    from bdsurv.linear_rates import ConstantRateLike, LinearRateLike
+    from bdsurv.rates import ConstantRateLike, LinearRateLike
 
 RECORD_COLUMNS = (
     "individual_id",

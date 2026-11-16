@@ -70,8 +70,11 @@ import pandas as pd
 from jax import lax
 from numpy.typing import NDArray
 
-from bdsurv.lifespans import (
-    _sample_piecewise_exponential_death_time,  # pyright: ignore[reportPrivateUsage]
+from bdsurv.lifespans import TIE_TOLERANCE, sample_piecewise_exponential_death_time
+from bdsurv.rates import (
+    check_epoch_ends,
+    check_positive_rates,
+    epoch_rates,
 )
 
 # ---------------------------------------------------------------------------
@@ -192,7 +195,7 @@ def _simulate_era_core(
     within a single era.  The birth rate is fixed at ``birth_rate_k`` for the
     duration.  New births receive their death time sampled over the **full**
     ``epoch_end_times`` hazard grid via
-    :func:`~bdsurv.lifespans._sample_piecewise_exponential_death_time`,
+    :func:`~bdsurv.lifespans.sample_piecewise_exponential_death_time`,
     so survival-to-present is always well-defined regardless of the current
     era.
 
@@ -251,7 +254,7 @@ def _simulate_era_core(
         # ---- Choose next event ----
         next_event = jnp.minimum(jnp.minimum(next_birth, next_death), segment_end)
 
-        is_epoch = next_event >= segment_end - jnp.float64(1e-12)
+        is_epoch = next_event >= segment_end - jnp.float64(TIE_TOLERANCE)
         is_death = (~is_epoch) & (next_death <= next_birth)
         is_birth = (~is_epoch) & (~is_death)
 
@@ -261,7 +264,7 @@ def _simulate_era_core(
         can_do_birth = is_birth & (s.n_born < max_population)
         new_overflow = s.overflow | (is_birth & (s.n_born >= max_population))
 
-        new_indiv_death = _sample_piecewise_exponential_death_time(
+        new_indiv_death = sample_piecewise_exponential_death_time(
             birth_time=next_event,
             death_rates=death_rates,
             epoch_end_times=epoch_end_times,
@@ -322,7 +325,7 @@ def _make_initial_particle(
     """Initialise one era-0 particle from a single root born at t=0."""
     terminal_time: jax.Array = epoch_end_times[-1]
     key, k_root = jax.random.split(key)
-    root_death = _sample_piecewise_exponential_death_time(
+    root_death = sample_piecewise_exponential_death_time(
         jnp.float64(0.0), death_rates, epoch_end_times, terminal_time, k_root
     )
     birth_time_buf = (
@@ -424,6 +427,12 @@ def build_target_ranges(
     ndarray, shape ``[n_eras, 2]``, dtype int
         Inclusive ``[lo, hi]`` bounds per era.
 
+    Raises
+    ------
+    ValueError
+        If ``observed_counts`` is empty or has a negative entry, or
+        ``tolerance`` is negative.
+
     Examples
     --------
     >>> build_target_ranges([73, 209, 282, 2345, 2384, 540])
@@ -440,6 +449,15 @@ def build_target_ranges(
     """
     counts = np.asarray(observed_counts, dtype=np.intp)
     n_eras = len(counts)
+    if n_eras < 1:
+        msg = "observed_counts must have at least one entry"
+        raise ValueError(msg)
+    if np.any(counts < 0):
+        msg = "observed_counts must be non-negative"
+        raise ValueError(msg)
+    if not tolerance >= 0:
+        msg = "tolerance must be non-negative"
+        raise ValueError(msg)
     ranges = np.zeros((n_eras, 2), dtype=np.intp)
 
     for k, c in enumerate(counts[:-1]):
@@ -460,6 +478,26 @@ def build_target_ranges(
 # ---------------------------------------------------------------------------
 # Per-process conditioned sampler
 # ---------------------------------------------------------------------------
+
+
+def _check_sampler_arguments(
+    target_ranges: NDArray[np.intp],
+    n_epochs: int,
+    *,
+    split_factor: int,
+    n_initial: int,
+) -> None:
+    """Check the arguments of the conditioned samplers that do not depend on rates."""
+    for name, value in (("split_factor", split_factor), ("n_initial", n_initial)):
+        if value < 1:
+            msg = f"{name} must be a positive integer"
+            raise ValueError(msg)
+    if np.shape(target_ranges) != (n_epochs, 2):
+        msg = (
+            f"target_ranges must have shape (n_epochs, 2) = ({n_epochs}, 2), "
+            f"got {np.shape(target_ranges)}"
+        )
+        raise ValueError(msg)
 
 
 def sample_conditioned_survival_process(
@@ -516,21 +554,33 @@ def sample_conditioned_survival_process(
         Contains the matched samples, per-era filter diagnostics, and counts
         of restarts and total era-0 particles simulated.
 
+    Raises
+    ------
+    ValueError
+        If the three rate and time arguments differ in length, a rate is not
+        finite and positive, the end times are not finite, positive and strictly
+        increasing, there are fewer than 2 epochs, ``target_ranges`` does not
+        have shape ``(n_epochs, 2)``, or ``n_samples``, ``split_factor`` or
+        ``n_initial`` is less than 1.
+
     Warns
     -----
     RuntimeWarning
         If ``max_attempts`` is reached before ``n_samples`` are collected.
     """
-    br = np.asarray(birth_rates, dtype=np.float64)
-    dr = np.asarray(death_rates, dtype=np.float64)
-    et = np.asarray(epoch_end_times, dtype=np.float64)
+    br, dr, et = epoch_rates(
+        birth_rates, death_rates, epoch_end_times, times_name="epoch_end_times"
+    )
 
     n_epochs: int = len(br)
-    if not (len(dr) == len(et) == n_epochs):
-        msg = "birth_rates, death_rates, and epoch_end_times must have the same length"
-        raise ValueError(msg)
     if n_epochs < 2:
         msg = "At least 2 epochs are required for conditioned sampling"
+        raise ValueError(msg)
+    _check_sampler_arguments(
+        target_ranges, n_epochs, split_factor=split_factor, n_initial=n_initial
+    )
+    if n_samples < 1:
+        msg = "n_samples must be a positive integer"
         raise ValueError(msg)
 
     br_jax = jnp.array(br, dtype=jnp.float64)
@@ -720,6 +770,15 @@ def sample_conditioned_survival_per_posterior(
             ``matched=False``).
         ``n_outer_iterations``
             Restarts needed for this draw (0 when ``matched=False``).
+
+    Raises
+    ------
+    ValueError
+        If the posterior arrays are not 2-D arrays of the same shape, a
+        posterior rate is not finite and positive, ``epoch_end_times`` is
+        invalid or not of length ``n_epochs``, ``target_ranges`` does not have
+        shape ``(n_epochs, 2)``, or ``split_factor`` or ``n_initial`` is less
+        than 1.  These are checked once, before any draw.
     """
     br_arr = np.asarray(posterior_birth_rates, dtype=np.float64)
     dr_arr = np.asarray(posterior_death_rates, dtype=np.float64)
@@ -735,6 +794,20 @@ def sample_conditioned_survival_per_posterior(
         raise ValueError(msg)
 
     n_draws, n_epochs = br_arr.shape
+    # Checked once here: the per-draw ``except`` below turns errors into warnings.
+    check_positive_rates(
+        br_arr, dr_arr, label="posterior_birth_rates and posterior_death_rates"
+    )
+    check_epoch_ends("epoch_end_times", np.asarray(epoch_end_times, dtype=np.float64))
+    if len(epoch_end_times) != n_epochs:
+        msg = (
+            f"epoch_end_times must have the same length as the {n_epochs} "
+            "epochs of the posterior draws"
+        )
+        raise ValueError(msg)
+    _check_sampler_arguments(
+        target_ranges, n_epochs, split_factor=split_factor, n_initial=n_initial
+    )
     rng = np.random.default_rng(random_seed)
     rows: list[dict[str, object]] = []
 

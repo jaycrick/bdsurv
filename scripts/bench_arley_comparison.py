@@ -60,7 +60,8 @@ from bdsurv import (
     simulate_linear_rate_contour_process,
     simulate_linear_survival_splitting,
 )
-from bdsurv import _linear_math as lm
+from bdsurv import _hazard as lm
+from bdsurv.rates import Rate, as_rate
 
 LAMBDA = base.LAMBDA
 METHODS = base.METHODS
@@ -168,9 +169,9 @@ def arley_rates(slope: float, terminal_time: float) -> tuple[Any, Any]:
     )
 
 
-def _arley(slope: float, terminal_time: float) -> tuple[lm.Rate, lm.Rate]:
+def _arley(slope: float, terminal_time: float) -> tuple[Rate, Rate]:
     birth, death = arley_rates(slope, terminal_time)
-    return lm.as_rate(birth), lm.as_rate(death)
+    return as_rate(birth), as_rate(death)
 
 
 def log_constant_cumulative(mu: float, terminal_time: float) -> float:
@@ -203,7 +204,7 @@ def match_cumulative_slope(mu: float, terminal_time: float) -> float:
     return math.sqrt(low * high)
 
 
-def log_inverse_survival(birth: lm.Rate, death: lm.Rate, t: float) -> float:
+def log_inverse_survival(birth: Rate, death: Rate, t: float) -> float:
     """Return ``ln(1 / Pr(Z_t > 0))``."""
     return -lm.log_survival_probability(birth, death, t)
 

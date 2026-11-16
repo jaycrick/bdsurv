@@ -6,11 +6,11 @@ import pytest
 
 from bdsurv.contour import (
     _build_contour_process_list,
-    _contour_process_list_to_tree,
     _generate_non_spine_component,
     _generate_spine_component,
-    _validate_contour_process_list,
+    contour_process_list_to_tree,
     simulate_birth_death_process_from_contour_process,
+    validate_contour_process_list,
 )
 from bdsurv.tree import SimulatedTree
 
@@ -45,16 +45,16 @@ class TestContourProcessSimulation:
         contour_process_list: list[float],
     ) -> None:
         with pytest.raises(ValueError):
-            _validate_contour_process_list(contour_process_list)
+            validate_contour_process_list(contour_process_list)
 
     def test_contour_process_validation_accepts_valid_examples(self) -> None:
-        _validate_contour_process_list([0.0, 3.0, 2.0, 5.0, 2.0, 5.0, 3.0, 4.0, 0.0])
-        _validate_contour_process_list([0.0, 1.0, 0.0])
+        validate_contour_process_list([0.0, 3.0, 2.0, 5.0, 2.0, 5.0, 3.0, 4.0, 0.0])
+        validate_contour_process_list([0.0, 1.0, 0.0])
 
     def test_tree_reconstruction_from_contour_list(self) -> None:
         contour_process_list = [0.0, 3.0, 2.0, 5.0, 2.0, 5.0, 3.0, 4.0, 0.0]
 
-        tree = _contour_process_list_to_tree(
+        tree = contour_process_list_to_tree(
             contour_process_list,
             birth_rate=0.5,
             death_rate=0.2,
@@ -111,9 +111,9 @@ class TestContourProcessSimulation:
             non_spine_component=non_spine_component,
         )
 
-        _validate_contour_process_list(contour_process_list)
+        validate_contour_process_list(contour_process_list)
 
-        tree = _contour_process_list_to_tree(
+        tree = contour_process_list_to_tree(
             contour_process_list,
             birth_rate=0.8,
             death_rate=1.1,

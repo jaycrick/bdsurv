@@ -24,77 +24,41 @@ from __future__ import annotations
 
 import math
 from bisect import bisect_left, bisect_right
-from typing import Literal, NamedTuple
+from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
 
-from bdsurv.linear_rates import (
-    ConstantRateLike,
-    LinearRateLike,
-    _as_linear,  # pyright: ignore[reportPrivateUsage]
-    _next_event_offset,  # pyright: ignore[reportPrivateUsage]
-)
+from bdsurv.rates import Rate
 
 _N_NODES = 20
 _PANEL_EXPONENT = 4.0  # max change of the exponent within one panel
+# Rates are evaluated this far inside a panel's edges, where a rate may jump.
+PANEL_EDGE_OFFSET: float = 1e-12
+# ``|lambda - mu| * t`` below this is the critical case ``lambda == mu``.
+CRITICAL_TOLERANCE: float = 1e-10
+# Tolerances of ``close``.
+CLOSE_REL_TOL: float = 1e-5
+CLOSE_ABS_TOL: float = 1e-8
 _NODES, _WEIGHTS = np.polynomial.legendre.leggauss(_N_NODES)
 
 _Array = NDArray[np.float64]
 
 
-class Rate(NamedTuple):
-    """A piecewise-linear rate in array form: segment ``k`` is ``(starts, ends]``."""
-
-    starts: _Array
-    ends: _Array
-    v0: _Array  # value at the start of each segment
-    slope: _Array
-    cum_before: _Array  # integral from 0 to the start of each segment
-    # Float tuples mirroring the arrays, for the scalar hazard-inversion loops.
-    py_starts: tuple[float, ...] = ()
-    py_ends: tuple[float, ...] = ()
-    py_v0: tuple[float, ...] = ()
-    py_slope: tuple[float, ...] = ()
-
-    @property
-    def end_time(self) -> float:
-        """The end time ``T`` of the last segment."""
-        return float(self.ends[-1])
+def close(a: float, b: float) -> bool:
+    """Return whether ``a`` and ``b`` are close (relative 1e-5, absolute 1e-8)."""
+    return math.isclose(a, b, rel_tol=CLOSE_REL_TOL, abs_tol=CLOSE_ABS_TOL)
 
 
-def as_rate(rate: ConstantRateLike | LinearRateLike) -> Rate:
-    """Convert a rate-like object (constant or linear epochs) to a :class:`Rate`."""
-    lin = _as_linear(rate)
-    ends = np.asarray(lin.epoch_end_times, dtype=np.float64)
-    starts = np.concatenate([[0.0], ends[:-1]])
-    v0 = np.asarray(lin.start_values, dtype=np.float64)
-    v1 = np.asarray(lin.end_values, dtype=np.float64)
-    if not (ends.shape == v0.shape == v1.shape):
-        msg = "rate values and epoch_end_times must have the same shape"
-        raise ValueError(msg)
-    if ends[0] <= 0.0 or np.any(np.diff(ends) <= 0.0):
-        msg = "epoch_end_times must be positive and strictly increasing"
-        raise ValueError(msg)
-    if not (np.all(np.isfinite(v0)) and np.all(np.isfinite(v1))):
-        msg = "rate values must be finite"
-        raise ValueError(msg)
-    if np.any(v0 < 0.0) or np.any(v1 < 0.0):
-        msg = "rate values must be non-negative"
-        raise ValueError(msg)
-    slope = (v1 - v0) / (ends - starts)
-    cum_before = np.concatenate([[0.0], np.cumsum(0.5 * (v0 + v1) * (ends - starts))])
-    return Rate(
-        starts,
-        ends,
-        v0,
-        slope,
-        cum_before[:-1],
-        tuple(starts.tolist()),
-        tuple(ends.tolist()),
-        tuple(v0.tolist()),
-        tuple(slope.tolist()),
-    )
+def next_event_offset(a: float, b: float, e: float) -> float:
+    """Solve ``a s + b s^2 / 2 = e`` for the smallest ``s >= 0``, or ``inf``."""
+    disc = a * a + 2.0 * b * e
+    if disc < 0.0:
+        return math.inf
+    denom = a + math.sqrt(disc)
+    if denom <= 0.0:
+        return math.inf
+    return 2.0 * e / denom
 
 
 def _index(
@@ -123,7 +87,7 @@ def forward_hazard_time(rate: Rate, start: float, e: float, cap: float) -> float
     """Smallest ``s >= start`` with ``int_start^s rate = e``, or ``cap`` if none <= cap.
 
     Within a segment the equation is a quadratic, solved by the stable form in
-    :func:`bdsurv.linear_rates._next_event_offset`; if the segment's hazard is
+    :func:`next_event_offset`; if the segment's hazard is
     used up before ``e`` is reached, the remainder carries into the next one.
     Plain Python floats and ``bisect`` are used: this runs once per contour step.
     """
@@ -138,7 +102,7 @@ def forward_hazard_time(rate: Rate, start: float, e: float, cap: float) -> float
             return cap
         a = v0s[k] + slopes[k] * (t - starts[k])
         b = slopes[k]
-        offset = _next_event_offset(a, b, remaining)
+        offset = next_event_offset(a, b, remaining)
         if t + offset <= end:
             return min(t + offset, cap)
         length = end - t
@@ -159,7 +123,7 @@ def backward_hazard_time(rate: Rate, start: float, e: float) -> float:
         length = hi - lo
         a = v0s[k] + slopes[k] * length  # value at hi
         b = -slopes[k]  # slope when walking backwards
-        offset = _next_event_offset(a, b, remaining)
+        offset = next_event_offset(a, b, remaining)
         if offset <= length:
             return hi - offset
         remaining -= a * length + 0.5 * b * length * length
@@ -168,14 +132,7 @@ def backward_hazard_time(rate: Rate, start: float, e: float) -> float:
     return 0.0
 
 
-def _logsumexp(x: _Array) -> float:
-    peak = float(np.max(x))
-    if not math.isfinite(peak):
-        return -math.inf
-    return peak + math.log(float(np.sum(np.exp(x - peak))))
-
-
-def _log_integral(
+def log_integral(
     weight: Rate,
     birth: Rate,
     death: Rate,
@@ -199,7 +156,10 @@ def _log_integral(
     def rate_at(x: _Array) -> _Array:
         return sign * (value(birth, x) - value(death, x))
 
-    d_lo, d_hi = np.abs(rate_at(lows + 1e-12)), np.abs(rate_at(highs - 1e-12))
+    d_lo, d_hi = (
+        np.abs(rate_at(lows + PANEL_EDGE_OFFSET)),
+        np.abs(rate_at(highs - PANEL_EDGE_OFFSET)),
+    )
     n_panels = np.ceil(np.maximum(d_lo, d_hi) * (highs - lows) / _PANEL_EXPONENT)
     panel_lo: list[_Array] = []
     panel_hi: list[_Array] = []
@@ -214,22 +174,75 @@ def _log_integral(
     with np.errstate(divide="ignore"):
         log_w = np.log(value(weight, x))
     log_f = log_w + exponent + np.log(half[:, None] * _WEIGHTS)
-    return _logsumexp(log_f.ravel())
+    return float(np.logaddexp.reduce(log_f.ravel()))
+
+
+def log_survival_probability_constant(
+    *,
+    birth_rate: float,
+    death_rate: float,
+    time: float,
+) -> float:
+    """Return ``log Pr(Z_t > 0)`` from one individual, stable for large ``t``."""
+    if time <= 0.0:
+        return 0.0
+    growth_rate = birth_rate - death_rate
+    x = growth_rate * time
+    # log of ``num`` in ``pr_extinction``; survival is 1 / (1 + num).
+    if abs(x) < CRITICAL_TOLERANCE:
+        log_num = math.log(death_rate) + math.log(time)
+    elif x < 0.0:
+        # kernel = expm1(|x|) / |g|, with log(expm1(y)) = y + log(1 - exp(-y))
+        log_num = (
+            math.log(death_rate)
+            + (-x)
+            + math.log(-math.expm1(x))
+            - math.log(-growth_rate)
+        )
+    else:
+        log_num = (
+            math.log(death_rate) + math.log(-math.expm1(-x)) - math.log(growth_rate)
+        )
+    return -float(np.logaddexp(0.0, log_num))
+
+
+def log_survival_probability_quadrature(birth: Rate, death: Rate, t: float) -> float:
+    r"""Return $\ln \Pr(Z_t > 0) = -\ln(1 + I(t))$ by panelled quadrature."""
+    if t <= 0.0:
+        return 0.0
+    log_i = log_integral(death, birth, death, t, sign=-1.0)
+    return -float(np.logaddexp(0.0, log_i))
+
+
+def _is_constant(rate: Rate, *, positive: bool) -> bool:
+    """Whether ``rate`` is one epoch with zero slope (and a positive value if asked)."""
+    return (
+        rate.ends.size == 1
+        and rate.slope[0] == 0.0
+        and (not positive or rate.v0[0] > 0.0)
+    )
 
 
 def log_survival_probability(birth: Rate, death: Rate, t: float) -> float:
-    r"""Return $\ln \Pr(Z_t > 0) = -\ln(1 + I(t))$ from one individual at time 0."""
-    if t <= 0.0:
-        return 0.0
-    log_i = _log_integral(death, birth, death, t, sign=-1.0)
-    return -float(np.logaddexp(0.0, log_i))
+    r"""Return $\ln \Pr(Z_t > 0) = -\ln(1 + I(t))$ from one individual at time 0.
+
+    When both rates are constant (one epoch, zero slope) and the death rate is
+    positive this is the closed form
+    :func:`log_survival_probability_constant`; otherwise it is the quadrature
+    :func:`log_survival_probability_quadrature`.
+    """
+    if _is_constant(birth, positive=False) and _is_constant(death, positive=True):
+        return log_survival_probability_constant(
+            birth_rate=float(birth.v0[0]), death_rate=float(death.v0[0]), time=t
+        )
+    return log_survival_probability_quadrature(birth, death, t)
 
 
 def log_mean_cumulative_individuals(birth: Rate, death: Rate, t: float) -> float:
     r"""Return $\ln\left(1 + \int_0^t \lambda(s) e^{\Gamma(s)} ds\right)$."""
     if t <= 0.0:
         return 0.0
-    return float(np.logaddexp(0.0, _log_integral(birth, birth, death, t, sign=1.0)))
+    return float(np.logaddexp(0.0, log_integral(birth, birth, death, t, sign=1.0)))
 
 
 def mean_cumulative_individuals(birth: Rate, death: Rate, t: float) -> float:

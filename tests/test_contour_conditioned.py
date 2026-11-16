@@ -10,8 +10,8 @@ import pytest
 from scipy import stats
 from scipy.integrate import quad
 
-from bdsurv import _linear_math as lm
-from bdsurv.contour import _seeded_rng, _validate_contour_process_list
+from bdsurv import _hazard as lm
+from bdsurv.contour import seeded_rng, validate_contour_process_list
 from bdsurv.contour_conditioned import (
     _ages_contour,
     _cut_at_last_downcrossing,
@@ -20,7 +20,6 @@ from bdsurv.contour_conditioned import (
     _log_survival_pair,
     _population_contour,
     _prefer_top,
-    _resolve_rates,
     _Walker,
     simulate_contour_given_ages,
     simulate_contour_given_population,
@@ -31,6 +30,7 @@ from bdsurv.linear_rates import (
     PiecewiseLinear,
     simulate_birth_death_linear,
 )
+from bdsurv.rates import as_rate, resolve_rates
 
 T = 4.0
 N_SEEDS = 200
@@ -78,8 +78,8 @@ def _tree(regime: str, n: int, seed: int, direction: str = "auto") -> Any:
 
 def _contour(regime: str, n: int, seed: int, direction: str) -> list[float]:
     birth, death = REGIMES[regime]
-    rates = _resolve_rates(birth, death, _terminal_time(birth))
-    walker = _Walker(rates.birth, rates.death, rates.terminal_time, _seeded_rng(seed))
+    rate_b, rate_d, horizon = resolve_rates(birth, death, _terminal_time(birth))
+    walker = _Walker(rate_b, rate_d, horizon, seeded_rng(seed))
     return _population_contour(walker, n, prefer_top=direction == "top")
 
 
@@ -94,7 +94,7 @@ class _FakeRng:
 
 
 def _walker(rng: Any, birth: float = 1.0, death: float = 1.0) -> _Walker:
-    return _Walker(lm.as_rate(_const(birth)), lm.as_rate(_const(death)), T, rng)
+    return _Walker(as_rate(_const(birth)), as_rate(_const(death)), T, rng)
 
 
 class TestJoinPieces:
@@ -119,7 +119,7 @@ class TestContourValidity:
     def test_contour_structure(self, regime: str, direction: str, n: int) -> None:
         for seed in range(N_SEEDS):
             contour = _contour(regime, n, seed, direction)
-            _validate_contour_process_list(contour)
+            validate_contour_process_list(contour)
             assert all(x != y for x, y in pairwise(contour))
             assert contour[0] == 0.0
             assert contour[-1] == 0.0
@@ -179,12 +179,12 @@ class TestTreeValidity:
         assert tree.terminal_time == T
 
     def test_direction_rule(self) -> None:
-        birth, death = (lm.as_rate(r) for r in ARLEY)
+        birth, death = (as_rate(r) for r in ARLEY)
         fwd, rev = _log_survival_pair(birth, death, T)
         assert (rev > fwd) == _prefer_top(birth, death, T, "auto")
         growth = float(lm.cumulative(birth, T) - lm.cumulative(death, T))
         assert rev - fwd == pytest.approx(-growth)
-        critical = (lm.as_rate(_const(1.0)),) * 2
+        critical = (as_rate(_const(1.0)),) * 2
         assert not _prefer_top(*critical, T, "auto")  # tie -> bottom
 
     def test_zero_death_rate(self) -> None:
@@ -333,8 +333,8 @@ def _ages_contour_of(
     spine_index: int | None = None,
 ) -> tuple[list[float], int]:
     birth, death = REGIMES[regime]
-    rates = _resolve_rates(birth, death, _terminal_time(birth))
-    walker = _Walker(rates.birth, rates.death, rates.terminal_time, _seeded_rng(seed))
+    rate_b, rate_d, horizon = resolve_rates(birth, death, _terminal_time(birth))
+    walker = _Walker(rate_b, rate_d, horizon, seeded_rng(seed))
     return _ages_contour(walker, ages, spine_index, prefer_top=direction == "top")
 
 
@@ -392,7 +392,7 @@ class TestAgesStructure:
     ) -> None:
         for seed in range(N_SEEDS):
             contour, _ = _ages_contour_of(regime, ages, seed, direction)
-            _validate_contour_process_list(contour)
+            validate_contour_process_list(contour)
             assert all(x != y for x, y in pairwise(contour))
             assert contour[0] == 0.0
             assert contour[-1] == 0.0
@@ -464,7 +464,7 @@ def _quad_log_weights(regime: str, ages: tuple[float, ...]) -> np.ndarray:
     birth, death = REGIMES[regime]
     b_like = _const(birth) if isinstance(birth, float) else birth
     d_like = _const(death) if isinstance(death, float) else death
-    b, d = lm.as_rate(b_like), lm.as_rate(d_like)
+    b, d = as_rate(b_like), as_rate(d_like)
 
     def integral(t: float) -> float:
         def f(s: float) -> float:
@@ -486,20 +486,20 @@ class TestLogSpineWeights:
     @pytest.mark.parametrize("regime", ["subcritical", "supercritical", "arley"])
     def test_against_quad(self, regime: str) -> None:
         birth, death = REGIMES[regime]
-        rates = _resolve_rates(birth, death, _terminal_time(birth))
+        rate_b, rate_d, _ = resolve_rates(birth, death, _terminal_time(birth))
         ages = (0.3, 1.0, 2.5, 3.9, T)
-        got = _log_spine_weights(rates.birth, rates.death, T, ages)
+        got = _log_spine_weights(rate_b, rate_d, T, ages)
         assert got == pytest.approx(_quad_log_weights(regime, ages), rel=1e-7)
 
     def test_age_close_to_terminal_time_is_zero_level(self) -> None:
-        rates = _resolve_rates(1.2, 0.7, T)
-        exact = _log_spine_weights(rates.birth, rates.death, T, (T,))
-        near = _log_spine_weights(rates.birth, rates.death, T, (T - 1e-13,))
+        rate_b, rate_d, _ = resolve_rates(1.2, 0.7, T)
+        exact = _log_spine_weights(rate_b, rate_d, T, (T,))
+        near = _log_spine_weights(rate_b, rate_d, T, (T - 1e-13,))
         assert near == pytest.approx(exact)
 
     def test_zero_death_rate_gives_minus_inf(self) -> None:
-        rates = _resolve_rates(1.0, 0.0, T)
-        got = _log_spine_weights(rates.birth, rates.death, T, (1.0, 2.0))
+        rate_b, rate_d, _ = resolve_rates(1.0, 0.0, T)
+        got = _log_spine_weights(rate_b, rate_d, T, (1.0, 2.0))
         assert np.all(got == -np.inf)
 
     @regimes
@@ -635,10 +635,10 @@ class TestSurvivalReversalIdentity:
         ids=["const_sub", "const_super", "linear_birth", "arley", "multi_segment"],
     )
     def test_matches_explicit_reversal(self, rates: tuple[Any, Any]) -> None:
-        birth, death = (lm.as_rate(r) for r in rates)
+        birth, death = (as_rate(r) for r in rates)
         _, log_s_rev = _log_survival_pair(birth, death, T)
-        rev_birth = lm.as_rate(_reverse_rate(rates[1], T))
-        rev_death = lm.as_rate(_reverse_rate(rates[0], T))
+        rev_birth = as_rate(_reverse_rate(rates[1], T))
+        rev_death = as_rate(_reverse_rate(rates[0], T))
         expected = lm.log_survival_probability(rev_birth, rev_death, T)
         assert log_s_rev == pytest.approx(expected, rel=1e-9, abs=1e-10)
 
@@ -807,8 +807,8 @@ class TestSpineChoiceFrequency:
     def test_frequency(self, regime: str, ages: tuple[float, ...]) -> None:
         n_draws = 4000
         birth, death = REGIMES[regime]
-        rates = _resolve_rates(birth, death, _terminal_time(birth))
-        log_w = _log_spine_weights(rates.birth, rates.death, T, ages)
+        rate_b, rate_d, _ = resolve_rates(birth, death, _terminal_time(birth))
+        log_w = _log_spine_weights(rate_b, rate_d, T, ages)
         probs = np.exp(log_w - np.logaddexp.reduce(log_w))
         picks = [_ages_contour_of(regime, ages, i, "auto")[1] for i in range(n_draws)]
         hits = sum(1 for k in picks if k == 0)
@@ -825,7 +825,7 @@ def _spine_law(regime: str, n_grid: int = 4001) -> tuple[np.ndarray, np.ndarray,
     birth, death = REGIMES[regime]
     b_like = _const(birth) if isinstance(birth, float) else birth
     d_like = _const(death) if isinstance(death, float) else death
-    b, d = lm.as_rate(b_like), lm.as_rate(d_like)
+    b, d = as_rate(b_like), as_rate(d_like)
 
     def mu_term(s: float) -> float:
         gam = float(lm.cumulative(b, s) - lm.cumulative(d, s))

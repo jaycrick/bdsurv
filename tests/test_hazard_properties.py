@@ -14,19 +14,16 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from bdsurv import PiecewiseConstant, PiecewiseLinear
-from bdsurv._linear_math import (
-    Rate,
-    as_rate,
+from bdsurv._hazard import (
     backward_hazard_time,
     cumulative,
     forward_hazard_time,
-    log_survival_probability,
+    log_survival_probability_constant,
+    log_survival_probability_quadrature,
+    next_event_offset,
 )
-from bdsurv.linear_rates import (
-    _next_event_offset,  # pyright: ignore[reportPrivateUsage]
-)
+from bdsurv.rates import Rate, as_rate
 from bdsurv.splitting import (
-    _log_survival_probability,  # pyright: ignore[reportPrivateUsage]
     compute_level_replicates,
     select_level_times_for_band,
 )
@@ -69,13 +66,13 @@ def piecewise_linear_rates(draw: st.DrawFn) -> Rate:
     e=st.floats(min_value=0.01, max_value=5.0),
 )
 def test_next_event_offset_solves_the_quadratic(a: float, b: float, e: float) -> None:
-    """``s = _next_event_offset(a, b, e)`` solves ``a s + b s^2 / 2 = e``.
+    """``s = next_event_offset(a, b, e)`` solves ``a s + b s^2 / 2 = e``.
 
     The residual is asserted below ``HAZARD_TOL`` (scaled by ``1 + e``).  With a
     falling hazard (``b < 0``) the equation has no root when the cumulative
     hazard peaks below ``e``, and the function returns ``inf``.
     """
-    s = _next_event_offset(a, b, e)
+    s = next_event_offset(a, b, e)
     if math.isinf(s):
         assert b < 0.0, f"returned inf for a={a}, b={b}, e={e} with a rising hazard"
         peak = a * a / (-2.0 * b)
@@ -169,8 +166,10 @@ def test_quadrature_survival_matches_closed_form(
     """
     rate_b = as_rate(PiecewiseConstant(np.array([birth]), np.array([t])))
     rate_d = as_rate(PiecewiseConstant(np.array([death]), np.array([t])))
-    got = log_survival_probability(rate_b, rate_d, t)
-    expected = _log_survival_probability(birth_rate=birth, death_rate=death, time=t)
+    got = log_survival_probability_quadrature(rate_b, rate_d, t)
+    expected = log_survival_probability_constant(
+        birth_rate=birth, death_rate=death, time=t
+    )
     assert math.isclose(got, expected, rel_tol=1e-9, abs_tol=1e-12), (
         f"quadrature {got!r} vs closed form {expected!r} for birth={birth}, "
         f"death={death}, t={t}: difference {got - expected:.3g}"
@@ -205,7 +204,9 @@ def test_band_grid_is_increasing_and_in_band(
     assert np.all(np.diff(grid) > 0.0), f"grid is not strictly increasing: {grid}"
     log_pr = np.array(
         [
-            _log_survival_probability(birth_rate=birth, death_rate=death, time=float(t))
+            log_survival_probability_constant(
+                birth_rate=birth, death_rate=death, time=float(t)
+            )
             for t in grid
         ]
     )
@@ -247,7 +248,7 @@ def test_replicates_keep_expected_lines_at_least_one(
     assert np.all(replicates >= 2), f"replicate counts below 2: {replicates}"
     log_cumulative = np.cumsum(np.log(replicates.astype(np.float64)))
     for i, log_r in enumerate(log_cumulative, start=1):
-        log_pr = _log_survival_probability(
+        log_pr = log_survival_probability_constant(
             birth_rate=birth, death_rate=death, time=float(grid[i])
         )
         assert log_r + log_pr >= -1e-8, (

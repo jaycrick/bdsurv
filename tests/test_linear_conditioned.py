@@ -14,8 +14,9 @@ from bdsurv import (
     simulate_linear_rate_contour_process,
     simulate_linear_survival_splitting,
 )
-from bdsurv import _linear_math as lm
-from bdsurv.splitting import _log_survival_probability
+from bdsurv import _hazard as lm
+from bdsurv._hazard import log_survival_probability_constant
+from bdsurv.rates import as_rate
 
 T = 4.0
 
@@ -40,10 +41,10 @@ class TestMaths:
     def test_matches_constant_rate_closed_forms(
         self, lam: float, mu: float, t: float
     ) -> None:
-        birth = lm.as_rate(_const(lam, t))
-        death = lm.as_rate(_const(mu, t))
+        birth = as_rate(_const(lam, t))
+        death = as_rate(_const(mu, t))
         assert lm.log_survival_probability(birth, death, t) == pytest.approx(
-            _log_survival_probability(birth_rate=lam, death_rate=mu, time=t)
+            log_survival_probability_constant(birth_rate=lam, death_rate=mu, time=t)
         )
         growth = lam - mu
         expected = (
@@ -57,8 +58,8 @@ class TestMaths:
 
     def test_arley_matches_quadrature(self) -> None:
         slope = 0.3
-        birth = lm.as_rate(_const(1.0, 10.0))
-        death = lm.as_rate(_line(0.0, slope * 10.0, 10.0))
+        birth = as_rate(_const(1.0, 10.0))
+        death = as_rate(_line(0.0, slope * 10.0, 10.0))
         cumulative, _ = integrate.quad(lambda s: math.exp(s - slope * s * s / 2), 0, 10)
         assert lm.mean_cumulative_individuals(birth, death, 10.0) == pytest.approx(
             1.0 + cumulative
@@ -71,23 +72,23 @@ class TestMaths:
         )
 
     def test_survival_probability_edge_cases(self) -> None:
-        birth, death = (lm.as_rate(r) for r in ARLEY)
+        birth, death = (as_rate(r) for r in ARLEY)
         assert lm.log_survival_probability(birth, death, 0.0) == 0.0
-        zero = lm.as_rate(_const(0.0))
+        zero = as_rate(_const(0.0))
         assert lm.log_survival_probability(birth, zero, T) == 0.0
 
     def test_piecewise_rate_validation(self) -> None:
         with pytest.raises(ValueError, match="non-negative"):
-            lm.as_rate(_const(-1.0))
+            as_rate(_const(-1.0))
         with pytest.raises(ValueError, match="finite"):
-            lm.as_rate(_const(math.inf))
+            as_rate(_const(math.inf))
         with pytest.raises(ValueError, match="increasing"):
-            lm.as_rate(PiecewiseConstant(np.array([1.0, 1.0]), np.array([2.0, 1.0])))
+            as_rate(PiecewiseConstant(np.array([1.0, 1.0]), np.array([2.0, 1.0])))
         with pytest.raises(ValueError, match="same shape"):
-            lm.as_rate(PiecewiseConstant(np.array([1.0]), np.array([1.0, 2.0])))
+            as_rate(PiecewiseConstant(np.array([1.0]), np.array([1.0, 2.0])))
 
     def test_hazard_inverses_round_trip(self) -> None:
-        rate = lm.as_rate(
+        rate = as_rate(
             PiecewiseLinear(
                 np.array([0.5, 1.0]), np.array([1.5, 0.2]), np.array([2.0, 5.0])
             )
@@ -104,7 +105,7 @@ class TestMaths:
             assert got == pytest.approx(hazard)
 
     def test_hazard_exhausted(self) -> None:
-        rate = lm.as_rate(_const(1.0, 5.0))
+        rate = as_rate(_const(1.0, 5.0))
         assert lm.forward_hazard_time(rate, 4.0, 3.0, cap=5.0) == 5.0
         assert lm.backward_hazard_time(rate, 1.0, 3.0) == 0.0
         assert lm.forward_hazard_time(rate, 5.0, 1.0, cap=5.0) == 5.0

@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
+from bdsurv.rates import epoch_rates
 from bdsurv.tree import SimulatedProcess, build_records
 
 
@@ -50,30 +51,17 @@ def simulate_birth_death_process(
         The simulated individual records together with the rates and epoch
         end times used to generate them.
 
+    Raises
+    ------
+    ValueError
+        If the three arguments differ in length, a rate is not finite and
+        positive, the times are not finite, positive and strictly increasing,
+        or ``max_retries`` is negative.
+
     """
-    # Convert inputs to arrays for uniform handling
-    birth_rates_arr = np.atleast_1d(birth_rates)
-    death_rates_arr = np.atleast_1d(death_rates)
-    times_arr = np.atleast_1d(times)
-
-    # Validate inputs
-    if not (len(birth_rates_arr) == len(death_rates_arr) == len(times_arr)):
-        msg = "birth_rates, death_rates, and times must have the same length"
-        raise ValueError(
-            msg,
-        )
-
-    if np.any(birth_rates_arr <= 0) or np.any(death_rates_arr <= 0):
-        msg = "Birth rates and death rates must be positive"
-        raise ValueError(msg)
-
-    if np.any(times_arr <= 0):
-        msg = "Times must be positive"
-        raise ValueError(msg)
-
-    if len(times_arr) > 1 and np.any(np.diff(times_arr) <= 0):
-        msg = "Times must be strictly increasing"
-        raise ValueError(msg)
+    birth_rates_arr, death_rates_arr, times_arr = epoch_rates(
+        birth_rates, death_rates, times
+    )
 
     # Base RNG used to derive per-attempt seeds for reproducibility
     base_seed_rng = np.random.default_rng(random_seed)

@@ -83,7 +83,7 @@ def _constant_runs(
             if not base.cell_is_feasible(mu, terminal_time):
                 continue
             weight = (
-                -base._log_survival_probability(  # pyright: ignore[reportPrivateUsage]
+                -base.log_survival_probability_constant(
                     birth_rate=base.LAMBDA, death_rate=mu, time=terminal_time
                 )
                 / LN10

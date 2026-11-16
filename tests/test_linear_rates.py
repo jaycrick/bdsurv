@@ -8,7 +8,7 @@ from _helpers import n_individuals
 from scipy import stats
 
 from bdsurv import PiecewiseConstant, PiecewiseLinear, simulate_birth_death_linear
-from bdsurv.linear_rates import _next_event_offset
+from bdsurv._hazard import next_event_offset
 
 
 def _linear(start: list[float], end: list[float], times: list[float]):
@@ -38,21 +38,21 @@ def _mean_size(birth, death, n_runs: int, seed: int = 0) -> tuple[float, float]:
 
 class TestSimulateBirthDeathLinear:
     def test_offset_constant_hazard(self) -> None:
-        assert _next_event_offset(2.0, 0.0, 1.5) == pytest.approx(0.75)
+        assert next_event_offset(2.0, 0.0, 1.5) == pytest.approx(0.75)
 
     @pytest.mark.parametrize("b", [0.7, 1e-9, -0.2])
     def test_offset_inverts_cumulative_hazard(self, b: float) -> None:
         a, e = 1.3, 0.9
-        s = _next_event_offset(a, b, e)
+        s = next_event_offset(a, b, e)
         assert a * s + 0.5 * b * s * s == pytest.approx(e)
 
     def test_offset_matches_closed_form(self) -> None:
         a, b, e = 1.3, 0.7, 0.9
         expected = (-a + math.sqrt(a * a + 2 * b * e)) / b
-        assert _next_event_offset(a, b, e) == pytest.approx(expected)
+        assert next_event_offset(a, b, e) == pytest.approx(expected)
 
     def test_offset_infinite_when_hazard_exhausted(self) -> None:
-        assert _next_event_offset(1.0, -1.0, 5.0) == math.inf
+        assert next_event_offset(1.0, -1.0, 5.0) == math.inf
 
     def test_death_time_distribution(self) -> None:
         birth = _linear([0.0], [0.0], [6.0])

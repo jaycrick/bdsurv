@@ -67,12 +67,13 @@ from bdsurv.lifespans import (  # noqa: E402
     simulate_birth_death_lifespans,
     simulate_birth_death_lifespans_arrays,
 )
-from bdsurv.linear_rates import (  # noqa: E402
+from bdsurv.linear_rates import simulate_birth_death_linear  # noqa: E402
+from bdsurv.rates import (  # noqa: E402
     ConstantRateLike,
     LinearRateLike,
     PiecewiseConstant,
     PiecewiseLinear,
-    simulate_birth_death_linear,
+    RateInput,
 )
 from bdsurv.splitting import (  # noqa: E402
     ConditionedTrajectory,
@@ -104,6 +105,7 @@ __all__ = [
     "MatchedSurvivalSample",
     "PiecewiseConstant",
     "PiecewiseLinear",
+    "RateInput",
     "SimulatedProcess",
     "SimulatedTree",
     "SplittingConfig",

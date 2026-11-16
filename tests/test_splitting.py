@@ -4,12 +4,12 @@ import numpy as np
 import pytest
 
 from bdsurv._extinction import pr_extinction
+from bdsurv._hazard import log_survival_probability_constant
 from bdsurv.splitting import (
     _BAND_LOWER,
     _BAND_UPPER,
     SplittingConfig,
     _initial_level_count,
-    _log_survival_probability,
     compute_level_replicates,
     default_max_restarts,
     select_level_times_for_band,
@@ -127,7 +127,9 @@ class TestSplittingSimulation:
 
 def _ratios(birth_rate: float, death_rate: float, levels: np.ndarray) -> np.ndarray:
     log_prs = [
-        _log_survival_probability(birth_rate=birth_rate, death_rate=death_rate, time=t)
+        log_survival_probability_constant(
+            birth_rate=birth_rate, death_rate=death_rate, time=t
+        )
         for t in levels
     ]
     return np.exp(np.diff(log_prs))
@@ -139,7 +141,7 @@ def _reference_grid(
     """Plain restatement of the refine-then-coarsen rule, with no protected times."""
 
     def log_pr(t: float) -> float:
-        return _log_survival_probability(
+        return log_survival_probability_constant(
             birth_rate=birth_rate, death_rate=death_rate, time=t
         )
 
@@ -179,12 +181,16 @@ class TestLevelGrid:
         for t in (0.1, 1.0, 20.0):
             expected = 1.0 - pr_extinction(0.9, 1.0, t)
             got = np.exp(
-                _log_survival_probability(birth_rate=0.9, death_rate=1.0, time=t)
+                log_survival_probability_constant(
+                    birth_rate=0.9, death_rate=1.0, time=t
+                )
             )
             assert np.isclose(got, expected, rtol=1e-9)
 
     def test_log_survival_stable_for_huge_horizon(self) -> None:
-        value = _log_survival_probability(birth_rate=1.0, death_rate=2.0, time=1e6)
+        value = log_survival_probability_constant(
+            birth_rate=1.0, death_rate=2.0, time=1e6
+        )
         assert np.isfinite(value)
 
     @pytest.mark.parametrize(
@@ -273,7 +279,9 @@ class TestReplicates:
         for _ in range(200):
             mid = 0.5 * (lo + hi)
             pr = np.exp(
-                _log_survival_probability(birth_rate=1.0, death_rate=2.0, time=mid)
+                log_survival_probability_constant(
+                    birth_rate=1.0, death_rate=2.0, time=mid
+                )
             )
             if pr > 0.5:
                 lo = mid
@@ -295,7 +303,7 @@ class TestReplicates:
         assert np.all(replicates >= 2)
         pr = np.exp(
             [
-                _log_survival_probability(
+                log_survival_probability_constant(
                     birth_rate=birth_rate, death_rate=death_rate, time=t
                 )
                 for t in levels
@@ -324,7 +332,7 @@ class TestRestarts:
             replicates=replicates,
         )
         log_prs = [
-            _log_survival_probability(birth_rate=0.9, death_rate=1.0, time=t)
+            log_survival_probability_constant(birth_rate=0.9, death_rate=1.0, time=t)
             for t in levels
         ]
         failure = 0.0
@@ -468,7 +476,7 @@ class TestInitialLevelCount:
 
     def test_default_equals_explicit_rule_value(self) -> None:
         k = _initial_level_count(
-            _log_survival_probability(birth_rate=1.0, death_rate=2.0, time=20.0)
+            log_survival_probability_constant(birth_rate=1.0, death_rate=2.0, time=20.0)
         )
         default = select_level_times_for_band(
             birth_rate=1.0, death_rate=2.0, terminal_time=20.0

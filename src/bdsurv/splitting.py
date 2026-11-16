@@ -25,27 +25,33 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from bdsurv import _linear_math
-from bdsurv._numerics import close
+from bdsurv._hazard import (
+    close,
+    log_survival_probability,
+    log_survival_probability_constant,
+    next_event_offset,
+)
 from bdsurv._rng_counter import bump, make_rng
-from bdsurv.linear_rates import (
+from bdsurv.rates import (
     ConstantRateLike,
     LinearRateLike,
-    _as_linear,  # pyright: ignore[reportPrivateUsage]
-    _next_event_offset,  # pyright: ignore[reportPrivateUsage]
-    _segments,  # pyright: ignore[reportPrivateUsage]
+    check_positive_rates,
+    check_strictly_increasing,
+    check_terminal_time,
+    merged_segments,
+    resolve_rates,
 )
 from bdsurv.tree import SimulatedTree, build_records
 
 MIN_LEVEL_TIMES = 2
-_BAND_LOWER: float = np.e**-2.0  # lowest allowed Pr(t_i) / Pr(t_{i-1})
-_BAND_UPPER: float = 0.5  # highest allowed Pr(t_i) / Pr(t_{i-1})
+# The band of allowed ratios Pr(t_i) / Pr(t_{i-1}), as logs and as ratios.
 _LOG_BAND_LOWER: float = -2.0
 _LOG_BAND_UPPER: float = math.log(0.5)
+_BAND_LOWER: float = math.exp(_LOG_BAND_LOWER)
+_BAND_UPPER: float = math.exp(_LOG_BAND_UPPER)
 _TARGET_LEVEL_RATIO: float = 1.0 / 3.0  # per-level survival ratio of the start grid
 _MAX_GRID_POINTS: int = 100_000  # defensive cap on the refine step
 _MIN_REPLICATES: int = 2
-_CRITICAL_TOLERANCE: float = 1e-10  # |lambda - mu| * t below this is critical
 _REPLICATE_TOLERANCE: float = 1e-9  # so Pr(t_1) = 1/2 gives exactly R_1 = 2
 _MAX_LOG_REPLICATES: float = 30.0  # refuse R_i beyond ~1e13
 DEFAULT_RESTART_SUCCESS_PROBABILITY: float = 0.999
@@ -287,22 +293,43 @@ class _ParticleState:
     rng: np.random.Generator
 
 
-def _validate_common_inputs(
-    *,
-    birth_rate: float,
-    death_rate: float,
-    terminal_time: float,
-    n_particles: int,
-) -> None:
-    if birth_rate <= 0.0 or death_rate <= 0.0:
-        msg = "birth_rate and death_rate must be positive"
-        raise ValueError(msg)
-    if terminal_time <= 0.0:
-        msg = "terminal_time must be positive"
-        raise ValueError(msg)
+def _check_n_particles(n_particles: int) -> None:
     if n_particles <= 0:
         msg = "n_particles must be positive"
         raise ValueError(msg)
+
+
+def _as_level_array(level_times: list[float] | np.ndarray) -> np.ndarray:
+    """Return ``level_times`` as an array, checked to be a finite increasing grid."""
+    levels = np.asarray(level_times, dtype=np.float64)
+    if levels.ndim != 1:
+        msg = "level_times must be one-dimensional"
+        raise ValueError(msg)
+    if levels.size < MIN_LEVEL_TIMES:
+        msg = "At least two level times are required"
+        raise ValueError(msg)
+    if not np.all(np.isfinite(levels)):
+        msg = "level_times must be finite"
+        raise ValueError(msg)
+    check_strictly_increasing("level_times", levels)
+    return levels
+
+
+def _check_replicates(
+    replicates: list[int] | np.ndarray, n_intervals: int
+) -> np.ndarray:
+    """Return ``replicates`` as integers, one at least 1 per level interval."""
+    counts = np.asarray(replicates, dtype=np.int64)
+    if counts.shape != (n_intervals,):
+        msg = (
+            f"replicates must have one entry per level interval "
+            f"({n_intervals}), got {counts.size}."
+        )
+        raise ValueError(msg)
+    if np.any(counts < 1):
+        msg = "replicates must all be >= 1"
+        raise ValueError(msg)
+    return counts
 
 
 def _build_level_times(
@@ -317,19 +344,10 @@ def _build_level_times(
             raise ValueError(msg)
         levels = np.linspace(0.0, terminal_time, num=n_levels + 1, dtype=np.float64)
     else:
-        levels = np.asarray(level_times, dtype=np.float64)
-
-    if levels.ndim != 1:
-        msg = "level_times must be one-dimensional"
-        raise ValueError(msg)
-    if levels.size < MIN_LEVEL_TIMES:
-        msg = "At least two level times are required"
-        raise ValueError(msg)
+        levels = level_times
+    levels = _as_level_array(levels)
     if not np.isclose(levels[0], 0.0):
         msg = "First level time must be 0"
-        raise ValueError(msg)
-    if np.any(np.diff(levels) <= 0.0):
-        msg = "level_times must be strictly increasing"
         raise ValueError(msg)
     if not np.isclose(levels[-1], terminal_time):
         msg = "Last level time must equal terminal_time"
@@ -343,35 +361,6 @@ def _make_child_rng(
 ) -> np.random.Generator:
     child_seed = int(seed_rng.integers(0, 2**31 - 1))
     return make_rng(child_seed, "dynamics")
-
-
-def _log_survival_probability(
-    *,
-    birth_rate: float,
-    death_rate: float,
-    time: float,
-) -> float:
-    """Return ``log Pr(Z_t > 0)`` from one individual, stable for large ``t``."""
-    if time <= 0.0:
-        return 0.0
-    growth_rate = birth_rate - death_rate
-    x = growth_rate * time
-    # log of ``num`` in ``pr_extinction``; survival is 1 / (1 + num).
-    if abs(x) < _CRITICAL_TOLERANCE:
-        log_num = math.log(death_rate) + math.log(time)
-    elif x < 0.0:
-        # kernel = expm1(|x|) / |g|, with log(expm1(y)) = y + log(1 - exp(-y))
-        log_num = (
-            math.log(death_rate)
-            + (-x)
-            + math.log(-math.expm1(x))
-            - math.log(-growth_rate)
-        )
-    else:
-        log_num = (
-            math.log(death_rate) + math.log(-math.expm1(-x)) - math.log(growth_rate)
-        )
-    return -float(np.logaddexp(0.0, log_num))
 
 
 def _initial_level_count(log_pr_terminal: float) -> int:
@@ -431,12 +420,14 @@ def select_level_times_for_band(
     Raises
     ------
     ValueError
-        If the starting grid is invalid or the refine step exceeds
-        ``_MAX_GRID_POINTS`` points.
+        If a rate or ``terminal_time`` is not finite and positive, the starting
+        grid is invalid, or the refine step exceeds ``_MAX_GRID_POINTS`` points.
 
     """
+    check_positive_rates(birth_rate, death_rate)
+    check_terminal_time(terminal_time)
     return _select_level_times(
-        log_pr=lambda t: _log_survival_probability(
+        log_pr=lambda t: log_survival_probability_constant(
             birth_rate=birth_rate, death_rate=death_rate, time=t
         ),
         terminal_time=terminal_time,
@@ -531,12 +522,14 @@ def compute_level_replicates(
     Raises
     ------
     ValueError
-        If some ``R_i`` would be astronomically large (a grid far outside the
-        band).
+        If a rate is not finite and positive, ``level_times`` is not a finite
+        strictly increasing grid, or some ``R_i`` would be astronomically large
+        (a grid far outside the band).
 
     """
+    check_positive_rates(birth_rate, death_rate)
     return _level_replicates(
-        log_pr=lambda t: _log_survival_probability(
+        log_pr=lambda t: log_survival_probability_constant(
             birth_rate=birth_rate, death_rate=death_rate, time=t
         ),
         level_times=level_times,
@@ -549,7 +542,7 @@ def _level_replicates(
     level_times: list[float] | np.ndarray,
 ) -> np.ndarray:
     """Implement :func:`compute_level_replicates` for any ``log Pr(t)``."""
-    times = np.asarray(level_times, dtype=np.float64)
+    times = _as_level_array(level_times)
     replicates = np.zeros(times.size - 1, dtype=np.int64)
     log_cumulative = 0.0
     for i in range(1, times.size):
@@ -609,9 +602,17 @@ def default_max_restarts(
     int
         Maximum number of attempts.
 
+    Raises
+    ------
+    ValueError
+        If a rate is not finite and positive, ``level_times`` is not a finite
+        strictly increasing grid, ``replicates`` is not one integer ``>= 1`` per
+        interval, or ``target_success`` is outside ``(0, 1)``.
+
     """
+    check_positive_rates(birth_rate, death_rate)
     return _max_restarts(
-        log_pr=lambda t: _log_survival_probability(
+        log_pr=lambda t: log_survival_probability_constant(
             birth_rate=birth_rate, death_rate=death_rate, time=t
         ),
         level_times=level_times,
@@ -631,8 +632,8 @@ def _max_restarts(
     if not 0.0 < target_success < 1.0:
         msg = "target_success must lie strictly between 0 and 1"
         raise ValueError(msg)
-    times = np.asarray(level_times, dtype=np.float64)
-    reps = np.asarray(replicates, dtype=np.int64)
+    times = _as_level_array(level_times)
+    reps = _check_replicates(replicates, times.size - 1)
     log_prs = [log_pr(float(t)) for t in times]
     failure = 0.0
     for i in range(reps.size, 0, -1):
@@ -759,7 +760,7 @@ def _simulate_to_level_linear(
     """Advance a particle to ``target_time`` under linear-in-time rates.
 
     ``segments`` are ``(start, end, birth_0, birth_slope, death_0, death_slope)``
-    as built by ``bdsurv.linear_rates._segments``.  Within a segment the next
+    as built by :func:`bdsurv.rates.merged_segments`.  Within a segment the next
     event time inverts the cumulative total hazard; an event past the segment
     end is discarded and redrawn from the boundary, which is exact.
     """
@@ -780,7 +781,7 @@ def _simulate_to_level_linear(
             local = state.current_time - start
             lam = b0 + b1 * local
             mu = d0 + d1 * local
-            offset = _next_event_offset(
+            offset = next_event_offset(
                 n * (lam + mu), n * (b1 + d1), float(state.rng.exponential())
             )
             event_time = state.current_time + offset
@@ -1091,16 +1092,7 @@ def _resolve_levels_and_replicates(
             level_times=config.level_times,
             n_levels=config.n_levels,
         )
-        replicates = np.asarray(config.replicates, dtype=np.int64)
-        if replicates.shape != (levels.size - 1,):
-            msg = (
-                f"replicates must have one entry per level interval "
-                f"({levels.size - 1}), got {replicates.size}."
-            )
-            raise ValueError(msg)
-        if np.any(replicates < 1):
-            msg = "replicates must all be >= 1"
-            raise ValueError(msg)
+        replicates = _check_replicates(config.replicates, levels.size - 1)
         return levels, replicates, False
 
     log_pr_terminal = dynamics.log_pr(terminal_time)
@@ -1201,16 +1193,13 @@ def simulate_subcritical_survival_splitting(
         ``level_times``.
 
     """
-    _validate_common_inputs(
-        birth_rate=float(config.birth_rate),
-        death_rate=float(config.death_rate),
-        terminal_time=float(config.terminal_time),
-        n_particles=int(config.n_particles),
-    )
     birth_rate, death_rate = float(config.birth_rate), float(config.death_rate)
+    check_positive_rates(birth_rate, death_rate)
+    check_terminal_time(float(config.terminal_time))
+    _check_n_particles(int(config.n_particles))
     dynamics = _Dynamics(
         terminal_time=float(config.terminal_time),
-        log_pr=lambda t: _log_survival_probability(
+        log_pr=lambda t: log_survival_probability_constant(
             birth_rate=birth_rate, death_rate=death_rate, time=t
         ),
         evolve=lambda state, target: _simulate_to_level(
@@ -1263,18 +1252,14 @@ def simulate_linear_survival_splitting(
         ``level_times``.
 
     """
-    birth = _linear_math.as_rate(config.birth_rate)
-    death = _linear_math.as_rate(config.death_rate)
-    if not np.isclose(birth.end_time, death.end_time):
-        msg = "birth and death rates must have the same end time"
-        raise ValueError(msg)
-    if config.n_particles <= 0:
-        msg = "n_particles must be positive"
-        raise ValueError(msg)
-    segments = _segments(_as_linear(config.birth_rate), _as_linear(config.death_rate))
+    birth, death, terminal_time = resolve_rates(
+        config.birth_rate, config.death_rate, None
+    )
+    _check_n_particles(config.n_particles)
+    segments = merged_segments(birth, death)
     dynamics = _Dynamics(
-        terminal_time=birth.end_time,
-        log_pr=lambda t: _linear_math.log_survival_probability(birth, death, t),
+        terminal_time=terminal_time,
+        log_pr=lambda t: log_survival_probability(birth, death, t),
         evolve=lambda state, target: _simulate_to_level_linear(
             state=state, segments=segments, target_time=target
         ),

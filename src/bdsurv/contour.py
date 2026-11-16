@@ -13,10 +13,15 @@ from collections.abc import Callable
 
 import numpy as np
 
-from bdsurv import _linear_math
-from bdsurv._numerics import close
+from bdsurv._hazard import backward_hazard_time, close, cumulative, forward_hazard_time
 from bdsurv._rng_counter import bump, make_rng
-from bdsurv.linear_rates import ConstantRateLike, LinearRateLike
+from bdsurv.rates import (
+    ConstantRateLike,
+    LinearRateLike,
+    check_positive_rates,
+    check_terminal_time,
+    resolve_rates,
+)
 from bdsurv.tree import SimulatedTree, build_records
 
 _Step = Callable[[float, np.random.Generator], float]
@@ -57,17 +62,6 @@ def _generate_component(
             resets += 1
             continue
         component.append(upward)
-
-
-def _check_constant_inputs(
-    birth_rate: float, death_rate: float, terminal_time: float
-) -> None:
-    if birth_rate <= 0.0 or death_rate <= 0.0:
-        msg = "birth_rate and death_rate must be positive"
-        raise ValueError(msg)
-    if terminal_time <= 0.0:
-        msg = "terminal_time must be positive"
-        raise ValueError(msg)
 
 
 def _constant_steps(
@@ -113,7 +107,6 @@ def _generate_non_spine_component(
         The non-spine contour list, e.g. ``[T, x1, y1, x2, ..., 0]``.
 
     """
-    _check_constant_inputs(birth_rate, death_rate, terminal_time)
     down, up = _constant_steps(birth_rate, death_rate, float(terminal_time))
     return _generate_component(
         down_step=down,
@@ -147,7 +140,6 @@ def _generate_spine_component(
         The spine contour list, e.g. ``[T, x1, y1, x2, ..., 0]``.
 
     """
-    _check_constant_inputs(birth_rate, death_rate, terminal_time)
     down, up = _constant_steps(birth_rate, death_rate, float(terminal_time))
     return _generate_component(
         down_step=down,
@@ -186,7 +178,7 @@ def _build_contour_process_list(
     return list(reversed(spine_component)) + non_spine_component[1:]
 
 
-def _validate_contour_process_list(contour_process_list: list[float]) -> None:
+def validate_contour_process_list(contour_process_list: list[float]) -> None:
     """Validate the alternating peak/valley contour structure.
 
     Validation rules enforced:
@@ -234,7 +226,7 @@ def _validate_contour_process_list(contour_process_list: list[float]) -> None:
             raise ValueError(msg)
 
 
-def _contour_process_list_to_tree(
+def contour_process_list_to_tree(
     contour_process_list: list[float],
     *,
     birth_rate: float,
@@ -252,7 +244,7 @@ def _contour_process_list_to_tree(
     (equivalently, the individual at the top of the genealogy stack when T
     is first hit).
     """
-    _validate_contour_process_list(contour_process_list)
+    validate_contour_process_list(contour_process_list)
 
     values = [float(value) for value in contour_process_list]
     terminal_time = float(max(values))
@@ -313,7 +305,8 @@ def _contour_process_list_to_tree(
     )
 
 
-def _seeded_rng(random_seed: int | None) -> np.random.Generator:
+def seeded_rng(random_seed: int | None) -> np.random.Generator:
+    """Return the contour generator, seeded through a child seed when given."""
     if random_seed is None:
         return make_rng(None, "contour")
     base_seed_rng = make_rng(random_seed, "seeding")
@@ -326,15 +319,18 @@ def simulate_birth_death_process_from_contour_process(
     terminal_time: float,
     random_seed: int | None = None,
 ) -> SimulatedTree:
-    """Simulate a birth-death tree using contour-process reconstruction."""
-    if birth_rate <= 0.0 or death_rate <= 0.0:
-        msg = "birth_rate and death_rate must be positive"
-        raise ValueError(msg)
-    if terminal_time <= 0.0:
-        msg = "terminal_time must be positive"
-        raise ValueError(msg)
+    """Simulate a birth-death tree using contour-process reconstruction.
 
-    rng = _seeded_rng(random_seed)
+    Raises
+    ------
+    ValueError
+        If a rate or ``terminal_time`` is not finite and positive.
+
+    """
+    check_positive_rates(birth_rate, death_rate)
+    check_terminal_time(terminal_time)
+
+    rng = seeded_rng(random_seed)
 
     spine_component = _generate_spine_component(
         birth_rate=float(birth_rate),
@@ -352,8 +348,8 @@ def simulate_birth_death_process_from_contour_process(
         spine_component=spine_component,
         non_spine_component=non_spine_component,
     )
-    _validate_contour_process_list(contour_process_list)
-    return _contour_process_list_to_tree(
+    validate_contour_process_list(contour_process_list)
+    return contour_process_list_to_tree(
         contour_process_list,
         birth_rate=float(birth_rate),
         death_rate=float(death_rate),
@@ -400,25 +396,18 @@ def simulate_linear_rate_contour_process(
         is identically zero.
 
     """
-    birth = _linear_math.as_rate(birth_rate)
-    death = _linear_math.as_rate(death_rate)
-    terminal_time = birth.end_time
-    if not np.isclose(terminal_time, death.end_time):
-        msg = "birth and death rates must have the same end time"
-        raise ValueError(msg)
-    if _linear_math.cumulative(death, terminal_time) <= 0.0:
+    birth, death, terminal_time = resolve_rates(birth_rate, death_rate, None)
+    if cumulative(death, terminal_time) <= 0.0:
         msg = "death_rate must not be identically zero"
         raise ValueError(msg)
 
     def down(x: float, rng: np.random.Generator) -> float:
-        return _linear_math.backward_hazard_time(birth, x, float(rng.exponential()))
+        return backward_hazard_time(birth, x, float(rng.exponential()))
 
     def up(y: float, rng: np.random.Generator) -> float:
-        return _linear_math.forward_hazard_time(
-            death, y, float(rng.exponential()), terminal_time
-        )
+        return forward_hazard_time(death, y, float(rng.exponential()), terminal_time)
 
-    rng = _seeded_rng(random_seed)
+    rng = seeded_rng(random_seed)
     spine_component = _generate_component(
         down_step=down,
         up_step=up,
@@ -437,8 +426,8 @@ def simulate_linear_rate_contour_process(
         spine_component=spine_component,
         non_spine_component=non_spine_component,
     )
-    _validate_contour_process_list(contour_process_list)
-    return _contour_process_list_to_tree(
+    validate_contour_process_list(contour_process_list)
+    return contour_process_list_to_tree(
         contour_process_list,
         birth_rate=float("nan"),
         death_rate=float("nan"),

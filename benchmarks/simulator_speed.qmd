@@ -48,9 +48,7 @@ from bdsurv import (
     simulate_birth_death_process_from_contour_process,
     simulate_subcritical_survival_splitting,
 )
-from bdsurv.splitting import (
-    _log_survival_probability,  # pyright: ignore[reportPrivateUsage]
-)
+from bdsurv._hazard import log_survival_probability_constant
 
 SEED = 42
 pd.options.display.float_format = "{:.4g}".format
@@ -116,7 +114,7 @@ for mu in DEATH_RATES:
             # log space, so rare survival does not round to 0
             "P(survive to T)": float(
                 np.exp(
-                    _log_survival_probability(
+                    log_survival_probability_constant(
                         birth_rate=BIRTH_RATE, death_rate=mu, time=TERMINAL_TIME
                     )
                 )

@@ -3,13 +3,8 @@
 Each row is ``(entry point, bad arguments, message fragment, label)``: the entry
 point is called with its valid base arguments updated by the bad ones, and must
 raise ``ValueError`` whose message contains the fragment.
-
-Rows the current code does not reject (finding M6 of the codebase review) are
-listed in ``CURRENTLY_ACCEPTED`` and marked ``xfail(strict=True)``, to be fixed
-and un-marked in S4.  Rows where the bad input makes the current code hang are
-in ``CURRENTLY_HANGS``; they are marked ``xfail(strict=True, run=False)`` and
-never executed.  Fragments are short and stable (``positive``, ``increasing``);
-where the current message is accidental it is matched as it is.
+Fragments are short and stable (``positive``, ``increasing``, ``finite``): the
+message names the argument and the requirement.
 """
 
 from __future__ import annotations
@@ -590,150 +585,13 @@ ROWS += _rows(
     {"target_ranges": [np.array([[1, 6]])]},
 )
 
-# Cases the current code does not reject with ``ValueError`` (it accepts the bad
-# input, or fails with another exception type), found by running each case.
-CURRENTLY_ACCEPTED: frozenset[str] = frozenset(
-    {
-        "simulate_birth_death_process-birth_rates=[nan,0.8]",
-        "simulate_birth_death_process-death_rates=[nan,0.6]",
-        "simulate_birth_death_process-times=[1.0,nan]",
-        "simulate_birth_death_lifespans-birth_rates=[nan,0.8]",
-        "simulate_birth_death_lifespans-death_rates=[nan,0.6]",
-        "simulate_birth_death_lifespans-death_rates=[inf,0.6]",
-        "simulate_birth_death_lifespans-times=[1.0,nan]",
-        "simulate_birth_death_lifespans_arrays-birth_rates=[nan,0.8]",
-        "simulate_birth_death_lifespans_arrays-death_rates=[nan,0.6]",
-        "simulate_birth_death_lifespans_arrays-death_rates=[inf,0.6]",
-        "simulate_birth_death_lifespans_arrays-times=[1.0,nan]",
-        "simulate_birth_death_linear-birth_rate=const[-1.0,0.8]@[2.0,4.0]",
-        "simulate_birth_death_linear-death_rate=line[-0.5,0.5]->[0.5,0.9]@[2.0,4.0]",
-        "simulate_birth_death_linear-birth_rate=const[nan,0.8]@[2.0,4.0]",
-        "simulate_birth_death_linear-birth_rate=const[inf,0.8]@[2.0,4.0]",
-        "simulate_birth_death_linear-death_rate=line[nan,0.5]->[0.5,0.9]@[2.0,4.0]",
-        "simulate_birth_death_linear-death_rate=line[0.3,0.5]->[inf,0.9]@[2.0,4.0]",
-        "simulate_birth_death_linear-birth_rate=const[1.0,0.8]@[6.0,4.0]",
-        "simulate_birth_death_linear-death_rate=line[0.3,0.5]->[0.5,0.9]@[6.0,4.0]",
-        "simulate_birth_death_linear-birth_rate=const[1.0,0.8]@[0.0,4.0]",
-        "simulate_birth_death_linear-birth_rate=const[1.0]@[2.0,4.0]",
-        "simulate_subcritical_survival_splitting-birth_rate=inf",
-        "simulate_subcritical_survival_splitting-terminal_time=inf",
-        "select_level_times_for_band-birth_rate=0.0",
-        "select_level_times_for_band-birth_rate=-1.0",
-        "select_level_times_for_band-birth_rate=inf",
-        "compute_level_replicates-birth_rate=0.0",
-        "compute_level_replicates-birth_rate=-1.0",
-        "compute_level_replicates-birth_rate=inf",
-        "default_max_restarts-birth_rate=0.0",
-        "default_max_restarts-birth_rate=-1.0",
-        "default_max_restarts-birth_rate=inf",
-        "select_level_times_for_band-terminal_time=inf",
-        "compute_level_replicates-level_times=[0.0,3.0,2.0]",
-        "compute_level_replicates-level_times=[0.0,2.0,2.0]",
-        "default_max_restarts-level_times=[0.0,3.0,2.0]",
-        "default_max_restarts-replicates=[2]",
-        "default_max_restarts-replicates=[2,2,2]",
-        "build_target_ranges-observed_counts=[-1,2,0]",
-        "build_target_ranges-tolerance=-1",
-        "build_target_ranges-observed_counts=[]",
-        "sample_conditioned_survival_process-birth_rates=[0.0,0.5]",
-        "sample_conditioned_survival_process-birth_rates=[-1.0,0.5]",
-        "sample_conditioned_survival_process-birth_rates=[nan,0.5]",
-        "sample_conditioned_survival_process-death_rates=[0.0,0.3]",
-        "sample_conditioned_survival_process-death_rates=[-1.0,0.3]",
-        "sample_conditioned_survival_process-death_rates=[nan,0.3]",
-        "sample_conditioned_survival_process-epoch_end_times=[6.0,3.0]",
-        "sample_conditioned_survival_process-epoch_end_times=[3.0,3.0]",
-        "sample_conditioned_survival_process-epoch_end_times=[0.0,3.0]",
-        "sample_conditioned_survival_process-epoch_end_times=[-1.0,3.0]",
-        "sample_conditioned_survival_process-split_factor=-1",
-        "sample_conditioned_survival_process-n_initial=0",
-        "sample_conditioned_survival_process-n_initial=-1",
-        "sample_conditioned_survival_process-n_samples=0",
-        "sample_conditioned_survival_process-target_ranges=[[1,6]]",
-        "sample_conditioned_survival_process-target_ranges=[[1,6],[0,9],[0,9]]",
-        "sample_conditioned_survival_per_posterior-posterior_birth_rates=[[-1.0,0.5],[0.6,0.5]]",
-        "sample_conditioned_survival_per_posterior-n_initial=0",
-        "sample_conditioned_survival_per_posterior-target_ranges=[[1,6]]",
-    }
-)
-# Cases that make the current code hang, or run for tens of seconds before it
-# fails or returns: NaN or infinite rates and times in the forward simulators,
-# the contour simulator and the era sampler, and ``split_factor=0``.  Never run.
-CURRENTLY_HANGS: frozenset[str] = frozenset(
-    {
-        "simulate_birth_death_process-times=[1.0,inf]",
-        "simulate_birth_death_lifespans-birth_rates=[inf,0.8]",
-        "simulate_birth_death_lifespans-times=[1.0,inf]",
-        "simulate_birth_death_lifespans_arrays-birth_rates=[inf,0.8]",
-        "simulate_birth_death_lifespans_arrays-times=[1.0,inf]",
-        "simulate_birth_death_process_from_contour_process-birth_rate=nan",
-        "simulate_birth_death_process_from_contour_process-birth_rate=inf",
-        "simulate_birth_death_process_from_contour_process-death_rate=nan",
-        "simulate_birth_death_process_from_contour_process-terminal_time=nan",
-        "simulate_birth_death_process_from_contour_process-terminal_time=inf",
-        "sample_conditioned_survival_process-birth_rates=[inf,0.5]",
-        "sample_conditioned_survival_process-death_rates=[inf,0.3]",
-        "sample_conditioned_survival_process-split_factor=0",
-        "sample_conditioned_survival_per_posterior-split_factor=0",
-    }
-)
-
-# Cases where the current code raises ``ValueError`` but with a message other than
-# the intended one (an internal ``ValueError`` from Python or numpy, or the check
-# of another rule).  The fragment is matched as it is today; S4 replaces it.
-CURRENT_MESSAGE: dict[str, str] = {
-    "simulate_birth_death_process-birth_rates=[inf,0.8]": "high <= 0",
-    "simulate_birth_death_process-death_rates=[inf,0.6]": "high <= 0",
-    "simulate_birth_death_process_from_contour_process-death_rate=inf": "strict local maxima",
-    "simulate_contour_given_population-terminal_time=nan": "cannot convert float NaN to integer",
-    "simulate_contour_given_population-terminal_time=inf": "cannot convert float NaN to integer",
-    "simulate_contour_given_ages-terminal_time=nan": "cannot convert float NaN to integer",
-    "simulate_contour_given_ages-terminal_time=inf": "cannot convert float NaN to integer",
-    "simulate_subcritical_survival_splitting-birth_rate=nan": "cannot convert float NaN to integer",
-    "simulate_subcritical_survival_splitting-death_rate=nan": "cannot convert float NaN to integer",
-    "simulate_subcritical_survival_splitting-death_rate=inf": "cannot convert float NaN to integer",
-    "simulate_subcritical_survival_splitting-terminal_time=nan": "math domain error",
-    "select_level_times_for_band-birth_rate=nan": "cannot convert float NaN to integer",
-    "select_level_times_for_band-death_rate=0.0": "math domain error",
-    "select_level_times_for_band-death_rate=-1.0": "math domain error",
-    "select_level_times_for_band-death_rate=nan": "cannot convert float NaN to integer",
-    "select_level_times_for_band-death_rate=inf": "cannot convert float NaN to integer",
-    "compute_level_replicates-birth_rate=nan": "cannot convert float NaN to integer",
-    "compute_level_replicates-death_rate=0.0": "math domain error",
-    "compute_level_replicates-death_rate=-1.0": "math domain error",
-    "compute_level_replicates-death_rate=nan": "cannot convert float NaN to integer",
-    "compute_level_replicates-death_rate=inf": "cannot convert float NaN to integer",
-    "default_max_restarts-birth_rate=nan": "cannot convert float NaN to integer",
-    "default_max_restarts-death_rate=0.0": "math domain error",
-    "default_max_restarts-death_rate=-1.0": "math domain error",
-    "default_max_restarts-death_rate=nan": "cannot convert float NaN to integer",
-    "default_max_restarts-death_rate=inf": "cannot convert float NaN to integer",
-    "select_level_times_for_band-terminal_time=0.0": "increasing",
-    "select_level_times_for_band-terminal_time=-1.0": "increasing",
-    "select_level_times_for_band-terminal_time=nan": "math domain error",
-    "default_max_restarts-replicates=[0,2]": "Attempts cannot succeed",
-    "default_max_restarts-replicates=[-1,2]": "Attempts cannot succeed",
-}
-
 
 def _case_id(row: Row) -> str:
     return f"{row[0]}-{row[3]}"
 
 
 def _params() -> list[Any]:
-    params = []
-    for row in ROWS:
-        case_id = _case_id(row)
-        marks = []
-        if case_id in CURRENTLY_HANGS:
-            marks.append(
-                pytest.mark.xfail(strict=True, run=False, reason="fixed in S4")
-            )
-        elif case_id in CURRENTLY_ACCEPTED:
-            marks.append(pytest.mark.xfail(strict=True, reason="fixed in S4"))
-        fragment = CURRENT_MESSAGE.get(case_id, row[2])
-        params.append(pytest.param(row[0], row[1], fragment, id=case_id, marks=marks))
-    return params
+    return [pytest.param(row[0], row[1], row[2], id=_case_id(row)) for row in ROWS]
 
 
 def call_entry_point(entry: str, bad: dict[str, Any]) -> Any:
@@ -750,6 +608,6 @@ def test_bad_input_is_rejected(entry: str, bad: dict[str, Any], fragment: str) -
 
 
 def test_ids_are_unique() -> None:
-    """Parameter ids must be unique, or the xfail sets could hit the wrong row."""
+    """Parameter ids must be unique, or a failure could not name its row."""
     ids = [_case_id(row) for row in ROWS]
     assert len(ids) == len(set(ids)), "duplicate case ids"

@@ -29,7 +29,11 @@ import pandas as pd
 from jax import lax
 from numpy.typing import NDArray
 
+from bdsurv.rates import epoch_rates
 from bdsurv.tree import SimulatedProcess, build_records
+
+# An event within this of an epoch end counts as the epoch end.
+TIE_TOLERANCE: float = 1e-12
 
 
 class LifespanSimulationArrays(NamedTuple):
@@ -84,7 +88,7 @@ class _LifespanLoopState(NamedTuple):
     n_alive_at_birth_buf: jax.Array  # int32 [max_population] — n_alive before birth
 
 
-def _sample_piecewise_exponential_death_time(
+def sample_piecewise_exponential_death_time(
     birth_time: jax.Array,
     death_rates: jax.Array,
     epoch_end_times: jax.Array,
@@ -174,7 +178,7 @@ def _simulate_lifespans_core(
 
     # ---- Initialise with the root individual (id 0, born at t=0) ----
     key, k_root_death = jax.random.split(key)
-    root_death_time = _sample_piecewise_exponential_death_time(
+    root_death_time = sample_piecewise_exponential_death_time(
         birth_time=jnp.float64(0.0),
         death_rates=death_rates,
         epoch_end_times=epoch_end_times,
@@ -256,7 +260,7 @@ def _simulate_lifespans_core(
         next_event = jnp.minimum(jnp.minimum(next_birth, next_death), t_epoch_end)
 
         # Event type (mutually exclusive; epoch has highest priority on exact ties)
-        is_epoch = next_event >= t_epoch_end - jnp.float64(1e-12)
+        is_epoch = next_event >= t_epoch_end - jnp.float64(TIE_TOLERANCE)
         is_death = (~is_epoch) & (next_death <= next_birth)
         is_birth = (~is_epoch) & (~is_death)
 
@@ -276,7 +280,7 @@ def _simulate_lifespans_core(
         new_overflow = overflow | (is_birth & (n_born >= max_population))
 
         # Sample this new individual's death time and insert uniform
-        new_indiv_death = _sample_piecewise_exponential_death_time(
+        new_indiv_death = sample_piecewise_exponential_death_time(
             birth_time=next_event,
             death_rates=death_rates,
             epoch_end_times=epoch_end_times,
@@ -477,28 +481,16 @@ def simulate_birth_death_lifespans_arrays(
     Raises
     ------
     ValueError
-        If input arrays have incompatible lengths, non-positive rates, or
-        non-positive / non-increasing times.
+        If the arguments have incompatible lengths, a rate is not finite and
+        positive, the times are not finite, positive and strictly increasing,
+        or ``max_population < 1``.
     RuntimeError
         If the simulated population exceeds ``max_population``.
 
     """
-    birth_rates_arr = np.atleast_1d(np.asarray(birth_rates, dtype=np.float64))
-    death_rates_arr = np.atleast_1d(np.asarray(death_rates, dtype=np.float64))
-    times_arr = np.atleast_1d(np.asarray(times, dtype=np.float64))
-
-    if not (len(birth_rates_arr) == len(death_rates_arr) == len(times_arr)):
-        msg = "birth_rates, death_rates, and times must have the same length"
-        raise ValueError(msg)
-    if np.any(birth_rates_arr <= 0) or np.any(death_rates_arr <= 0):
-        msg = "Birth rates and death rates must be positive"
-        raise ValueError(msg)
-    if np.any(times_arr <= 0):
-        msg = "Times must be positive"
-        raise ValueError(msg)
-    if len(times_arr) > 1 and np.any(np.diff(times_arr) <= 0):
-        msg = "Times must be strictly increasing"
-        raise ValueError(msg)
+    birth_rates_arr, death_rates_arr, times_arr = epoch_rates(
+        birth_rates, death_rates, times
+    )
     if max_population < 1:
         msg = "max_population must be at least 1"
         raise ValueError(msg)
@@ -587,28 +579,16 @@ def simulate_birth_death_lifespans(
     Raises
     ------
     ValueError
-        On invalid inputs (lengths, non-positive rates, non-increasing times).
+        On invalid inputs (lengths, rates that are not finite and positive,
+        times that are not finite, positive and strictly increasing).
     RuntimeError
         If ``ensure_non_extinct=True`` and all retries produce an extinct
         population, or if ``max_population`` is exceeded.
 
     """
-    birth_rates_arr = np.atleast_1d(np.asarray(birth_rates, dtype=np.float64))
-    death_rates_arr = np.atleast_1d(np.asarray(death_rates, dtype=np.float64))
-    times_arr = np.atleast_1d(np.asarray(times, dtype=np.float64))
-
-    if not (len(birth_rates_arr) == len(death_rates_arr) == len(times_arr)):
-        msg = "birth_rates, death_rates, and times must have the same length"
-        raise ValueError(msg)
-    if np.any(birth_rates_arr <= 0) or np.any(death_rates_arr <= 0):
-        msg = "Birth rates and death rates must be positive"
-        raise ValueError(msg)
-    if np.any(times_arr <= 0):
-        msg = "Times must be positive"
-        raise ValueError(msg)
-    if len(times_arr) > 1 and np.any(np.diff(times_arr) <= 0):
-        msg = "Times must be strictly increasing"
-        raise ValueError(msg)
+    birth_rates_arr, death_rates_arr, times_arr = epoch_rates(
+        birth_rates, death_rates, times
+    )
     if ensure_non_extinct and max_retries < 0:
         msg = "max_retries must be a non-negative integer"
         raise ValueError(msg)

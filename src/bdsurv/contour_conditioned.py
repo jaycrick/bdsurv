@@ -16,91 +16,46 @@ from typing import Literal
 
 import numpy as np
 
-from bdsurv import _linear_math
-from bdsurv._linear_math import Rate
-from bdsurv._numerics import close
-from bdsurv.contour import (
-    _contour_process_list_to_tree,  # pyright: ignore[reportPrivateUsage]
-    _seeded_rng,  # pyright: ignore[reportPrivateUsage]
-    _validate_contour_process_list,  # pyright: ignore[reportPrivateUsage]
+from bdsurv._hazard import (
+    backward_hazard_time,
+    close,
+    cumulative,
+    forward_hazard_time,
+    log_integral,
+    log_survival_probability,
 )
-from bdsurv.linear_rates import ConstantRateLike, LinearRateLike, PiecewiseConstant
+from bdsurv.contour import (
+    contour_process_list_to_tree,
+    seeded_rng,
+    validate_contour_process_list,
+)
+from bdsurv.rates import PiecewiseConstant, Rate, RateInput, resolve_rates
 from bdsurv.tree import SimulatedTree
 
-RateInput = float | ConstantRateLike | LinearRateLike
 Direction = Literal["auto", "top", "bottom"]
 
 _DIRECTIONS = ("auto", "top", "bottom")
 _END_PIECES = 2
 
 
-@dataclass(frozen=True)
-class _Rates:
-    """Validated rates in array form, with the arguments for the decoded tree."""
+def _tree_args(
+    birth_rate: RateInput, death_rate: RateInput, terminal_time: float
+) -> dict[str, object]:
+    """Return the rate arguments of the decoded ``SimulatedTree``."""
+    if isinstance(birth_rate, int | float) and isinstance(death_rate, int | float):
+        return {"birth_rate": float(birth_rate), "death_rate": float(death_rate)}
 
-    birth: Rate
-    death: Rate
-    terminal_time: float
-    tree_args: dict[str, object]
-
-
-def _is_scalar(rate: RateInput) -> bool:
-    return isinstance(rate, int | float)
-
-
-def _resolve_rates(
-    birth_rate: RateInput, death_rate: RateInput, terminal_time: float | None
-) -> _Rates:
-    """Convert the rate inputs to :class:`Rate` arrays and fix the end time ``T``."""
-    if terminal_time is not None and terminal_time <= 0.0:
-        msg = "terminal_time must be positive"
-        raise ValueError(msg)
-    ends = [
-        float(np.atleast_1d(np.asarray(r.epoch_end_times, dtype=np.float64))[-1])
-        for r in (birth_rate, death_rate)
-        if not isinstance(r, int | float)
-    ]
-    if not ends:
-        if terminal_time is None:
-            msg = "terminal_time is required when both rates are floats"
-            raise ValueError(msg)
-        horizon = float(terminal_time)
-    else:
-        horizon = ends[0]
-        if not all(np.isclose(horizon, e) for e in ends):
-            msg = "birth and death rates must have the same end time"
-            raise ValueError(msg)
-        if terminal_time is not None and not np.isclose(horizon, terminal_time):
-            msg = "terminal_time must equal the end time of the rates"
-            raise ValueError(msg)
-    if horizon <= 0.0:
-        msg = "terminal_time must be positive"
-        raise ValueError(msg)
-
-    def wrap(rate: RateInput) -> ConstantRateLike | LinearRateLike:
+    def wrap(rate: RateInput) -> object:
         if isinstance(rate, int | float):
-            return PiecewiseConstant([float(rate)], [horizon])
+            return PiecewiseConstant([float(rate)], [terminal_time])
         return rate
 
-    birth_like, death_like = wrap(birth_rate), wrap(death_rate)
-    if _is_scalar(birth_rate) and _is_scalar(death_rate):
-        tree_args: dict[str, object] = {
-            "birth_rate": float(birth_rate),  # pyright: ignore[reportArgumentType]
-            "death_rate": float(death_rate),  # pyright: ignore[reportArgumentType]
-        }
-    else:
-        tree_args = {
-            "birth_rate": float("nan"),
-            "death_rate": float("nan"),
-            "birth_rate_function": birth_like,
-            "death_rate_function": death_like,
-        }
-    return _Rates(
-        _linear_math.as_rate(birth_like),
-        _linear_math.as_rate(death_like),
-        horizon,
-        tree_args,
-    )
+    return {
+        "birth_rate": float("nan"),
+        "death_rate": float("nan"),
+        "birth_rate_function": wrap(birth_rate),
+        "death_rate_function": wrap(death_rate),
+    }
 
 
 @dataclass(frozen=True)
@@ -120,9 +75,7 @@ class _Walker:
     def down(self, x: float) -> float:
         """Return the next level below ``x``, snapped to ``0`` when close."""
         while True:
-            s = _linear_math.backward_hazard_time(
-                self.birth, x, float(self.rng.exponential())
-            )
+            s = backward_hazard_time(self.birth, x, float(self.rng.exponential()))
             if close(s, 0.0):
                 s = 0.0
             if s != x:
@@ -131,7 +84,7 @@ class _Walker:
     def up(self, y: float) -> float:
         """Return the next level above ``y``, snapped to ``T`` when close."""
         while True:
-            s = _linear_math.forward_hazard_time(
+            s = forward_hazard_time(
                 self.death, y, float(self.rng.exponential()), self.terminal_time
             )
             if close(s, self.terminal_time):
@@ -173,11 +126,8 @@ def _log_survival_pair(
     ``log_S_fwd`` is for the given rates and ``log_S_rev`` for the time-reversed
     rates ``(mu(T - t), lambda(T - t))``, using ``S_rev = S_fwd * exp(-Gamma(T))``.
     """
-    log_s_fwd = _linear_math.log_survival_probability(birth, death, terminal_time)
-    growth = float(
-        _linear_math.cumulative(birth, terminal_time)
-        - _linear_math.cumulative(death, terminal_time)
-    )
+    log_s_fwd = log_survival_probability(birth, death, terminal_time)
+    growth = float(cumulative(birth, terminal_time) - cumulative(death, terminal_time))
     return log_s_fwd, log_s_fwd - growth
 
 
@@ -232,7 +182,7 @@ def _population_contour(
                     zero_to_t.append(piece)
     pool = [piece[::-1] for piece in t0] + zero_to_t  # all oriented 0..T
     contour = _join_pieces(pool[0], tt, pool[1][::-1])
-    _validate_contour_process_list(contour)
+    validate_contour_process_list(contour)
     if contour.count(terminal_time) != n_alive:
         msg = "contour does not have n_alive visits to the terminal time"
         raise AssertionError(msg)
@@ -289,16 +239,15 @@ def simulate_contour_given_population(
     if n_alive < 1:
         msg = "n_alive must be at least 1"
         raise ValueError(msg)
-    rates = _resolve_rates(birth_rate, death_rate, terminal_time)
-    prefer_top = _prefer_top(rates.birth, rates.death, rates.terminal_time, direction)
-    if n_alive > 1 and _linear_math.cumulative(rates.birth, rates.terminal_time) <= 0.0:
+    birth, death, horizon = resolve_rates(birth_rate, death_rate, terminal_time)
+    prefer_top = _prefer_top(birth, death, horizon, direction)
+    if n_alive > 1 and cumulative(birth, horizon) <= 0.0:
         msg = "birth_rate must not be identically zero when n_alive > 1"
         raise ValueError(msg)
-    walker = _Walker(
-        rates.birth, rates.death, rates.terminal_time, _seeded_rng(random_seed)
-    )
+    walker = _Walker(birth, death, horizon, seeded_rng(random_seed))
     contour = _population_contour(walker, n_alive, prefer_top=prefer_top)
-    return _contour_process_list_to_tree(contour, **rates.tree_args)  # pyright: ignore[reportArgumentType]
+    tree_args = _tree_args(birth_rate, death_rate, horizon)
+    return contour_process_list_to_tree(contour, **tree_args)  # pyright: ignore[reportArgumentType]
 
 
 def _spine_levels(ages: Sequence[float], terminal_time: float) -> list[float]:
@@ -313,16 +262,12 @@ def _log_spine_weights(
 
     Here $I(t) = \int_0^t \mu(s) e^{-\Gamma(s)} ds$; ``-inf`` entries are allowed.
     """
-    log_i_t = _linear_math._log_integral(  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-        death, birth, death, terminal_time, sign=-1.0
-    )
+    log_i_t = log_integral(death, birth, death, terminal_time, sign=-1.0)
     out = np.full(len(ages), -np.inf)
     if log_i_t == -np.inf:
         return out
     for i, b in enumerate(_spine_levels(ages, terminal_time)):
-        log_i_b = _linear_math._log_integral(  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-            death, birth, death, b, sign=-1.0
-        )
+        log_i_b = log_integral(death, birth, death, b, sign=-1.0)
         with np.errstate(divide="ignore"):
             log_num = log_i_t + np.log(-np.expm1(min(log_i_b - log_i_t, 0.0)))
         out[i] = log_num - np.logaddexp(0.0, log_i_b)
@@ -409,7 +354,7 @@ def _ages_contour(
 
     order = walker.rng.permutation(len(excursions))
     contour = _join_pieces(spine_piece, [excursions[int(k)] for k in order], last)
-    _validate_contour_process_list(contour)
+    validate_contour_process_list(contour)
     if contour.count(terminal_time) != len(ages):
         msg = "contour does not have one visit to the terminal time per age"
         raise AssertionError(msg)
@@ -468,9 +413,8 @@ def simulate_contour_given_ages(  # noqa: PLR0913
         ``terminal_time`` or ``direction`` are invalid.
 
     """
-    rates = _resolve_rates(birth_rate, death_rate, terminal_time)
-    horizon = rates.terminal_time
-    prefer_top = _prefer_top(rates.birth, rates.death, horizon, direction)
+    birth, death, horizon = resolve_rates(birth_rate, death_rate, terminal_time)
+    prefer_top = _prefer_top(birth, death, horizon, direction)
     age_list = [float(a) for a in ages]
     if not age_list:
         msg = "ages must not be empty"
@@ -489,19 +433,16 @@ def simulate_contour_given_ages(  # noqa: PLR0913
         if at_top and spine_index != at_top[0]:
             msg = "an age equal to T exists, so spine_index must point to it"
             raise ValueError(msg)
-    if len(age_list) > len(at_top) and (
-        _linear_math.cumulative(rates.birth, horizon) <= 0.0
-    ):
+    if len(age_list) > len(at_top) and cumulative(birth, horizon) <= 0.0:
         msg = "birth_rate must not be identically zero when an age is below T"
         raise ValueError(msg)
     if spine_index is not None and not at_top:
         # A spine born after 0 needs a death below T; otherwise no piece exists.
-        log_w = _log_spine_weights(
-            rates.birth, rates.death, horizon, [age_list[spine_index]]
-        )
+        log_w = _log_spine_weights(birth, death, horizon, [age_list[spine_index]])
         if not np.isfinite(log_w[0]):
             msg = "the age at spine_index has zero spine weight"
             raise ValueError(msg)
-    walker = _Walker(rates.birth, rates.death, horizon, _seeded_rng(random_seed))
+    walker = _Walker(birth, death, horizon, seeded_rng(random_seed))
     contour, _ = _ages_contour(walker, age_list, spine_index, prefer_top=prefer_top)
-    return _contour_process_list_to_tree(contour, **rates.tree_args)  # pyright: ignore[reportArgumentType]
+    tree_args = _tree_args(birth_rate, death_rate, horizon)
+    return contour_process_list_to_tree(contour, **tree_args)  # pyright: ignore[reportArgumentType]
