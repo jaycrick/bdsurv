@@ -41,14 +41,12 @@ Usage
 """
 
 import argparse
-import json
 import math
-import time
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
 
+import _bench_common as common
 import bench_method_comparison as base
 import numpy as np
 import pandas as pd
@@ -56,9 +54,8 @@ import pandas as pd
 from bdsurv import (
     PiecewiseConstant,
     PiecewiseLinear,
-    SplittingConfig,
-    simulate_contour_given_survival,
-    simulate_survival_splitting,
+    RateInput,
+    log_survival_probability,
 )
 from bdsurv import _hazard as lm
 from bdsurv.rates import Rate, as_rate
@@ -204,9 +201,9 @@ def match_cumulative_slope(mu: float, terminal_time: float) -> float:
     return math.sqrt(low * high)
 
 
-def log_inverse_survival(birth: Rate, death: Rate, t: float) -> float:
+def log_inverse_survival(birth: RateInput, death: RateInput, t: float) -> float:
     """Return ``ln(1 / Pr(Z_t > 0))``."""
-    return -lm.log_survival_probability(birth, death, t)
+    return -log_survival_probability(birth, death, t)
 
 
 def _log10_cumulative(slope: float, terminal_time: float) -> float:
@@ -252,7 +249,7 @@ def build_grid_cells() -> list[Cell]:
     for slope in GRID_SLOPES:
         mu = round(slope * SURVIVAL_T / 2, 6)
         for terminal_time in base.TS:
-            birth, death = _arley(slope, terminal_time)
+            birth, death = arley_rates(slope, terminal_time)
             cells.append(
                 Cell(
                     mu=mu,
@@ -299,17 +296,17 @@ def build_units(
         if not cell.feasible:  # keep cell_index, so seeds do not depend on the skips
             continue
         for method in METHODS:
-            for first in range(0, replicates, block_size):
-                units.append(
-                    Unit(
-                        method=method,
-                        cell=cell,
-                        cell_index=cell_index,
-                        first_replicate=first,
-                        n_replicates=min(block_size, replicates - first),
-                        seed_base=seed_base,
-                    )
+            units.extend(
+                Unit(
+                    method=method,
+                    cell=cell,
+                    cell_index=cell_index,
+                    first_replicate=first,
+                    n_replicates=min(block_size, replicates - first),
+                    seed_base=seed_base,
                 )
+                for first in range(0, replicates, block_size)
+            )
     units.sort(key=lambda u: (-u.cell.arley_value, u.method, u.first_replicate))
     return units
 
@@ -320,103 +317,45 @@ def replicate_seed(unit: Unit, replicate: int) -> int:
     The cell enters by slope (in ten-thousandths) and ``T`` (in thousandths), so
     changing the grid never changes the seeds of the cells that remain.
     """
-    sequence = np.random.SeedSequence(
-        [
-            unit.seed_base,
-            round(unit.cell.slope * 10_000),
-            round(unit.cell.time * 1000),
-            METHODS.index(unit.method),
-            replicate,
-        ]
+    return common.replicate_seed(
+        unit.seed_base,
+        [round(unit.cell.slope * 10_000), round(unit.cell.time * 1000)],
+        unit.method,
+        replicate,
     )
-    return int(sequence.generate_state(1)[0] % (2**31 - 1))
 
 
-def _run_contour(unit: Unit, seed: int) -> dict[str, Any]:
+def run_replicate(unit: Unit, seed: int) -> dict[str, Any]:
+    """Run one replicate of the unit's method on its Arley cell; return its row."""
     birth, death = arley_rates(unit.cell.slope, unit.cell.time)
-    start = time.perf_counter()
-    tree = simulate_contour_given_survival(birth, death, random_seed=seed)
-    seconds = time.perf_counter() - start
-    return {
-        "seconds": seconds,
-        "n_trees": 1,
-        "n_attempts": np.nan,
-        "levels": np.nan,
-        "pop_at_T": int(tree.records["survived"].sum()),
-        "n_individuals": len(tree.records),
-    }
-
-
-def _run_splitting(unit: Unit, seed: int) -> dict[str, Any]:
-    birth, death = arley_rates(unit.cell.slope, unit.cell.time)
-    config = SplittingConfig(
-        birth_rate=birth,
-        death_rate=death,
-        n_particles=base.N_PARTICLES,
-        random_seed=seed,
-        max_restarts=base.MAX_RESTARTS,
-    )
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        start = time.perf_counter()
-        result = simulate_survival_splitting(config)
-        seconds = time.perf_counter() - start
-    kept = result.conditioned_trajectories
-    row: dict[str, Any] = {
-        "seconds": seconds,
-        "n_trees": len(kept),
-        "n_attempts": result.n_attempts,
-        "levels": len(result.replicates),
-        "pop_at_T": np.nan,
-        "n_individuals": np.nan,
-    }
-    if kept:
-        chosen = kept[int(np.random.default_rng(seed).integers(len(kept)))]
-        records = chosen.process.records
-        row["pop_at_T"] = int(records["survived"].sum())
-        row["n_individuals"] = len(records)
-    return row
+    return common.run_conditioned(unit.method, birth, death, None, seed)
 
 
 def run_unit(
     unit: Unit, unit_seconds: float, host: str
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Run one unit; stop starting replicates once ``unit_seconds`` is used up."""
-    runner = _run_contour if unit.method == "contour" else _run_splitting
-    rows: list[dict[str, Any]] = []
-    spent = 0.0
-    status = "ok"
-    identity = {"method": unit.method, "mu": unit.cell.mu, "T": unit.cell.time}
-    for replicate in range(
-        unit.first_replicate, unit.first_replicate + unit.n_replicates
-    ):
-        if spent > unit_seconds:
-            status = "budget"
-            break
-        seed = replicate_seed(unit, replicate)
-        row = runner(unit, seed)
-        spent += float(row["seconds"])
-        rows.append(
-            {
-                **identity,
-                "slope": unit.cell.slope,
-                "replicate": replicate,
-                "seed": seed,
-                "host": host,
-                **row,
-            }
-        )
-    summary = {
-        **identity,
-        "slope": unit.cell.slope,
-        "first_replicate": unit.first_replicate,
-        "replicates_requested": unit.n_replicates,
-        "replicates_done": len(rows),
-        "seconds": spent,
-        "status": status,
-        "host": host,
-    }
-    return rows, summary
+    return common.run_unit(
+        {
+            "method": unit.method,
+            "mu": unit.cell.mu,
+            "T": unit.cell.time,
+            "slope": unit.cell.slope,
+        },
+        range(unit.first_replicate, unit.first_replicate + unit.n_replicates),
+        lambda replicate: replicate_seed(unit, replicate),
+        lambda seed: run_replicate(unit, seed),
+        unit_seconds,
+        host,
+    )
+
+
+def _describe(unit: Unit, _rows: list[dict[str, Any]], summary: Any) -> str:
+    return (
+        f"{unit.method} mu={unit.cell.mu:g} T={unit.cell.time:g} "
+        f"m={unit.cell.slope:.4g} block={unit.first_replicate} "
+        f"{summary['status']} {summary['seconds']:.2f}s"
+    )
 
 
 def run_shard(
@@ -428,27 +367,13 @@ def run_shard(
     files: Files = MATCHED,
 ) -> None:
     """Run this shard's units and write its rows, unit summaries and environment."""
-    out_dir.mkdir(parents=True, exist_ok=True)
-    env = base.environment_record()
-    mine = [unit for index, unit in enumerate(units) if index % n_shards == shard]
-    rows: list[dict[str, Any]] = []
-    summaries: list[dict[str, Any]] = []
-    for position, unit in enumerate(mine, start=1):
-        unit_rows, summary = run_unit(unit, unit_seconds, env["host"])
-        rows += unit_rows
-        summaries.append(summary)
-        print(
-            f"[{shard}/{n_shards}] unit {position}/{len(mine)} "
-            f"{unit.method} mu={unit.cell.mu:g} T={unit.cell.time:g} "
-            f"m={unit.cell.slope:.4g} block={unit.first_replicate} "
-            f"{summary['status']} {summary['seconds']:.2f}s",
-            flush=True,
-        )
-    prefix = files.prefix
-    pd.DataFrame(rows).to_csv(out_dir / f"{prefix}_rows_{shard}.csv", index=False)
-    pd.DataFrame(summaries).to_csv(out_dir / f"{prefix}_units_{shard}.csv", index=False)
-    (out_dir / f"{prefix}_env_{shard}.json").write_text(
-        json.dumps(env, indent=2) + "\n"
+    common.run_shard(
+        units,
+        shard,
+        n_shards,
+        out_dir,
+        lambda unit, host: run_unit(unit, unit_seconds, host),
+        common.ShardFiles(f"{files.prefix}_", _describe),
     )
 
 
@@ -456,36 +381,16 @@ def merge_shards(
     shards_dir: Path, data_dir: Path, cells: list[Cell], files: Files = MATCHED
 ) -> pd.DataFrame:
     """Concatenate shard files into the committed data files and return the rows."""
-    prefix = files.prefix
-    row_files = sorted(shards_dir.glob(f"{prefix}_rows_*.csv"))
-    if not row_files:
-        msg = f"No shard files found in {shards_dir}"
-        raise FileNotFoundError(msg)
-    rows = pd.concat([pd.read_csv(f) for f in row_files], ignore_index=True)
-    rows = rows.sort_values(["method", "mu", "T", "replicate"]).reset_index(drop=True)
-    units = pd.concat(
-        [pd.read_csv(f) for f in sorted(shards_dir.glob(f"{prefix}_units_*.csv"))],
-        ignore_index=True,
+    spec = common.MergeSpec(
+        f"{files.prefix}_",
+        ["method", "mu", "T", "replicate"],
+        files.rows,
+        files.units,
+        files.env,
+        {"lambda": LAMBDA},
     )
-    envs = [
-        json.loads(f.read_text())
-        for f in sorted(shards_dir.glob(f"{prefix}_env_*.json"))
-    ]
-    data_dir.mkdir(parents=True, exist_ok=True)
-    rows.to_csv(data_dir / files.rows, index=False)
-    units.to_csv(data_dir / files.units, index=False)
+    rows = common.merge_shards(shards_dir, data_dir, spec)
     slopes_frame(cells).to_csv(data_dir / files.cells, index=False)
-    summary = {
-        "lambda": LAMBDA,
-        "n_shards": len(envs),
-        "hosts": sorted({e["host"] for e in envs}),
-        "processors": sorted({e["processor"] for e in envs}),
-        "python": sorted({e["python"] for e in envs}),
-        "numpy": sorted({e["numpy"] for e in envs}),
-        "bdsurv": sorted({e["bdsurv"] for e in envs}),
-        "git_sha": sorted({e["git_sha"] for e in envs}),
-    }
-    (data_dir / files.env).write_text(json.dumps(summary, indent=2) + "\n")
     return rows
 
 
@@ -498,7 +403,7 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="every grid slope over the whole T grid, not just the matched cells",
     )
-    parser.add_argument("--shard", type=base._parse_shard, help="run shard i/N only")  # pyright: ignore[reportPrivateUsage]
+    parser.add_argument("--shard", type=common.parse_shard, help="run shard i/N only")
     parser.add_argument("--merge", action="store_true", help="merge shard files")
     parser.add_argument("--quick", action="store_true", help="tiny grid for a draft")
     parser.add_argument("--replicates", type=int, default=None)

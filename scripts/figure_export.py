@@ -22,6 +22,7 @@ cannot import ``bdpinf``); keep the manifest format in step with it.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import re
 import sys
@@ -198,10 +199,8 @@ def prune(
         for path in doomed:
             path.unlink()
         for manifest in report.orphan_manifests:
-            try:
+            with contextlib.suppress(OSError):
                 manifest.parent.rmdir()
-            except OSError:
-                pass
     return report
 
 

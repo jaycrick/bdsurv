@@ -107,15 +107,6 @@ convention = "numpy"
   "SLF001" # tests exercise private kernels directly
 ]
 
-# TEMPORARY: removed by step S11
-"scripts/arley_charts.py" = ["PLR0913"]
-"scripts/bench_arley_comparison.py" = ["PERF401", "SLF001"]
-"scripts/bench_method_comparison.py" = ["PERF401"]
-"scripts/count_draws.py" = ["RUF028", "SLF001"]
-"scripts/figure_export.py" = ["SIM105"]
-"scripts/method_comparison_charts.py" = ["PLR0913"]
-"tests/test_arley_grid.py" = ["PERF401"]
-
 [tool.toml-sort]
 all = true
 ignore_case = true

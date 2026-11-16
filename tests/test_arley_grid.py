@@ -137,24 +137,24 @@ class TestQuickGridRun:
 
 
 def _rows() -> pd.DataFrame:
-    records = []
-    for method in ("contour", "splitting"):
-        for t in (1.0, 10.0):
-            for r in range(4):
-                records.append(
-                    {
-                        "method": method,
-                        "mu": 3.0,
-                        "slope": 0.06,
-                        "T": t,
-                        "replicate": r,
-                        "seconds": 0.1 * (r + 1) * t,
-                        "n_trees": 1 if method == "contour" else 5,
-                        "n_attempts": np.nan if method == "contour" else 2,
-                        "levels": np.nan if method == "contour" else 3,
-                    }
-                )
-    return pd.DataFrame(records)
+    return pd.DataFrame(
+        [
+            {
+                "method": method,
+                "mu": 3.0,
+                "slope": 0.06,
+                "T": t,
+                "replicate": r,
+                "seconds": 0.1 * (r + 1) * t,
+                "n_trees": 1 if method == "contour" else 5,
+                "n_attempts": np.nan if method == "contour" else 2,
+                "levels": np.nan if method == "contour" else 3,
+            }
+            for method in ("contour", "splitting")
+            for t in (1.0, 10.0)
+            for r in range(4)
+        ]
+    )
 
 
 class TestCharts:
