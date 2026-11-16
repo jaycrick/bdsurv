@@ -255,3 +255,37 @@ def test_replicates_keep_expected_lines_at_least_one(
             f"R_1...R_{i} Pr(t_{i}) = exp({log_r + log_pr:.3g}) is below 1: "
             f"replicates {replicates}, grid {grid}"
         )
+
+
+@PROPERTY_SETTINGS
+@given(
+    value=st.floats(min_value=0.0, max_value=5.0),
+    end=times_st,
+    start_fraction=st.floats(min_value=0.0, max_value=1.0),
+    e=st.floats(min_value=0.01, max_value=10.0),
+)
+def test_constant_rate_fast_path_matches_general_branch(
+    value: float, end: float, start_fraction: float, e: float
+) -> None:
+    """The one-segment constant-rate branch agrees with the general solver.
+
+    The general branch is reached by splitting the same rate into two equal
+    constant segments, so it integrates the same hazard.
+    """
+    one = as_rate(PiecewiseConstant(np.array([value]), np.array([end])))
+    two = as_rate(
+        PiecewiseConstant(np.array([value, value]), np.array([end / 2.0, end]))
+    )
+    start = start_fraction * end
+    assert math.isclose(
+        forward_hazard_time(one, start, e, end),
+        forward_hazard_time(two, start, e, end),
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ), f"forward mismatch (value={value}, end={end}, start={start}, e={e})"
+    assert math.isclose(
+        backward_hazard_time(one, start, e),
+        backward_hazard_time(two, start, e),
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ), f"backward mismatch (value={value}, end={end}, start={start}, e={e})"

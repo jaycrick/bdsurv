@@ -107,10 +107,6 @@ convention = "numpy"
   "SLF001" # tests exercise private kernels directly
 ]
 
-# TEMPORARY: removed by step S7
-"src/bdsurv/contour_conditioned.py" = ["C901", "PLR0912", "PLR0915", "PLR0917"]
-"tests/test_contour.py" = ["PT011"]
-"tests/test_contour_conditioned.py" = ["ERA001", "N802", "RUF007"]
 # TEMPORARY: removed by step S8
 "src/bdsurv/era_conditioning.py" = ["BLE001", "C901", "PLR0913", "PLR0915", "PLR0917"]
 "src/bdsurv/lifespans.py" = ["C901", "ERA001", "PLR0913"]

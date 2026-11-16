@@ -12,16 +12,14 @@ from scipy.integrate import quad
 
 from bdsurv import _hazard as lm
 from bdsurv._seeding import root_rng
-from bdsurv.contour import validate_contour_process_list
+from bdsurv.contour import Walker, join_pieces, validate_contour_process_list
 from bdsurv.contour_conditioned import (
     _ages_contour,
     _cut_at_last_downcrossing,
-    _join_pieces,
     _log_spine_weights,
     _log_survival_pair,
     _population_contour,
     _prefer_top,
-    _Walker,
     simulate_contour_given_ages,
     simulate_contour_given_population,
 )
@@ -80,7 +78,7 @@ def _tree(regime: str, n: int, seed: int, direction: str = "auto") -> Any:
 def _contour(regime: str, n: int, seed: int, direction: str) -> list[float]:
     birth, death = REGIMES[regime]
     rate_b, rate_d, horizon = resolve_rates(birth, death, _terminal_time(birth))
-    walker = _Walker(rate_b, rate_d, horizon, root_rng(seed, "contour"))
+    walker = Walker(rate_b, rate_d, horizon, root_rng(seed, "contour"))
     return _population_contour(walker, n, prefer_top=direction == "top")
 
 
@@ -94,8 +92,8 @@ class _FakeRng:
         return next(self._draws, 0.5)
 
 
-def _walker(rng: Any, birth: float = 1.0, death: float = 1.0) -> _Walker:
-    return _Walker(as_rate(_const(birth)), as_rate(_const(death)), T, rng)
+def _walker(rng: Any, birth: float = 1.0, death: float = 1.0) -> Walker:
+    return Walker(as_rate(_const(birth)), as_rate(_const(death)), T, rng)
 
 
 class TestJoinPieces:
@@ -103,12 +101,12 @@ class TestJoinPieces:
         first = [0.0, 3.5, 3.0, 4.0]  # reversed (4, 3, 3.5, 0)
         tt = [[4.0, 2.5, 4.0]]
         last = [4.0, 2.0, 3.3, 0.0]
-        assert _join_pieces(first, tt, last) == [
+        assert join_pieces(first, tt, last) == [
             0.0, 3.5, 3.0, 4.0, 2.5, 4.0, 2.0, 3.3, 0.0,
         ]  # fmt: skip
 
     def test_no_excursions(self) -> None:
-        assert _join_pieces([0.0, 4.0], [], [4.0, 1.0, 2.0, 0.0]) == [
+        assert join_pieces([0.0, 4.0], [], [4.0, 1.0, 2.0, 0.0]) == [
             0.0, 4.0, 1.0, 2.0, 0.0,
         ]  # fmt: skip
 
@@ -296,7 +294,7 @@ class TestInputErrors:
             simulate_contour_given_population(-1.0, 1.0, 1, T)
 
 
-# ---------------------------------------------------------------- ALG2 (T2)
+# Contours given the ages of the survivors.
 
 AGE_SETS: tuple[tuple[float, ...], ...] = (
     (1.5,),
@@ -335,7 +333,7 @@ def _ages_contour_of(
 ) -> tuple[list[float], int]:
     birth, death = REGIMES[regime]
     rate_b, rate_d, horizon = resolve_rates(birth, death, _terminal_time(birth))
-    walker = _Walker(rate_b, rate_d, horizon, root_rng(seed, "contour"))
+    walker = Walker(rate_b, rate_d, horizon, root_rng(seed, "contour"))
     return _ages_contour(walker, ages, spine_index, prefer_top=direction == "top")
 
 
@@ -504,7 +502,7 @@ class TestLogSpineWeights:
         assert np.all(got == -np.inf)
 
     @regimes
-    def test_forced_spine_for_age_T(self, regime: str) -> None:
+    def test_forced_spine_for_age_terminal(self, regime: str) -> None:
         ages = (1.0, T, 2.0)
         for seed in range(50):
             _, index = _ages_contour_of(regime, ages, seed, "bottom")
@@ -529,11 +527,11 @@ class TestAgesInputErrors:
         with pytest.raises(ValueError, match="ages must lie"):
             simulate_contour_given_ages(1.0, 1.0, [1.0, bad], T)
 
-    def test_two_ages_at_T(self) -> None:
+    def test_two_ages_at_terminal(self) -> None:
         with pytest.raises(ValueError, match="at most one age"):
             simulate_contour_given_ages(1.0, 1.0, [T, T - 1e-12], T)
 
-    def test_spine_index_elsewhere_than_age_T(self) -> None:
+    def test_spine_index_elsewhere_than_age_terminal(self) -> None:
         with pytest.raises(ValueError, match="must point to it"):
             simulate_contour_given_ages(1.0, 1.0, [1.0, T], T, spine_index=0)
 
@@ -559,7 +557,7 @@ class TestAgesInputErrors:
         with pytest.raises(ValueError, match="birth_rate must not be identically"):
             simulate_contour_given_ages(birth, _const(1.0), [1.0], tt)
 
-    def test_zero_birth_rate_with_age_T_is_fine(self) -> None:
+    def test_zero_birth_rate_with_age_terminal_is_fine(self) -> None:
         tree = simulate_contour_given_ages(0.0, 1.0, [T], T, random_seed=0)
         assert len(tree.records) == 1
 
@@ -835,7 +833,7 @@ def _spine_law(regime: str, n_grid: int = 4001) -> tuple[np.ndarray, np.ndarray,
     grid = np.linspace(0.0, T, n_grid)
     pieces = [
         quad(mu_term, x0, x1, epsabs=1e-13, epsrel=1e-13)[0]
-        for x0, x1 in zip(grid[:-1], grid[1:], strict=True)
+        for x0, x1 in pairwise(grid)
     ]
     i_of = np.concatenate([[0.0], np.cumsum(pieces)])
     u = (1.0 + i_of) / (1.0 + i_of[-1])

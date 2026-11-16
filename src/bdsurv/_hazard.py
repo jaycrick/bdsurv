@@ -93,6 +93,9 @@ def forward_hazard_time(rate: Rate, start: float, e: float, cap: float) -> float
     """
     ends, starts, v0s, slopes = rate.py_ends, rate.py_starts, rate.py_v0, rate.py_slope
     n = len(ends)
+    if n == 1 and slopes[0] == 0.0:  # constant rate: the jump is exponential
+        v = v0s[0]
+        return min(start + e / v, cap) if v > 0.0 else cap
     k = min(bisect_right(ends, start), n - 1)
     t = start
     remaining = e
@@ -115,6 +118,9 @@ def forward_hazard_time(rate: Rate, start: float, e: float, cap: float) -> float
 def backward_hazard_time(rate: Rate, start: float, e: float) -> float:
     """Largest ``s <= start`` with ``int_s^start rate = e``, or ``0`` if none."""
     ends, starts, v0s, slopes = rate.py_ends, rate.py_starts, rate.py_v0, rate.py_slope
+    if len(ends) == 1 and slopes[0] == 0.0:  # constant rate: the jump is exponential
+        v = v0s[0]
+        return max(start - e / v, 0.0) if v > 0.0 else 0.0
     k = min(bisect_left(ends, start), len(ends) - 1)
     hi = min(start, ends[k])
     remaining = e
