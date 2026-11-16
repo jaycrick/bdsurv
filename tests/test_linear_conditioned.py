@@ -235,7 +235,11 @@ class TestAgainstForwardSimulation:
             )
             for i in range(3000)
         ]
-        assert stats.ks_2samp(sizes, reference).pvalue > 0.001
+        pvalue = stats.ks_2samp(sizes, reference).pvalue
+        assert pvalue > 0.001, (
+            f"two-sample KS test of population sizes against the rejection-sampled "
+            f"reference: p-value {pvalue:.3g} <= threshold 0.001"
+        )
 
     @pytest.mark.parametrize("rates", [ARLEY, VARYING_BIRTH])
     def test_splitting(self, rates) -> None:
@@ -256,7 +260,11 @@ class TestAgainstForwardSimulation:
                     result.conditioned_trajectories[0].process.records["survived"].sum()
                 )
             )
-        assert stats.ks_2samp(sizes, reference).pvalue > 0.001
+        pvalue = stats.ks_2samp(sizes, reference).pvalue
+        assert pvalue > 0.001, (
+            f"two-sample KS test of population sizes against the rejection-sampled "
+            f"reference: p-value {pvalue:.3g} <= threshold 0.001"
+        )
 
     def test_constant_rates_through_linear_path(self) -> None:
         rates = (_const(1.0), _const(1.5))
@@ -269,4 +277,8 @@ class TestAgainstForwardSimulation:
             )
             for i in range(3000)
         ]
-        assert stats.ks_2samp(sizes, reference).pvalue > 0.001
+        pvalue = stats.ks_2samp(sizes, reference).pvalue
+        assert pvalue > 0.001, (
+            f"two-sample KS test of population sizes against the rejection-sampled "
+            f"reference: p-value {pvalue:.3g} <= threshold 0.001"
+        )

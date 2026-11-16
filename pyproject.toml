@@ -32,6 +32,7 @@ bench = [
 ]
 dev = [
   "basedpyright>=1.22.0",
+  "hypothesis>=6.170.15",
   "pandas-stubs",
   "pre-commit>=4.5.1",
   "pytest-cov>=7.0.0",

@@ -715,7 +715,10 @@ class TestAgainstRejection:
             a = [x for s in reference for x in pick(s)]
             b = [x for s in draws for x in pick(s)]
             p = stats.ks_2samp(a, b).pvalue
-            assert p > ALPHA, (case, n, name, p, np.mean(a), np.mean(b))
+            assert p > ALPHA, (
+                f"two-sample KS test of {name} ({case}, n={n}): p-value {p:.3g} "
+                f"<= threshold {ALPHA} (means {np.mean(a):.4g} vs {np.mean(b):.4g})"
+            )
 
 
 @pytest.mark.slow
@@ -736,7 +739,11 @@ class TestDirectionEquivalence:
         for transform in (lambda x: x, lambda x: x - n):  # total, extinct
             a = [transform(x) for x in sizes["top"]]
             b = [transform(x) for x in sizes["bottom"]]
-            assert stats.ks_2samp(a, b).pvalue > ALPHA, (regime, n)
+            p = stats.ks_2samp(a, b).pvalue
+            assert p > ALPHA, (
+                f"two-sample KS test of top vs bottom sizes ({regime}, n={n}): "
+                f"p-value {p:.3g} <= threshold {ALPHA}"
+            )
 
     @pytest.mark.parametrize("regime", ["subcritical", "supercritical", "arley"])
     @pytest.mark.parametrize(
@@ -760,7 +767,11 @@ class TestDirectionEquivalence:
         for transform in (lambda x: x, lambda x: x - n):
             a = [transform(x) for x in sizes["top"]]
             b = [transform(x) for x in sizes["bottom"]]
-            assert stats.ks_2samp(a, b).pvalue > ALPHA, (regime, ages, spine_index)
+            p = stats.ks_2samp(a, b).pvalue
+            assert p > ALPHA, (
+                f"two-sample KS test of top vs bottom sizes ({regime}, ages={ages}, "
+                f"spine_index={spine_index}): p-value {p:.3g} <= threshold {ALPHA}"
+            )
 
 
 @pytest.mark.slow
@@ -780,7 +791,11 @@ class TestComposition:
         reference = [
             len(_tree(regime, n, 2 * 10**5 + i).records) for i in range(n_draws)
         ]
-        assert stats.ks_2samp(composed, reference).pvalue > ALPHA, (regime, n)
+        p = stats.ks_2samp(composed, reference).pvalue
+        assert p > ALPHA, (
+            f"two-sample KS test of composed vs reference total sizes "
+            f"({regime}, n={n}): p-value {p:.3g} <= threshold {ALPHA}"
+        )
 
 
 @pytest.mark.slow
@@ -798,7 +813,11 @@ class TestSpineChoiceFrequency:
         picks = [_ages_contour_of(regime, ages, i, "auto")[1] for i in range(n_draws)]
         hits = sum(1 for k in picks if k == 0)
         result = stats.binomtest(hits, n_draws, float(probs[0]))
-        assert result.pvalue > ALPHA, (regime, ages, hits / n_draws, probs[0])
+        assert result.pvalue > ALPHA, (
+            f"binomial test of spine choice ({regime}, ages={ages}): p-value "
+            f"{result.pvalue:.3g} <= threshold {ALPHA} "
+            f"(observed {hits / n_draws:.4g} vs expected {probs[0]:.4g})"
+        )
 
 
 def _spine_law(regime: str, n_grid: int = 4001) -> tuple[np.ndarray, np.ndarray, float]:
@@ -845,12 +864,15 @@ class TestSpineAgeLaw:
         spine_ages = np.array([_spine_age(_tree(regime, n, i)) for i in range(n_draws)])
         ages_grid, cdf_a, atom = _spine_law(regime)
         at_top = spine_ages >= T - 1e-9
-        assert stats.binomtest(int(at_top.sum()), n_draws, atom).pvalue > ALPHA, (
-            regime,
-            n,
-            at_top.mean(),
-            atom,
+        atom_test = stats.binomtest(int(at_top.sum()), n_draws, atom)
+        assert atom_test.pvalue > ALPHA, (
+            f"binomial test of the spine atom at T ({regime}, n={n}): p-value "
+            f"{atom_test.pvalue:.3g} <= threshold {ALPHA} "
+            f"(observed {at_top.mean():.4g} vs expected {atom:.4g})"
         )
         continuous = spine_ages[~at_top]
         result = stats.kstest(continuous, lambda x: np.interp(x, ages_grid, cdf_a))
-        assert result.pvalue > ALPHA, (regime, n, result.pvalue)
+        assert result.pvalue > ALPHA, (
+            f"KS test of the continuous spine age law ({regime}, n={n}): "
+            f"p-value {result.pvalue:.3g} <= threshold {ALPHA}"
+        )

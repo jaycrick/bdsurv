@@ -336,7 +336,11 @@ class TestLifespanDeathTimeSampling:
         theoretical_mean = (1.0 / rate) - T * np.exp(-rate * T) / p_die
         empirical_mean = float(np.mean(dead))
         # Loose tolerance: 15% relative
-        assert abs(empirical_mean - theoretical_mean) / theoretical_mean < 0.15
+        rel_err = abs(empirical_mean - theoretical_mean) / theoretical_mean
+        assert rel_err < 0.15, (
+            f"conditional mean death time {empirical_mean:.4g} vs theory "
+            f"{theoretical_mean:.4g}: relative error {rel_err:.3g} >= threshold 0.15"
+        )
 
 
 class TestLifespanArraysEntryPoint:

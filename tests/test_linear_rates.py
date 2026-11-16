@@ -71,7 +71,10 @@ class TestSimulateBirthDeathLinear:
         trunc = stats.kstest(
             observed, lambda x: np.array([cdf(v) / cdf(6.0) for v in x])
         )
-        assert trunc.pvalue > 0.001
+        assert trunc.pvalue > 0.001, (
+            f"KS test of root death time against the truncated CDF: "
+            f"p-value {trunc.pvalue:.3g} <= threshold 0.001"
+        )
 
     @pytest.mark.parametrize(
         ("birth", "death"),
@@ -87,13 +90,22 @@ class TestSimulateBirthDeathLinear:
     def test_mean_size_matches_theory(self, birth, death) -> None:
         expected = math.exp(_integral(birth) - _integral(death))
         mean, se = _mean_size(birth, death, 2000)
-        assert abs(mean - expected) < 4 * se + 0.02
+        assert abs(mean - expected) < 4 * se + 0.02, (
+            f"mean size {mean:.4g} differs from theory {expected:.4g} by "
+            f"{abs(mean - expected):.4g}, above the threshold 4 * se + 0.02 = "
+            f"{4 * se + 0.02:.4g} (se {se:.4g})"
+        )
 
     def test_constant_rates_match_theory(self) -> None:
         birth = PiecewiseConstant([0.5], [3.0])
         death = PiecewiseConstant([0.3], [3.0])
         mean, se = _mean_size(birth, death, 2000)
-        assert abs(mean - math.exp(0.2 * 3.0)) < 4 * se + 0.02
+        expected = math.exp(0.2 * 3.0)
+        assert abs(mean - expected) < 4 * se + 0.02, (
+            f"mean size {mean:.4g} differs from theory {expected:.4g} by "
+            f"{abs(mean - expected):.4g}, above the threshold 4 * se + 0.02 = "
+            f"{4 * se + 0.02:.4g} (se {se:.4g})"
+        )
 
     def test_reproducible(self) -> None:
         birth = _linear([0.5], [0.9], [3.0])

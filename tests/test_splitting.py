@@ -424,7 +424,8 @@ class TestOverrides:
             random_seed=5,
             max_restarts=100,
         )
-        result = simulate_subcritical_survival_splitting(config)
+        with pytest.warns(RuntimeWarning, match="No particle survived"):
+            result = simulate_subcritical_survival_splitting(config)
         assert result.replicates.tolist() == [2]
         assert result.level_times.tolist() == [0.0, 20.0]
         assert len(result.conditioned_trajectories) == result.final_survivor_count
