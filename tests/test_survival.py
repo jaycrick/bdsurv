@@ -6,9 +6,11 @@ import numpy as np
 import pytest
 from scipy import integrate
 
+import bdsurv
 from bdsurv import (
     PiecewiseConstant,
     PiecewiseLinear,
+    log_mean_cumulative_individuals,
     log_survival_probability,
 )
 
@@ -155,3 +157,73 @@ class TestRange:
         rate = PiecewiseConstant([1.0], [3.0])
         with pytest.raises(ValueError, match="terminal_time"):
             log_survival_probability(rate, rate, 2.0, terminal_time=4.0)
+
+
+class TestMeanCumulativeIndividuals:
+    @pytest.mark.parametrize(
+        ("lam", "mu", "t"), [(1.3, 0.4, 2.5), (0.5, 1.2, 4.0), (0.9, 0.9, 3.0)]
+    )
+    def test_constant_rates_match_the_closed_form(
+        self, lam: float, mu: float, t: float
+    ) -> None:
+        if lam == mu:
+            expected = math.log(1.0 + lam * t)
+        else:
+            expected = math.log(1.0 + lam * math.expm1((lam - mu) * t) / (lam - mu))
+        actual = log_mean_cumulative_individuals(lam, mu, t)
+        assert actual == pytest.approx(expected, rel=1e-9), "closed form mismatch"
+
+    def test_zero_birth_rate_gives_exactly_zero(self) -> None:
+        assert log_mean_cumulative_individuals(0.0, 0.7, 3.0) == 0.0, (
+            "only the root is ever born"
+        )
+
+    def test_float_and_piecewise_constant_agree(self) -> None:
+        birth, death, t = 1.1, 0.6, 2.0
+        as_float = log_mean_cumulative_individuals(birth, death, t)
+        as_epoch = log_mean_cumulative_individuals(
+            PiecewiseConstant([birth], [t]), PiecewiseConstant([death], [t]), t
+        )
+        assert as_epoch == pytest.approx(as_float, rel=1e-12), "forms disagree"
+
+    def test_piecewise_linear_matches_quadrature_of_the_formula(self) -> None:
+        birth = PiecewiseLinear([1.0, 0.8], [0.8, 0.2], [3.0, 6.0])
+        death = PiecewiseLinear([0.3], [1.1], [6.0])
+
+        def lam(s: float) -> float:
+            return float(np.interp(s, [0.0, 3.0, 6.0], [1.0, 0.8, 0.2]))
+
+        def mu(s: float) -> float:
+            return 0.3 + (1.1 - 0.3) * s / 6.0
+
+        def gamma(s: float) -> float:
+            return integrate.quad(lambda x: lam(x) - mu(x), 0.0, s, points=[3.0])[0]
+
+        t = 5.0
+        integral, _ = integrate.quad(
+            lambda s: lam(s) * math.exp(gamma(s)), 0.0, t, points=[3.0]
+        )
+        expected = math.log1p(integral)
+        actual = log_mean_cumulative_individuals(birth, death, t)
+        assert actual == pytest.approx(expected, rel=1e-8), "quadrature mismatch"
+
+    def test_t_zero_returns_exactly_zero(self) -> None:
+        assert log_mean_cumulative_individuals(1.0, 1.5, 0.0) == 0.0, "floats"
+        rate = PiecewiseConstant([1.0], [3.0])
+        assert log_mean_cumulative_individuals(rate, rate, 0.0) == 0.0, "rate-likes"
+
+    @pytest.mark.parametrize("t", [-0.1, math.nan, math.inf])
+    def test_bad_t_raises_naming_t(self, t: float) -> None:
+        with pytest.raises(ValueError, match=r"t must"):
+            log_mean_cumulative_individuals(1.0, 1.5, t)
+
+    def test_t_beyond_the_horizon_raises(self) -> None:
+        rate = PiecewiseConstant([1.0], [3.0])
+        with pytest.raises(ValueError, match="t must lie in"):
+            log_mean_cumulative_individuals(rate, rate, 3.5)
+        with pytest.raises(ValueError, match="t must lie in"):
+            log_mean_cumulative_individuals(1.0, 2.0, 5.0, terminal_time=4.0)
+
+    def test_is_exported_from_the_top_level_package(self) -> None:
+        assert bdsurv.log_mean_cumulative_individuals is log_mean_cumulative_individuals
+        assert "log_mean_cumulative_individuals" in bdsurv.__all__, "not in __all__"

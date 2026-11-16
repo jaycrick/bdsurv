@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `log_mean_cumulative_individuals(birth_rate, death_rate, t, terminal_time=None)` is exported from `bdsurv` (it lives in `bdsurv.survival`) and returns the log of the expected number of individuals ever born by `t`, the root included, for the process not conditioned on survival.
+
 ## [0.5.0] - 2026-11-16
 
 This release unifies the public API: the pairs of functions and config classes

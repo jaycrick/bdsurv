@@ -26,8 +26,8 @@ Cells whose Arley trees would be too large (mean individuals ever born above
 ``10^MAX_LOG10_CUMULATIVE``) are listed in the slope table with
 ``feasible = False`` but not run.
 
-All the maths is in ``bdsurv._hazard`` (public entry point
-``bdsurv.log_survival_probability``).
+All the maths is in ``bdsurv.log_survival_probability`` and
+``bdsurv.log_mean_cumulative_individuals``.
 The work is split into units and sharded exactly as in
 ``bench_method_comparison.py``; this script reuses that module's constants,
 sharding and environment record.
@@ -56,10 +56,9 @@ from bdsurv import (
     PiecewiseConstant,
     PiecewiseLinear,
     RateInput,
+    log_mean_cumulative_individuals,
     log_survival_probability,
 )
-from bdsurv import _hazard as lm
-from bdsurv.rates import Rate, as_rate
 
 LAMBDA = base.LAMBDA
 METHODS = base.METHODS
@@ -167,11 +166,6 @@ def arley_rates(slope: float, terminal_time: float) -> tuple[Any, Any]:
     )
 
 
-def _arley(slope: float, terminal_time: float) -> tuple[Rate, Rate]:
-    birth, death = arley_rates(slope, terminal_time)
-    return as_rate(birth), as_rate(death)
-
-
 def log_constant_cumulative(mu: float, terminal_time: float) -> float:
     """Return ``ln`` of the mean cumulative individuals, constant rates."""
     growth = LAMBDA - mu
@@ -189,8 +183,8 @@ def match_cumulative_slope(mu: float, terminal_time: float) -> float:
     target = log_constant_cumulative(mu, terminal_time)
 
     def gap(slope: float) -> float:
-        birth, death = _arley(slope, terminal_time)
-        return lm.log_mean_cumulative_individuals(birth, death, terminal_time) - target
+        birth, death = arley_rates(slope, terminal_time)
+        return log_mean_cumulative_individuals(birth, death, terminal_time) - target
 
     low, high = 1e-6, 10.0  # the mean cumulative falls as the slope rises
     for _ in range(200):
@@ -208,10 +202,8 @@ def log_inverse_survival(birth: RateInput, death: RateInput, t: float) -> float:
 
 
 def _log10_cumulative(slope: float, terminal_time: float) -> float:
-    birth, death = _arley(slope, terminal_time)
-    return lm.log_mean_cumulative_individuals(birth, death, terminal_time) / math.log(
-        10
-    )
+    birth, death = arley_rates(slope, terminal_time)
+    return log_mean_cumulative_individuals(birth, death, terminal_time) / math.log(10)
 
 
 def build_cells() -> list[Cell]:
@@ -219,7 +211,7 @@ def build_cells() -> list[Cell]:
     cells: list[Cell] = []
     for mu, terminal_time in CUMULATIVE_CELLS:
         slope = match_cumulative_slope(mu, terminal_time)
-        birth, death = _arley(slope, terminal_time)
+        birth, death = arley_rates(slope, terminal_time)
         cells.append(
             Cell(
                 mu=mu,
@@ -228,9 +220,7 @@ def build_cells() -> list[Cell]:
                 matched_on="cumulative",
                 constant_value=log_constant_cumulative(mu, terminal_time)
                 / math.log(10),
-                arley_value=lm.log_mean_cumulative_individuals(
-                    birth, death, terminal_time
-                )
+                arley_value=log_mean_cumulative_individuals(birth, death, terminal_time)
                 / math.log(10),
                 log10_mean_cumulative=_log10_cumulative(slope, terminal_time),
             )
