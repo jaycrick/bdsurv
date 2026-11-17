@@ -29,8 +29,7 @@ because the integrand $\mu(s) e^{-\Gamma(s)}$ can span a very large dynamic
 range.
 The integral is therefore accumulated in log space, over panels short enough
 that the exponent changes by a bounded amount (``_PANEL_EXPONENT``).
-SciPy is a development dependency only: the tests use it to cross-check this
-code against ``scipy.integrate.quad``.
+The tests cross-check this code against ``scipy.integrate.quad``.
 """
 
 from __future__ import annotations
@@ -42,10 +41,11 @@ from typing import Literal
 import numpy as np
 from numpy.typing import NDArray
 
-from bdsurv.rates import Rate
+from bdsurv.rates import Rate, ResolvedRate
 
 _N_NODES = 20
 _PANEL_EXPONENT = 4.0  # max change of the exponent within one panel
+_N_GRADED = 40  # geometric edges to the right of a singular point
 # Rates are evaluated this far inside a panel's edges, where a rate may jump.
 PANEL_EDGE_OFFSET: float = 1e-12
 # ``|lambda - mu| * t`` below this is the critical case ``lambda == mu``.
@@ -87,15 +87,22 @@ def _index(
     return np.clip(idx, 0, rate.ends.size - 1)
 
 
-def value(rate: Rate, t: float | _Array) -> _Array:
+def value(rate: ResolvedRate, t: float | _Array) -> _Array:
     """Evaluate the rate at ``t``."""
+    if not isinstance(rate, Rate):
+        return rate.hazard(t)
     t = np.asarray(t, dtype=np.float64)
     k = _index(rate, t)
     return rate.v0[k] + rate.slope[k] * (t - rate.starts[k])
 
 
-def cumulative(rate: Rate, t: float | _Array) -> _Array:
-    """Exact integral of the rate over ``[0, t]`` (``t`` clipped to ``[0, T]``)."""
+def cumulative(rate: ResolvedRate, t: float | _Array) -> _Array:
+    """Exact integral of the rate over ``[0, t]`` (``t`` clipped to ``[0, T]``).
+
+    A :class:`~bdsurv.hazards.Hazard` is evaluated as given, without clipping.
+    """
+    if not isinstance(rate, Rate):
+        return rate.cumulative_hazard(t)
     # Lambda(t) or M(t) of docs/contour_conditioned.md, section "Overview": the
     # integral up to the segment start plus ``v0 d + slope d^2 / 2`` within it.
     t = np.clip(np.asarray(t, dtype=np.float64), 0.0, rate.end_time)
@@ -104,7 +111,9 @@ def cumulative(rate: Rate, t: float | _Array) -> _Array:
     return rate.cum_before[k] + rate.v0[k] * d + 0.5 * rate.slope[k] * d * d
 
 
-def forward_hazard_time(rate: Rate, start: float, e: float, cap: float) -> float:
+def forward_hazard_time(
+    rate: ResolvedRate, start: float, e: float, cap: float
+) -> float:
     """Smallest ``s >= start`` with ``int_start^s rate = e``, or ``cap`` if none <= cap.
 
     Within a segment the equation is a quadratic, solved by the stable form in
@@ -112,7 +121,10 @@ def forward_hazard_time(rate: Rate, start: float, e: float, cap: float) -> float
     used up before ``e`` is reached, the remainder carries into the next one
     (``docs/contour_process.md``, section "Linear (time-varying) rates").
     Plain Python floats and ``bisect`` are used: this runs once per contour step.
+    A :class:`~bdsurv.hazards.Hazard` inverts its own cumulative hazard.
     """
+    if not isinstance(rate, Rate):
+        return rate.forward_time(start, e, cap)
     ends, starts, v0s, slopes = rate.py_ends, rate.py_starts, rate.py_v0, rate.py_slope
     n = len(ends)
     if n == 1 and slopes[0] == 0.0:  # constant rate: the jump is exponential
@@ -137,12 +149,15 @@ def forward_hazard_time(rate: Rate, start: float, e: float, cap: float) -> float
     return cap
 
 
-def backward_hazard_time(rate: Rate, start: float, e: float) -> float:
+def backward_hazard_time(rate: ResolvedRate, start: float, e: float) -> float:
     """Largest ``s <= start`` with ``int_s^start rate = e``, or ``0`` if none.
 
     The mirror of :func:`forward_hazard_time`, walking the segments backwards
     (``docs/contour_process.md``, section "Linear (time-varying) rates").
+    A :class:`~bdsurv.hazards.Hazard` inverts its own cumulative hazard.
     """
+    if not isinstance(rate, Rate):
+        return rate.backward_time(start, e)
     ends, starts, v0s, slopes = rate.py_ends, rate.py_starts, rate.py_v0, rate.py_slope
     if len(ends) == 1 and slopes[0] == 0.0:  # constant rate: the jump is exponential
         v = v0s[0]
@@ -164,10 +179,77 @@ def backward_hazard_time(rate: Rate, start: float, e: float) -> float:
     return 0.0
 
 
+def _edges_of(rate: ResolvedRate, t: float) -> list[float]:
+    """Breakpoints of ``rate`` strictly inside ``(0, t)``."""
+    points = rate.py_ends[:-1] if isinstance(rate, Rate) else rate.breakpoints
+    return [p for p in points if 0.0 < p < t]
+
+
+def _singular_of(rate: ResolvedRate) -> tuple[float, ...]:
+    """Points where ``rate`` is infinite (none for a :class:`Rate`)."""
+    return () if isinstance(rate, Rate) else rate.singular_points
+
+
+def _between(rate: ResolvedRate, lo: _Array, hi: _Array) -> _Array:
+    """Integral of ``rate`` over ``[lo, hi]``, stable for a hazard."""
+    if isinstance(rate, Rate):
+        return cumulative(rate, hi) - cumulative(rate, lo)
+    return np.asarray(rate.cumulative_between(lo, hi), dtype=np.float64)
+
+
+def _graded_edges(edges: list[float], singular: set[float]) -> list[float]:
+    """Add geometric edges ``p + w 2^-j`` to the right of each singular point."""
+    out = set(edges)
+    for p in singular:
+        if p < edges[-1]:
+            right = min(e for e in edges if e > p)
+            out.update(p + (right - p) * 2.0**-j for j in range(1, _N_GRADED + 1))
+    return sorted(out)
+
+
+def _log_integral_generic(
+    weight: ResolvedRate,
+    birth: ResolvedRate,
+    death: ResolvedRate,
+    t: float,
+    *,
+    sign: float,
+) -> float:
+    """:func:`log_integral` when a rate is a hazard.
+
+    The edges are ``0``, ``t`` and the breakpoints of the three rates, with
+    geometric grading to the right of each singular point; each edge interval is
+    split into ``ceil((dLambda + dM) / _PANEL_EXPONENT)`` panels, which bounds the
+    change of the exponent within a panel even when ``lambda - mu`` changes sign.
+    """
+    rates = (weight, birth, death)
+    edges = {0.0, t}.union(*(_edges_of(r, t) for r in rates))
+    singular = {p for r in rates for p in _singular_of(r) if 0.0 <= p < t}
+    grid = np.asarray(_graded_edges(sorted(edges), singular), dtype=np.float64)
+    lows, highs = grid[:-1], grid[1:]
+    n_panels = np.ceil(
+        (_between(birth, lows, highs) + _between(death, lows, highs)) / _PANEL_EXPONENT
+    )
+    panel_lo: list[_Array] = []
+    panel_hi: list[_Array] = []
+    for a, b, n in zip(lows, highs, n_panels, strict=True):
+        sub: _Array = np.linspace(float(a), float(b), int(max(n, 1.0)) + 1)
+        panel_lo.append(sub[:-1])
+        panel_hi.append(sub[1:])
+    lo, hi = np.concatenate(panel_lo), np.concatenate(panel_hi)
+    half = 0.5 * (hi - lo)
+    x = (0.5 * (lo + hi))[:, None] + half[:, None] * _NODES
+    exponent = sign * (cumulative(birth, x) - cumulative(death, x))
+    with np.errstate(divide="ignore"):
+        log_w = np.log(value(weight, x))
+    log_f = log_w + exponent + np.log(half[:, None] * _WEIGHTS)
+    return float(np.logaddexp.reduce(log_f.ravel()))
+
+
 def log_integral(
-    weight: Rate,
-    birth: Rate,
-    death: Rate,
+    weight: ResolvedRate,
+    birth: ResolvedRate,
+    death: ResolvedRate,
     t: float,
     *,
     sign: float,
@@ -182,9 +264,15 @@ def log_integral(
     (``docs/splitting.md``, sections "Linear (time-varying) rates" and "Closed
     form and the mean number born").
     The panels are described in the module docstring.
+    If any of the three is a :class:`~bdsurv.hazards.Hazard`, the generic
+    quadrature :func:`_log_integral_generic` is used instead.
     """
     if t <= 0.0:
         return -math.inf
+    if not (
+        isinstance(weight, Rate) and isinstance(birth, Rate) and isinstance(death, Rate)
+    ):
+        return _log_integral_generic(weight, birth, death, t, sign=sign)
     edges = np.unique(
         np.concatenate(
             [
@@ -259,7 +347,9 @@ def log_survival_probability_constant(
     return -float(np.logaddexp(0.0, log_num))
 
 
-def log_survival_probability_quadrature(birth: Rate, death: Rate, t: float) -> float:
+def log_survival_probability_quadrature(
+    birth: ResolvedRate, death: ResolvedRate, t: float
+) -> float:
     r"""Return $\ln \Pr(Z_t > 0) = -\ln(1 + I(t))$ by panelled quadrature.
 
     The survival probability is $1 / (1 + I(t))$ with
@@ -274,8 +364,10 @@ def log_survival_probability_quadrature(birth: Rate, death: Rate, t: float) -> f
     return -float(np.logaddexp(0.0, log_i))
 
 
-def _is_constant(rate: Rate, *, positive: bool) -> bool:
+def _is_constant(rate: ResolvedRate, *, positive: bool) -> bool:
     """Whether ``rate`` is one epoch with zero slope (and a positive value if asked)."""
+    if not isinstance(rate, Rate):
+        return False
     return (
         rate.ends.size == 1
         and rate.slope[0] == 0.0
@@ -283,7 +375,9 @@ def _is_constant(rate: Rate, *, positive: bool) -> bool:
     )
 
 
-def log_survival_probability(birth: Rate, death: Rate, t: float) -> float:
+def log_survival_probability(
+    birth: ResolvedRate, death: ResolvedRate, t: float
+) -> float:
     r"""Return $\ln \Pr(Z_t > 0) = -\ln(1 + I(t))$ from one individual at time 0.
 
     When both rates are constant (one epoch, zero slope) and the death rate is
@@ -293,14 +387,21 @@ def log_survival_probability(birth: Rate, death: Rate, t: float) -> float:
     Both evaluate $\Pr(Z_t > 0) = 1 / (1 + I(t))$ (Kendall (1948); see
     ``docs/references.md``).
     """
-    if _is_constant(birth, positive=False) and _is_constant(death, positive=True):
+    if (
+        isinstance(birth, Rate)
+        and isinstance(death, Rate)
+        and _is_constant(birth, positive=False)
+        and _is_constant(death, positive=True)
+    ):
         return log_survival_probability_constant(
             birth_rate=float(birth.v0[0]), death_rate=float(death.v0[0]), time=t
         )
     return log_survival_probability_quadrature(birth, death, t)
 
 
-def log_mean_cumulative_individuals(birth: Rate, death: Rate, t: float) -> float:
+def log_mean_cumulative_individuals(
+    birth: ResolvedRate, death: ResolvedRate, t: float
+) -> float:
     r"""Return $\ln\left(1 + \int_0^t \lambda(s) e^{\Gamma(s)} ds\right)$.
 
     Here $\lambda$ is the birth rate and $\Gamma(s) = \int_0^s (\lambda - \mu)$
@@ -311,6 +412,8 @@ def log_mean_cumulative_individuals(birth: Rate, death: Rate, t: float) -> float
     return float(np.logaddexp(0.0, log_integral(birth, birth, death, t, sign=1.0)))
 
 
-def mean_cumulative_individuals(birth: Rate, death: Rate, t: float) -> float:
+def mean_cumulative_individuals(
+    birth: ResolvedRate, death: ResolvedRate, t: float
+) -> float:
     """Return the expected number of individuals ever born by ``t``, root included."""
     return math.exp(log_mean_cumulative_individuals(birth, death, t))

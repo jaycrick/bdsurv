@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike
 
+    from bdsurv.hazards import Hazard
     from bdsurv.rates import ConstantRateLike, LinearRateLike
 
 RECORD_COLUMNS = (
@@ -101,12 +102,13 @@ class SimulatedTree:
         and ``lifespan``. Some simulators add further columns, such as
         ``birth_epoch``. The survival-conditioned simulators mark exactly one
         surviving individual as ``is_spine``.
-    birth_rate : ConstantRateLike or LinearRateLike
-        Per-individual birth rate used to generate the tree. A rate-like given
-        by the caller is stored as given, a float as a one-epoch
+    birth_rate : ConstantRateLike, LinearRateLike or Hazard
+        Per-individual birth rate used to generate the tree. A rate-like or
+        :class:`~bdsurv.hazards.Hazard` given by the caller is stored as given,
+        a float as a one-epoch
         :class:`~bdsurv.rates.PiecewiseConstant`, and the per-epoch arrays of the
         lifespan simulator as a :class:`~bdsurv.rates.PiecewiseConstant`.
-    death_rate : ConstantRateLike or LinearRateLike
+    death_rate : ConstantRateLike, LinearRateLike or Hazard
         Per-individual death rate used to generate the tree; see ``birth_rate``.
     terminal_time : float
         The time horizon ``T`` at which the tree is observed.
@@ -114,6 +116,6 @@ class SimulatedTree:
     """
 
     records: pd.DataFrame
-    birth_rate: ConstantRateLike | LinearRateLike
-    death_rate: ConstantRateLike | LinearRateLike
+    birth_rate: ConstantRateLike | LinearRateLike | Hazard
+    death_rate: ConstantRateLike | LinearRateLike | Hazard
     terminal_time: float

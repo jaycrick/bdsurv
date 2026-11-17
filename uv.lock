@@ -172,6 +172,7 @@ dependencies = [
     { name = "jax" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "scipy" },
 ]
 
 [package.dev-dependencies]
@@ -191,7 +192,6 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
-    { name = "scipy" },
     { name = "toml-sort" },
 ]
 
@@ -200,6 +200,7 @@ requires-dist = [
     { name = "jax", specifier = ">=0.4.38" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pandas", specifier = ">=2.0" },
+    { name = "scipy", specifier = ">=1.11" },
 ]
 
 [package.metadata.requires-dev]
@@ -219,7 +220,6 @@ dev = [
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-cov", specifier = ">=7.0.0" },
     { name = "ruff", specifier = ">=0.15.1" },
-    { name = "scipy", specifier = ">=1.11" },
     { name = "toml-sort", specifier = ">=0.24.3" },
 ]
 

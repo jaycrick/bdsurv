@@ -13,7 +13,7 @@ from bdsurv._hazard import (
     log_mean_cumulative_individuals as _log_mean_cumulative_individuals,
 )
 from bdsurv._hazard import log_survival_probability as _log_survival_probability
-from bdsurv.rates import Rate, RateInput, resolve_rates
+from bdsurv.rates import RateInput, ResolvedRate, resolve_rates
 
 __all__ = ["log_mean_cumulative_individuals", "log_survival_probability"]
 
@@ -23,7 +23,7 @@ def _resolve(
     death_rate: RateInput,
     t: float,
     terminal_time: float | None,
-) -> tuple[Rate, Rate]:
+) -> tuple[ResolvedRate, ResolvedRate]:
     """Validate ``t`` and the rates and return the resolved rate objects."""
     if not (math.isfinite(t) and t >= 0.0):
         msg = f"t must be finite and non-negative, got {t}"

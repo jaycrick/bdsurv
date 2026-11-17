@@ -29,11 +29,12 @@ import numpy as np
 
 from bdsurv._hazard import backward_hazard_time, close, cumulative, forward_hazard_time
 from bdsurv._seeding import bump, root_rng
+from bdsurv.hazards import Hazard
 from bdsurv.rates import (
     ConstantRateLike,
     LinearRateLike,
-    Rate,
     RateInput,
+    ResolvedRate,
     as_rate_like,
     resolve_rates,
 )
@@ -60,8 +61,8 @@ class Walker:
         Generator providing the ``Exp(1)`` draws of the jumps.
     """
 
-    birth: Rate
-    death: Rate
+    birth: ResolvedRate
+    death: ResolvedRate
     terminal_time: float
     rng: np.random.Generator
 
@@ -256,8 +257,8 @@ def validate_contour_process_list(contour_process_list: list[float]) -> None:
 def contour_process_list_to_tree(
     contour_process_list: list[float],
     *,
-    birth_rate: ConstantRateLike | LinearRateLike,
-    death_rate: ConstantRateLike | LinearRateLike,
+    birth_rate: ConstantRateLike | LinearRateLike | Hazard,
+    death_rate: ConstantRateLike | LinearRateLike | Hazard,
 ) -> SimulatedTree:
     """Reconstruct a ``SimulatedTree`` from a validated contour list.
 

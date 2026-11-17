@@ -102,6 +102,8 @@ exhausted before $E$ is reached, the remainder carries into the neighbouring
 segment (`forward_hazard_time` / `backward_hazard_time`).
 The spine restart on reaching $T$ is the same.
 A constant rate gives an exponential jump, $E / \text{rate}$.
+Any `Hazard` (Weibull, Gompertz, log-logistic, Lomax, quadratic or a piecewise composition) can be used as a rate as well.
+The two inversions are then the hazard's own `backward_time` and `forward_time`, in closed form where it has one and by Brent's method otherwise; see `docs/hazards.md`.
 The death rate must not vanish identically, or the spine would restart forever.
 
 The result is a `SimulatedTree` whose `birth_rate` and `death_rate` hold the

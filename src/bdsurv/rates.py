@@ -34,6 +34,8 @@ from numpy.typing import NDArray
 if TYPE_CHECKING:
     import jax
 
+    from bdsurv.hazards import Hazard
+
 # Edges of merged segments closer than this fraction of ``T`` are one edge.
 MERGE_REL_TOL: float = 1e-12
 
@@ -91,7 +93,7 @@ class PiecewiseLinear:
     epoch_end_times: _Floats
 
 
-type RateInput = float | ConstantRateLike | LinearRateLike
+type RateInput = float | ConstantRateLike | LinearRateLike | Hazard
 
 
 class Rate(NamedTuple):
@@ -112,6 +114,33 @@ class Rate(NamedTuple):
     def end_time(self) -> float:
         """The end time ``T`` of the last segment."""
         return float(self.ends[-1])
+
+    def hazard(self, t: float | _Array) -> _Array:
+        """Evaluate the rate at ``t``."""
+        from bdsurv._hazard import value
+
+        return value(self, t)
+
+    def cumulative_hazard(self, t: float | _Array) -> _Array:
+        """Integral of the rate over ``[0, t]`` (``t`` clipped to ``[0, T]``)."""
+        from bdsurv._hazard import cumulative
+
+        return cumulative(self, t)
+
+    def forward_time(self, start: float, e: float, cap: float) -> float:
+        """Smallest ``s >= start`` with ``int_start^s rate = e``, or ``cap``."""
+        from bdsurv._hazard import forward_hazard_time
+
+        return forward_hazard_time(self, start, e, cap)
+
+    def backward_time(self, start: float, e: float) -> float:
+        """Largest ``s <= start`` with ``int_s^start rate = e``, or ``0``."""
+        from bdsurv._hazard import backward_hazard_time
+
+        return backward_hazard_time(self, start, e)
+
+
+type ResolvedRate = Rate | Hazard
 
 
 def check_strictly_increasing(name: str, values: _Array) -> None:
@@ -248,12 +277,17 @@ def _is_scalar(rate: RateInput) -> bool:
 
 def resolve_rates(
     birth_rate: RateInput, death_rate: RateInput, terminal_time: float | None
-) -> tuple[Rate, Rate, float]:
-    """Convert the rate inputs to :class:`Rate` arrays and fix the end time ``T``.
+) -> tuple[ResolvedRate, ResolvedRate, float]:
+    """Convert the rate inputs to :class:`Rate` arrays or hazards and fix ``T``.
 
-    Each rate is a float (constant on ``[0, T]``) or a rate-like.
-    ``terminal_time`` is required when both are floats; otherwise it may be
-    ``None`` or must equal the common end time of the rate-likes.
+    Each rate is a float (constant on ``[0, T]``), a rate-like, or a
+    :class:`~bdsurv.hazards.Hazard`.
+    A hazard is returned as the same object, without a copy.
+    The end time is that of the rate-likes and of the hazards whose ``end_time``
+    is not ``None``; they must all agree.
+    ``terminal_time`` is required when no rate fixes an end time; otherwise it
+    may be ``None`` or must equal that end time.
+    Each hazard is checked to be non-negative on ``[0, T]``.
 
     Returns
     -------
@@ -264,20 +298,27 @@ def resolve_rates(
     ------
     ValueError
         If ``terminal_time`` is not finite and positive, a rate is invalid, the
-        rate-likes differ in end time, or ``terminal_time`` is missing or
-        differs from their end time.
+        rates differ in end time, ``terminal_time`` is missing or differs from
+        their end time, or a hazard is negative somewhere on ``[0, T]``.
 
     """
+    # Imported here: ``bdsurv.hazards`` imports this module.
+    from bdsurv.hazards import Hazard
+
     if terminal_time is not None:
         check_terminal_time(terminal_time)
+    inputs = (birth_rate, death_rate)
     parsed = [
-        None if _is_scalar(r) else as_rate(r)  # pyright: ignore[reportArgumentType]
-        for r in (birth_rate, death_rate)
+        None if _is_scalar(r) or isinstance(r, Hazard) else as_rate(r)  # pyright: ignore[reportArgumentType]
+        for r in inputs
     ]
     ends = [r.end_time for r in parsed if r is not None]
+    ends += [
+        r.end_time for r in inputs if isinstance(r, Hazard) and r.end_time is not None
+    ]
     if not ends:
         if terminal_time is None:
-            msg = "terminal_time is required when both rates are floats"
+            msg = "terminal_time is required when neither rate fixes an end time"
             raise ValueError(msg)
         horizon = float(terminal_time)
     else:
@@ -289,7 +330,10 @@ def resolve_rates(
             msg = "terminal_time must equal the end time of the rates"
             raise ValueError(msg)
 
-    def finish(rate: RateInput, resolved: Rate | None) -> Rate:
+    def finish(rate: RateInput, resolved: Rate | None) -> ResolvedRate:
+        if isinstance(rate, Hazard):
+            rate.check_nonnegative(horizon)
+            return rate
         if resolved is not None:
             return resolved
         return as_rate(PiecewiseConstant([float(rate)], [horizon]))  # pyright: ignore[reportArgumentType]
@@ -303,11 +347,11 @@ def resolve_rates(
 
 def as_rate_like(
     rate: RateInput, terminal_time: float
-) -> ConstantRateLike | LinearRateLike:
+) -> ConstantRateLike | LinearRateLike | Hazard:
     """Return ``rate`` as a rate-like, storing a float as one constant epoch.
 
-    A rate-like is returned as given; a float ``v`` becomes
-    ``PiecewiseConstant([v], [terminal_time])``.
+    A rate-like or a :class:`~bdsurv.hazards.Hazard` is returned as given; a
+    float ``v`` becomes ``PiecewiseConstant([v], [terminal_time])``.
     """
     if _is_scalar(rate):
         return PiecewiseConstant([float(rate)], [terminal_time])  # pyright: ignore[reportArgumentType]
