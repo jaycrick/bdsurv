@@ -19,6 +19,20 @@ The event is a birth with probability $\lambda(t) / (\lambda(t) + \mu(t))$.
 The derivation is in ``docs/lifespans.md``, section "Forward simulation and the
 other simulators".
 
+A pair of rates in which either is a :class:`~bdsurv.hazards.Hazard` is run by
+competing risks instead (:class:`RatePair`, ``_run_general``).
+The $n$ alive individuals share one hazard, so the total birth hazard is
+$n \lambda(t)$ and the total death hazard $n \mu(t)$, and these two event
+processes have independent increments.
+Draw $E_b, E_d \sim \mathrm{Exp}(1)$, invert $n \int \lambda = E_b$ and
+$n \int \mu = E_d$ for the times $t_b$ and $t_d$, and take the earlier one as
+the event; none before the target ends the run.
+This is exact (Gillespie with competing risks) and needs no segments.
+It uses two exponential draws per event, against one exponential and one
+uniform draw on the linear path, so :func:`bdsurv._seeding.count_draws` totals
+differ between the two paths.
+The linear path itself is unchanged and its seeded output is bit-identical.
+
 Genealogy convention: a newborn is inserted into ``alive_ids`` at a uniform
 position at least 1, its parent is its left neighbour, and the spine is
 ``alive_ids[0]``.
@@ -32,9 +46,9 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from bdsurv._hazard import next_event_offset
+from bdsurv._hazard import forward_hazard_time, next_event_offset
 from bdsurv._seeding import bump, root_rng, spawn
-from bdsurv.rates import Rate, merged_segments
+from bdsurv.rates import Rate, ResolvedRate, merged_segments
 from bdsurv.tree import build_records
 
 type Segment = tuple[float, float, float, float, float, float]
@@ -43,6 +57,31 @@ type Segment = tuple[float, float, float, float, float, float]
 ``lam_0`` and ``mu_0`` are the birth and death rates at ``start``;
 ``lam_slope`` and ``mu_slope`` are their slopes (``lambda'`` and ``mu'``).
 """
+
+
+@dataclass(frozen=True)
+class RatePair:
+    """Birth and death rates run by competing risks (see the module docstring).
+
+    ``end_time`` is the common horizon of the two rates.
+    """
+
+    birth: ResolvedRate
+    death: ResolvedRate
+    end_time: float
+
+
+type Dynamics = list[Segment] | RatePair
+"""Either merged linear segments or a general pair of rates."""
+
+
+def build_dynamics(
+    birth: ResolvedRate, death: ResolvedRate, end_time: float
+) -> Dynamics:
+    """Return merged segments if both rates are ``Rate``, else a :class:`RatePair`."""
+    if isinstance(birth, Rate) and isinstance(death, Rate):
+        return merged_segments(birth, death)
+    return RatePair(birth, death, end_time)
 
 
 @dataclass
@@ -170,9 +209,34 @@ def _run_segment(
             on_event(state, event_time)
 
 
+def _run_general(
+    state: ForwardState,
+    pair: RatePair,
+    stop: float,
+    rng: np.random.Generator,
+    on_event: Callable[[ForwardState, float], None] | None,
+) -> None:
+    """Advance ``state`` to ``stop`` or extinction by competing risks."""
+    while state.current_time < stop and state.alive_ids:
+        n = len(state.alive_ids)
+        t = state.current_time
+        e_birth = float(rng.exponential())
+        e_death = float(rng.exponential())
+        t_birth = forward_hazard_time(pair.birth, t, e_birth / n, stop)
+        t_death = forward_hazard_time(pair.death, t, e_death / n, stop)
+        event_time = min(t_birth, t_death)
+        if event_time >= stop:  # the cap is returned when there is no event
+            state.current_time = stop
+            return
+        state.current_time = event_time
+        _apply_event(state, event_time, is_birth=t_birth < t_death, rng=rng)
+        if on_event is not None:
+            on_event(state, event_time)
+
+
 def advance(
     state: ForwardState,
-    segments: list[Segment],
+    dynamics: Dynamics,
     target_time: float,
     rng: np.random.Generator,
     on_event: Callable[[ForwardState, float], None] | None = None,
@@ -183,15 +247,17 @@ def advance(
     ----------
     state
         The population to advance; modified in place.
-    segments
-        Segments as built by :func:`bdsurv.rates.merged_segments`.
-        Those ending at or before ``state.current_time`` are skipped.
+    dynamics
+        Segments as built by :func:`bdsurv.rates.merged_segments` (those
+        ending at or before ``state.current_time`` are skipped), or a
+        :class:`RatePair` run by competing risks.
     target_time
         Time to advance to; on return ``state.current_time == target_time``,
         also if the population has died out.
     rng
         Source of the draws: ``exponential`` for the event offset, ``random``
-        for birth versus death, ``integers`` for the position.
+        for birth versus death (segments only; a :class:`RatePair` draws a
+        second exponential instead), ``integers`` for the position.
     on_event
         If given, called as ``on_event(state, event_time)`` after each event.
 
@@ -205,7 +271,11 @@ def advance(
         msg = "target_time cannot be less than current_time"
         raise ValueError(msg)
 
-    for segment in segments:
+    if isinstance(dynamics, RatePair):
+        _run_general(state, dynamics, target_time, rng, on_event)
+        state.current_time = target_time
+        return
+    for segment in dynamics:
         if segment[1] <= state.current_time:
             continue
         stop = min(segment[1], target_time)
@@ -260,21 +330,24 @@ def retry_until_survival[T](
     raise RuntimeError(msg)
 
 
-def simulate_forward(
-    birth: Rate,
-    death: Rate,
+def simulate_forward(  # noqa: PLR0913  # one internal call site
+    birth: ResolvedRate,
+    death: ResolvedRate,
+    end_time: float,
     random_seed: int | None,
     *,
     ensure_non_extinct: bool,
     max_retries: int,
     name: str,
-) -> tuple[pd.DataFrame, list[Segment]]:
+) -> tuple[pd.DataFrame, Dynamics]:
     """Simulate one process from a single root to the common end time of the rates.
 
     Parameters
     ----------
     birth, death
         Per-individual rates with a common end time ``T``.
+    end_time
+        The common end time ``T``.
     random_seed
         Seed for reproducibility.
     ensure_non_extinct, max_retries
@@ -285,16 +358,16 @@ def simulate_forward(
     Returns
     -------
     tuple
-        The records table at ``T`` and the merged segments used.
+        The records table at ``T`` and the dynamics used.
 
     """
-    segments = merged_segments(birth, death)
-    terminal_time = segments[-1][1]
+    dynamics = build_dynamics(birth, death, end_time)
+    terminal_time = end_time
     seeds = root_rng(random_seed, "seeding")
 
     def attempt() -> ForwardState | None:
         state = ForwardState.root()
-        advance(state, segments, terminal_time, spawn(seeds, "dynamics"))
+        advance(state, dynamics, terminal_time, spawn(seeds, "dynamics"))
         return None if ensure_non_extinct and not state.alive_ids else state
 
     state = retry_until_survival(
@@ -303,4 +376,4 @@ def simulate_forward(
         max_retries=max_retries,
         name=name,
     )
-    return state.to_records(terminal_time), segments
+    return state.to_records(terminal_time), dynamics

@@ -30,16 +30,16 @@ from typing import Any, NamedTuple
 import numpy as np
 import pandas as pd
 
-from bdsurv._forward import ForwardState, Segment, advance
+from bdsurv._forward import Dynamics, ForwardState, advance, build_dynamics
 from bdsurv._hazard import close, log_survival_probability
 from bdsurv._seeding import bump, root_rng, spawn
+from bdsurv.hazards import Hazard
 from bdsurv.rates import (
     ConstantRateLike,
     LinearRateLike,
     RateInput,
     as_rate_like,
     check_strictly_increasing,
-    merged_segments,
     resolve_rates,
 )
 from bdsurv.tree import SimulatedTree
@@ -691,12 +691,12 @@ def _append_trace_point(
 
 
 def _advance_particle(
-    particle: _ParticleState, segments: list[Segment], target_time: float
+    particle: _ParticleState, dynamics: Dynamics, target_time: float
 ) -> None:
     """Advance a particle to ``target_time``, tracing its population."""
     advance(
         particle.forward,
-        segments,
+        dynamics,
         target_time,
         particle.rng,
         on_event=lambda _state, event_time: _append_trace_point(
@@ -738,9 +738,9 @@ class _Dynamics:
 
     terminal_time: float
     log_pr: Callable[[float], float]
-    segments: list[Segment]
-    birth_rate: ConstantRateLike | LinearRateLike
-    death_rate: ConstantRateLike | LinearRateLike
+    dynamics: Dynamics
+    birth_rate: ConstantRateLike | LinearRateLike | Hazard
+    death_rate: ConstantRateLike | LinearRateLike | Hazard
 
 
 def _build_conditioned_trajectories(
@@ -895,7 +895,7 @@ def _run_attempt(
         bump("particle_steps", n_entering)
 
         for particle in particles:
-            _advance_particle(particle, dynamics.segments, target_time)
+            _advance_particle(particle, dynamics.dynamics, target_time)
 
         populations_at_level = np.asarray(
             [len(particle.forward.alive_ids) for particle in particles],
@@ -1100,7 +1100,7 @@ def simulate_survival_splitting(
     dynamics = _Dynamics(
         terminal_time=terminal_time,
         log_pr=lambda t: log_survival_probability(birth, death, t),
-        segments=merged_segments(birth, death),
+        dynamics=build_dynamics(birth, death, terminal_time),
         birth_rate=as_rate_like(config.birth_rate, terminal_time),
         death_rate=as_rate_like(config.death_rate, terminal_time),
     )

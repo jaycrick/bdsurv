@@ -24,6 +24,13 @@ times (an Arley process, for example, has `mu(t) = m t`).
 Rate objects must share one end time, which is the terminal time `T`, so
 `terminal_time` is required when both rates are floats and otherwise may be
 omitted.
+A rate can also be a `Hazard`: `PowerHazard` (with `PowerHazard.weibull` and `PowerHazard.rayleigh`),
+`GompertzHazard`, `LogLogisticHazard`, `LomaxHazard`, `QuadraticHazard`, or a `PiecewiseHazard`
+that composes them over epochs in local time.
+Event times are drawn by exact left-truncated inversion of the cumulative hazard, in closed form where
+one exists and by Brent's method otherwise (`docs/hazards.md`).
+A parametric hazard does not fix an end time, so `terminal_time` is required unless a `PiecewiseHazard`
+or a rate object supplies it; `sample_residual_lifetimes` samples a `Hazard` directly.
 `ConstantRateLike` and `LinearRateLike` are the protocols any object with the
 same attributes satisfies.
 
@@ -75,11 +82,11 @@ and `sample_conditioned_survival_per_posterior` runs the era-conditioned
 sampler once per posterior draw.
 The three functions that take per-epoch arrays require strictly positive rates.
 
-The runtime dependencies are `numpy`, `pandas` and `jax`.
+The runtime dependencies are `numpy`, `scipy`, `pandas` and `jax`.
 `import bdsurv` enables JAX 64-bit mode and defaults `JAX_PLATFORMS` to `cpu`.
 
 See `docs/` for the mathematical derivation of each method:
-`contour_process.md`, `splitting.md`, `lifespans.md` and `era_conditioning.md`.
+`contour_process.md`, `splitting.md`, `hazards.md`, `lifespans.md` and `era_conditioning.md`.
 The works the methods rest on are listed in `docs/references.md`.
 Wall-clock comparisons are in `benchmarks/simulator_speed.qmd`,
 `benchmarks/method_comparison.qmd` and, for Arley processes matched to the

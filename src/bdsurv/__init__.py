@@ -5,12 +5,19 @@ DataFrame plus the rates and the terminal time ``T`` used to generate it.
 The rates of a tree are always rate objects; a float rate is stored as a
 one-epoch :class:`PiecewiseConstant`.
 
-Rates are given as a :data:`RateInput`: a float (constant on ``[0, T]``), or a
+Rates are given as a :data:`RateInput`: a float (constant on ``[0, T]``), a
 rate-like that is piecewise constant (:class:`PiecewiseConstant`,
 :class:`ConstantRateLike`) or piecewise linear (:class:`PiecewiseLinear`,
-:class:`LinearRateLike`) in time over ``[0, T]``.
-Rates are finite and non-negative, and ``terminal_time`` is required when both
-rates are floats.
+:class:`LinearRateLike`) in time over ``[0, T]``, or a :class:`Hazard` object:
+:class:`PowerHazard` (Weibull, Rayleigh), :class:`GompertzHazard`,
+:class:`LogLogisticHazard`, :class:`LomaxHazard`, :class:`QuadraticHazard`, or a
+:class:`PiecewiseHazard` that composes them over epochs (see ``docs/hazards.md``).
+Rates are finite and non-negative.
+``terminal_time`` is required unless a rate fixes the end time: a
+:class:`PiecewiseHazard` or a rate-like does, while a float or a parametric
+hazard does not.
+:func:`sample_residual_lifetimes` draws left-truncated residual lifetimes from a
+:class:`Hazard` directly.
 
 Forward simulation, not conditioned on survival:
 
@@ -85,6 +92,17 @@ from bdsurv.era_conditioning import (  # noqa: E402
     sample_conditioned_survival_process,
 )
 from bdsurv.forward import simulate_birth_death  # noqa: E402
+from bdsurv.hazards import (  # noqa: E402
+    GompertzHazard,
+    Hazard,
+    HazardInversionError,
+    LogLogisticHazard,
+    LomaxHazard,
+    PiecewiseHazard,
+    PowerHazard,
+    QuadraticHazard,
+    sample_residual_lifetimes,
+)
 from bdsurv.lifespans import (  # noqa: E402
     LifespanSimulationArrays,
     simulate_birth_death_lifespans,
@@ -122,12 +140,20 @@ __all__ = [
     "ConstantRateLike",
     "DrawCounts",
     "EraConditioningDiagnostic",
+    "GompertzHazard",
+    "Hazard",
+    "HazardInversionError",
     "LevelDiagnostic",
     "LifespanSimulationArrays",
     "LinearRateLike",
+    "LogLogisticHazard",
+    "LomaxHazard",
     "MatchedSurvivalSample",
     "PiecewiseConstant",
+    "PiecewiseHazard",
     "PiecewiseLinear",
+    "PowerHazard",
+    "QuadraticHazard",
     "RateInput",
     "SimulatedTree",
     "SplittingConfig",
@@ -140,6 +166,7 @@ __all__ = [
     "log_survival_probability",
     "sample_conditioned_survival_per_posterior",
     "sample_conditioned_survival_process",
+    "sample_residual_lifetimes",
     "select_level_times_for_band",
     "simulate_birth_death",
     "simulate_birth_death_lifespans",

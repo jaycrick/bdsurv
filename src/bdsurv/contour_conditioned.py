@@ -31,7 +31,7 @@ from bdsurv.contour import (
     join_pieces,
     sample_until,
 )
-from bdsurv.rates import Rate, RateInput, as_rate_like, resolve_rates
+from bdsurv.rates import RateInput, ResolvedRate, as_rate_like, resolve_rates
 from bdsurv.tree import SimulatedTree
 
 Direction = Literal["auto", "top", "bottom"]
@@ -41,7 +41,7 @@ _END_PIECES = 2
 
 
 def _log_survival_pair(
-    birth: Rate, death: Rate, terminal_time: float
+    birth: ResolvedRate, death: ResolvedRate, terminal_time: float
 ) -> tuple[float, float]:
     """Return ``(log_S_fwd, log_S_rev)``, the log survival probabilities to ``T``.
 
@@ -57,7 +57,7 @@ def _log_survival_pair(
 
 
 def _prefer_top(
-    birth: Rate, death: Rate, terminal_time: float, direction: Direction
+    birth: ResolvedRate, death: ResolvedRate, terminal_time: float, direction: Direction
 ) -> bool:
     """Return whether to generate the end pieces from the top (``T``) end."""
     if direction not in _DIRECTIONS:
@@ -180,7 +180,10 @@ def _spine_levels(ages: Sequence[float], terminal_time: float) -> list[float]:
 
 
 def _log_spine_weights(
-    birth: Rate, death: Rate, terminal_time: float, ages: Sequence[float]
+    birth: ResolvedRate,
+    death: ResolvedRate,
+    terminal_time: float,
+    ages: Sequence[float],
 ) -> np.ndarray:
     r"""Return $\ln w_i$ with $w_i = (I(T) - I(b_i)) / (1 + I(b_i))$, $b_i = T - a_i$.
 

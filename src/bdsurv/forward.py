@@ -108,6 +108,7 @@ def simulate_birth_death(
     records, _ = simulate_forward(
         birth,
         death,
+        horizon,
         random_seed,
         ensure_non_extinct=ensure_non_extinct,
         max_retries=max_retries,

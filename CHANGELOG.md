@@ -9,6 +9,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `log_mean_cumulative_individuals(birth_rate, death_rate, t, terminal_time=None)` is exported from `bdsurv` (it lives in `bdsurv.survival`) and returns the log of the expected number of individuals ever born by `t`, the root included, for the process not conditioned on survival.
+- Hazard families `PowerHazard` (with `PowerHazard.weibull` and `PowerHazard.rayleigh`), `GompertzHazard`, `LogLogisticHazard`, `LomaxHazard` and `QuadraticHazard`, and `PiecewiseHazard`, which composes them over epochs in local time, all subclasses of the new `Hazard` base class.
+  Residual times are exact left-truncated inversions of the cumulative hazard: closed forms for all but `QuadraticHazard`, which uses Brent's method; `HazardInversionError` reports a failed inversion.
+  See `docs/hazards.md`.
+- `sample_residual_lifetimes(hazard, start_times, random_seed=None, end_time=inf)` draws the left-truncated time to the next event from each start time.
+- A `Hazard` is accepted wherever a `RateInput` is: `simulate_birth_death`, `simulate_contour_given_survival`, `simulate_contour_given_population`, `simulate_contour_given_ages`, `simulate_survival_splitting`, the level helpers, `log_survival_probability` and `log_mean_cumulative_individuals`.
+  `terminal_time` is required unless a rate fixes the end time (a `PiecewiseHazard` or a rate object).
+  The forward simulators use competing risks for these rates, which draws two exponentials per event, so `count_draws` totals differ from the constant and linear path, whose seeded output is unchanged.
+
+### Changed
+
+- `scipy` is now a runtime dependency (it was a development dependency).
 
 ## [0.5.0] - 2026-11-16
 
