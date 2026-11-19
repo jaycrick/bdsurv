@@ -1,0 +1,37 @@
+/* The OTFs in fonts/ are copied from TeX Live by build.sh. */
+@font-face {
+  font-family: "Libertinus Serif";
+  font-style: normal;
+  font-weight: 400;
+  src: url("fonts/LibertinusSerif-Regular.otf") format("opentype");
+}
+@font-face {
+  font-family: "Libertinus Serif";
+  font-style: italic;
+  font-weight: 400;
+  src: url("fonts/LibertinusSerif-Italic.otf") format("opentype");
+}
+@font-face {
+  font-family: "Libertinus Serif";
+  font-style: normal;
+  font-weight: 700;
+  src: url("fonts/LibertinusSerif-Bold.otf") format("opentype");
+}
+@font-face {
+  font-family: "Libertinus Serif";
+  font-style: italic;
+  font-weight: 700;
+  src: url("fonts/LibertinusSerif-BoldItalic.otf") format("opentype");
+}
+@font-face {
+  font-family: "STIX Two Math";
+  src: url("fonts/STIXTwoMath-Regular.otf") format("opentype");
+}
+
+/* Stacked photos with captions on the first content slide. */
+.photo-stack { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.photo-stack p { margin: 0; }
+.photo-stack img { margin: 0; }
+.photo-row { display: flex; align-items: flex-end; gap: 14px; }
+.photo-caption { font-size: 0.5em; line-height: 1.3; }
+.photo-credit { font-size: 0.4em; opacity: 0.8; }

@@ -1,0 +1,4 @@
+# The talk is its own Quarto project, so it renders next to its source
+# instead of into the website's _output directory.
+project:
+  type: default

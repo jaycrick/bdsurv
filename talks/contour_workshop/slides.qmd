@@ -1,0 +1,522 @@
+---
+title: "Simulating declining populations backwards in time"
+author: "Jacob Cumming"
+institute: "University of Melbourne"
+format:
+  revealjs:
+    slide-number: c
+    progress: false
+    transition: none
+    width: 1280
+    height: 720
+    theme: [default, metropolis.scss]
+    css: fonts.css
+    html-math-method: mathml
+    footer: "Simulating declining populations backwards in time"
+    embed-resources: true
+execute:
+  echo: false
+---
+
+## Simulation is important for understanding population models
+
+:::: {.columns}
+::: {.column width="50%" style="align-self: center;"}
+::: {.photo-stack}
+::: {.photo-row}
+![](images/frog.jpg){fig-alt="A Growling Grass Frog on a log" width="340px"}
+
+::: {.photo-caption}
+Growling Grass Frog\
+*Ranoidea raniformis*
+:::
+:::
+
+::: {.photo-row}
+![](images/parrot.jpg){fig-alt="An Orange-bellied Parrot perched on a dry twig" width="340px"}
+
+::: {.photo-caption}
+Orange-bellied Parrot\
+*Neophema chrysogaster*
+:::
+:::
+
+::: {.photo-credit}
+Photos: Ammresh
+:::
+:::
+:::
+
+::: {.column width="50%" style="align-self: center;"}
+- Models help us understand the behaviour of populations over time.
+- **Declining populations** of particular interest.
+- **Simulation** lets us test, validate, and calibrate inference methods.
+- Necessary for **statistical methods** (bootstrap) or **training models** (machine learning).
+:::
+::::
+
+::: notes
+I hardly need to be telling this audience,
+but models help us understand how populations behave, and let us ask counter-factuals.
+
+One motivating factor might be to study Declining populations
+Frog: Vulnerable
+Parrot: Critically Endangered - got down to 14 birds in Feb 2017
+
+- want to simulate long trajectories, non-extinct
+:::
+
+## Subcritical birth-and-death processes can model declining populations
+
+:::: {.columns}
+::: {.column width="52%"}
+![](figures/bdp_tree_2.svg){width="720"}
+:::
+
+::: {.column width="48%"}
+- Birth-and-death process: per individual **birth-rate** $\lambda$, **death-rate** $\mu$.
+- **Subcritical** if $\mu > \lambda$.
+- Observe **non-extinct** processes at finite time $T$.
+- How to simulate **conditioned on survival**?
+:::
+::::
+
+::: notes
+- Over time we expect that that the population would decrease
+- Tree representation, time y axis
+- Observe the process at some finite time $T$ after the process has started.
+:::
+
+## Naive simulation becomes increasingly costly for longer times and more subcritical processes
+
+:::: {.columns}
+::: {.column width="54%"}
+::: {.algo}
+**Naive (Doob--Gillespie) simulation**
+
+1. $t \leftarrow 0$, $n \leftarrow 1$
+2. **while** $t < T$ and $n > 0$:
+    - draw $\Delta \sim \mathrm{Exp}\big(n(\lambda+\mu)\big)$ and set $t \leftarrow t + \Delta$
+    - birth ($n \leftarrow n+1$) with probability $\frac{\lambda}{\lambda+\mu}$, otherwise death ($n \leftarrow n-1$)
+    - assign the birth/death uniformly at random to the individuals in the process.
+3. **if** $n = 0$: discard and restart; **else** keep the tree
+:::
+:::
+
+::: {.column width="46%"}
+- For $\mu > \lambda$: $\Pr(\text{Non-Extinct})$ grows exponentially small with $T$
+- Runs needed per survivor: $1 / \Pr(\text{Non-Extinct})$
+- $\lambda = 1$, $\mu = 2$, $T = 10$: about **44,000** runs
+:::
+::::
+
+::: notes
+- The probability of survival decreases exponentially with time.
+- The number of runs needed increases dramatically as the process becomes more subcritical.
+- Does give exact independent simulations
+:::
+
+## Multilevel splitting is more efficient at simulating subcritical processes, but yields correlated trees
+
+:::: {.columns}
+::: {.column width="56%"}
+::: {.algo}
+**Modified multilevel splitting**
+
+Given levels $0=\tau_0 < \tau_1 < \dots < \tau_J = T$, cloning rates $r_j$ and size $N_0$.
+
+1. Start $N_0$ processes from the initial distribution
+2. **for** $j = 1, \dots, J$:
+    - run each process using Doob--Gillespie to level $\tau_j$
+    - discard those that did not reach $\tau_j$
+    - clone each survivor $r_j$ times
+3. **return** trees that survived to $T$ (if any)
+:::
+:::
+
+::: {.column width="44%"}
+- Made for **unbiased estimators** of rare-event probabilities:
+$$\hat{p} = \frac{\text{\# surviving trees}}{N_0 \prod_{j=1}^{J} r_j},$$
+and
+$$\mathbb{E}\bigl(\hat p\bigr) = \Pr(Z_T > 0)$$
+- Set of trees **highly correlated** (shared ancestry)
+:::
+::::
+
+::: notes
+- draw levels and tree on blackboard
+:::
+
+::: {.refs}
+Glasserman, Heidelberger, Shahabuddin & Zajic (1999). Multilevel splitting for estimating rare event probabilities. *Operations Research* 47(4), 585--600. [doi:10.1287/opre.47.4.585](https://doi.org/10.1287/opre.47.4.585)
+
+Braunsteins, Hautphenne & Minuesa (2022). Parameter estimation in branching processes with almost sure extinction. *Bernoulli* 28(1), 33--63. [doi:10.3150/21-BEJ1332](https://doi.org/10.3150/21-BEJ1332)
+:::
+
+## A tree is encoded by its contour
+
+:::: {.columns}
+::: {.column width="58%"}
+::: {.r-stack}
+![](figures/tree_contour_1.svg){width="740"}
+
+![](figures/tree_contour_2.svg){.fragment fragment-index=1 width="740"}
+:::
+:::
+
+::: {.column width="42%"}
+
+- Explore the tree **depth-first**, height over time: the **contour**.
+
+::: {.fragment fragment-index=1}
+- Peaks: **deaths** (or $T$), valleys: **births**.
+- Can we simulate the contour **directly**?
+:::
+:::
+::::
+
+::: notes
+- Instead of looking at a trees, we are going to consider a related quantity, which is their contour.
+- Explore at constant rate.
+- Importantly there is a one-to-one mapping between trees and their contours,
+and so what that basically means is, if I give you a DFS/contour,
+you can reconstruct the tree it was searching.
+:::
+
+## A contour is a simple Markov chain of extrema
+
+:::: {.columns}
+::: {.column width="58%"}
+![](figures/tree_contour_3.svg){width="740"}
+:::
+
+::: {.column width="42%"}
+- The extrema form **Markov chain**:
+    - **up** by $\mathrm{Exp}(\mu)$
+    - **down** by $\mathrm{Exp}(\lambda)$.
+- Truncate at $T$, stop on hitting $0$.
+- Extrema $\mapsto$ Contour $\mapsto$ Tree.
+:::
+::::
+
+::: notes
+Each contour can be unique characterised by its extrema,
+since the contour itself is just a linear interpolation between the extrema.
+
+The reason for steps up with rate mu is that up jumps correspond to lifetimes,
+and down jumps correspond to births, which occur at rate lambda.
+
+So now the problem becomes simulating a Markov chain of extrema, conditioned on hitting T before 0.
+:::
+
+## Only the first ascent of a contour is hard
+
+::: {.r-stack}
+
+![](figures/tree_contour_5.svg){width="900"}
+
+![](figures/tree_contour_4.svg){.fragment fragment-index=1 width="900"}
+
+![](figures/tree_contour_5.svg){.fragment fragment-index=2 width="900"}
+:::
+
+::: notes
+The way we can think about it is as follows:
+
+- We need a first ascent to reach T (next slide)
+- and then we need a descent to reach 0 (next slide)
+- this descent is easy to simulate, because starting at T,
+the chain has a downward drift **in a sub-critical regime**, and so is drawn to 0. (next slide)
+- the hard part is still this first ascent, because starting at 0, the chain has an upward drift, and so is drawn to T.
+- the key idea here will be to try and also simulate this first ascent,
+but backwards in time relative to the depth-first search.
+:::
+
+## Parent--child relationships can be exchanged
+
+::::: {.columns style="align-items: center;"}
+::: {.column width="50%" style="align-self: center;"}
+![](figures/birth_exchange_1.svg){.nostretch fig-alt="An unlabelled tree" style="width: 100%; height: auto; max-height: none; max-width: 100%; margin: 0;"}
+:::
+
+::: {.column width="50%" style="align-self: center;"}
+![](figures/birth_exchange_2.svg){.nostretch .fragment fig-alt="The tree and its birth-exchanged tree, linked by the birth exchange" style="height: 540px; width: auto; max-height: none; max-width: 100%; margin: 0;"}
+:::
+:::::
+
+::: notes
+- The key to this little trick is understanding the relationship between contours
+in trees where you exchange the parent-child relationships at each birth.
+- Forget which branch at each birth is the mother and which the daughter: the unlabelled tree.
+- Every labelling is equally likely (next slide)
+- So we can consider labelling the left individual as the mother and the right individual as the daughter, or vice versa, and the contours will be the same, but reversed in time.
+:::
+
+## The hard ascent is a reversed easy descent
+
+:::: {.columns}
+::: {.column width="58%"}
+::: {.r-stack}
+![](figures/exchanged_pair_1.svg){width="690"}
+
+![](figures/exchanged_pair_2.svg){.fragment fragment-index=1 width="690"}
+:::
+:::
+
+::: {.column width="42%"}
+
+- Exchanging all parent-child relationships: the contour is **reversed**.
+
+::: {.fragment fragment-index=1}
+- First ascent = **reversed** last descent.
+- So **simulate a descent** and reverse it.
+:::
+:::
+::::
+
+::: notes
+First ascent has the same distribution as the last descent reversed in time, and so we can simulate a descent and reverse it to get the first ascent.
+Last descent just ignore first times it hits T, explain this is why get more efficient as more subcritical.
+:::
+
+```{python}
+#| include: false
+import importlib.util
+import sys
+from pathlib import Path
+
+import altair as alt
+import pandas as pd
+from IPython.display import Markdown, display
+
+
+def load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def find_root() -> Path:
+    here = Path.cwd().resolve()
+    for candidate in (here, *here.parents):
+        if (candidate / "scripts" / "bench_method_comparison.py").exists():
+            return candidate
+    msg = "Run from inside the bdsurv repository."
+    raise FileNotFoundError(msg)
+
+
+ROOT = find_root()
+PARAM_STYLE = "font-size: 0.72em; color: #4a6670;"
+bench = load("bench_method_comparison", ROOT / "scripts" / "bench_method_comparison.py")
+charts = load(
+    "method_comparison_charts", ROOT / "scripts" / "method_comparison_charts.py"
+)
+```
+
+## The more subcritical, the bigger the speed-up
+
+::: {.r-stack}
+
+::: {.fragment .fade-out fragment-index=1}
+```{python}
+T_DRAWS = 60.0
+draws = pd.read_csv(ROOT / "benchmarks" / "data" / "draws.csv")
+draws = draws[(draws["model"] == "constant") & (draws["T"] == T_DRAWS)]
+draw_curves = charts.curves_from_draws(draws)
+draw_mus = sorted(draw_curves["mu"].unique())
+
+draw_linear_x = charts.cost_chart(
+    draw_curves,
+    alt.X(
+        "mu:Q",
+        scale=alt.Scale(domain=[min(draw_mus), max(draw_mus)], nice=False),
+        title="death rate μ",
+        axis=alt.Axis(values=[1, 5, 10, 15, 20], format="g"),
+    ),
+    lam=bench.LAMBDA,
+    statistic="mean",
+    measure="draws",
+    mark_critical=True,
+    legend_font_size=21,
+    width=960,
+    height=265,
+)
+
+draw_mean = draw_curves.pivot_table(index="mu", columns="method", values="mean")
+draw_top = max(draw_mus)
+draw_ratio = (
+    draw_mean.loc[draw_top, charts.LABEL_RUN]
+    / draw_mean.loc[draw_top, charts.LABEL_CONTOUR]
+)
+display(
+    draw_linear_x.configure(font="Libertinus Serif", background="#FAFAFA")
+    .configure_axis(labelFontSize=22, titleFontSize=26)
+    .configure_legend(symbolSize=200)
+)
+display(
+    Markdown(
+        f"At $\\mu = {draw_top:g}$, splitting draws "
+        f"**{draw_ratio:,.0f}×** more random numbers.\n\n"
+        f'[$\\lambda = {bench.LAMBDA:g}$, $T = {T_DRAWS:g}$]{{style="{PARAM_STYLE}"}}'
+    )
+)
+```
+:::
+
+::: {.fragment .fade-in fragment-index=1}
+```{python}
+T_SHOWN = 60.0
+rows = pd.read_csv(ROOT / "benchmarks" / "data" / bench.ROWS_FILE)
+curves = charts.curves_from_rows(rows)
+at_t = curves[curves["T"] == T_SHOWN]
+mus = sorted(at_t["mu"].unique())
+
+chart = charts.cost_chart(
+    at_t,
+    charts.x_by_mu(mus),
+    lam=bench.LAMBDA,
+    statistic="mean",
+    mark_critical=True,
+    legend_font_size=21,
+    width=960,
+    height=265,
+)
+display(
+    chart.configure(font="Libertinus Serif", background="#FAFAFA")
+    .configure_axis(labelFontSize=22, titleFontSize=26)
+    .configure_legend(symbolSize=200)
+)
+
+mean = at_t.pivot_table(index="mu", columns="method", values="mean")
+mu_top = max(mus)
+speedup = mean.loc[mu_top, charts.LABEL_RUN] / mean.loc[mu_top, charts.LABEL_CONTOUR]
+display(
+    Markdown(
+        f"Time per tree: at $\\mu = {mu_top:g}$, splitting "
+        f"costs **{speedup:,.0f}×** more.\n\n"
+        f'[$\\lambda = {bench.LAMBDA:g}$, $T = {T_SHOWN:g}$]{{style="{PARAM_STYLE}"}}'
+    )
+)
+```
+:::
+
+:::
+
+## What if the birth and death rates vary?
+
+- Birth rate $\lambda(t)$ and death rate $\mu(t)$ change with time.
+
+::: notes
+- So far the rates were constant.
+- Next: the simplest case where the death rate grows with time.
+:::
+
+## An Arley process: the death rate grows with time
+
+```{python}
+acharts = load("arley_charts", ROOT / "scripts" / "arley_charts.py")
+
+rate = acharts.rate_chart(
+    0.25,
+    t_max=20,
+    y_max=5,
+    legend_font_size=21,
+    annotation_font_size=20,
+    t_ticks=[0, 4, 8, 12, 16, 20],
+    rate_ticks=[0, 1, 2, 3, 4, 5],
+    width=960,
+    height=290,
+)
+display(
+    rate.configure(font="Libertinus Serif", background="#FAFAFA")
+    .configure_axis(labelFontSize=22, titleFontSize=26)
+    .configure_legend(symbolSize=200)
+)
+display(Markdown("Subcritical after $t = 4$: $\\mu(t) > \\lambda$."))
+```
+
+## Random draws per tree grow with time
+
+::: {.r-stack}
+
+::: {.fragment .fade-out fragment-index=1}
+```{python}
+import numpy as np
+
+adraws = pd.read_csv(ROOT / "benchmarks" / "data" / "draws.csv")
+adraws = adraws[
+    (adraws["model"] == "arley")
+    & (adraws["cell_set"] == "grid")
+    & np.isclose(adraws["slope"], 0.25)
+]
+adraw_all = acharts.curves_from_draws(adraws)  # every T, used by the log-axis graph
+adraws = adraws[adraws["T"] <= 20]
+adraw_curves = acharts.curves_from_draws(adraws)
+
+adraw_chart = acharts.draws_chart(
+    adraw_curves,
+    alt.X(
+        "T:Q",
+        scale=alt.Scale(domain=[1, 20], nice=False),
+        title="terminal time T",
+        axis=alt.Axis(values=[1, 5, 10, 15, 20], format="d"),
+    ),
+    legend_font_size=21,
+    width=960,
+    height=265,
+)
+display(
+    adraw_chart.configure(font="Libertinus Serif", background="#FAFAFA")
+    .configure_axis(labelFontSize=22, titleFontSize=26)
+    .configure_legend(symbolSize=200)
+)
+
+adraw_mean = adraw_curves[adraw_curves["T"] == adraw_curves["T"].max()].set_index(
+    "method"
+)["mean"]
+adraw_ratio = adraw_mean[acharts.LABEL_RUN] / adraw_mean[acharts.LABEL_CONTOUR]
+display(
+    Markdown(
+        f"At $T = {adraw_curves['T'].max():g}$, splitting draws "
+        f"**{adraw_ratio:,.0f}×** more random numbers.\n\n"
+        f'[$\\lambda = 1$, $\\mu(t) = t/4$]{{style="{PARAM_STYLE}"}}'
+    )
+)
+```
+:::
+
+::: {.fragment fragment-index=1}
+```{python}
+adraw_log = acharts.draws_chart(
+    adraw_all,
+    alt.X(
+        "T:Q",
+        scale=alt.Scale(type="log", domain=[1, 100], nice=False),
+        title="terminal time T (log scale)",
+        axis=alt.Axis(values=[1, 2, 5, 10, 20, 50, 100], format="d"),
+    ),
+    legend_font_size=21,
+    width=960,
+    height=265,
+)
+display(
+    adraw_log.configure(font="Libertinus Serif", background="#FAFAFA")
+    .configure_axis(labelFontSize=22, titleFontSize=26)
+    .configure_legend(symbolSize=200)
+)
+adraw_end = adraw_all[adraw_all["T"] == adraw_all["T"].max()].set_index("method")[
+    "mean"
+]
+display(
+    Markdown(
+        f"All $T$ on a log axis: at $T = {adraw_all['T'].max():g}$, splitting draws "
+        f"**{adraw_end[acharts.LABEL_RUN] / adraw_end[acharts.LABEL_CONTOUR]:,.0f}×** more.\n\n"
+        f'[$\\lambda = 1$, $\\mu(t) = t/4$]{{style="{PARAM_STYLE}"}}'
+    )
+)
+```
+:::
+
+:::

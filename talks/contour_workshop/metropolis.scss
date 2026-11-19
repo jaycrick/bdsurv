@@ -1,0 +1,145 @@
+/*-- scss:defaults --*/
+
+// Colours of the (light) Metropolis beamer theme.
+$mDarkTeal: #23373b;
+$mLightBrown: #eb811b;
+$mPaper: #fafafa;
+
+$body-bg: $mPaper;
+$body-color: $mDarkTeal;
+$link-color: $mLightBrown;
+$selection-bg: $mLightBrown;
+
+$font-family-sans-serif: "Libertinus Serif", Georgia, serif;
+$presentation-heading-font: "Libertinus Serif", Georgia, serif;
+$presentation-heading-color: $mDarkTeal;
+$presentation-heading-font-weight: 400;
+$presentation-font-size-root: 39px;
+$presentation-title-slide-text-align: left;
+
+/*-- scss:rules --*/
+
+// The @font-face rules are in fonts.css (url()s in a theme are resolved against Quarto's
+// own theme folder, not this directory).
+
+// MathML output uses the math font.
+.reveal math {
+  font-family: "STIX Two Math", "Libertinus Serif", serif;
+  font-size: 1.05em;
+}
+
+// Frame titles: left aligned, with a thin orange rule underneath.
+.reveal h2 {
+  text-align: left;
+  text-transform: none;
+  margin-bottom: 0.5em;
+  &::after {
+    content: "";
+    display: block;
+    width: 100%;
+    margin-top: 0.15em;
+    border-bottom: 2px solid $mLightBrown;
+  }
+}
+
+// Title slide.
+.reveal #title-slide {
+  text-align: left;
+  h1.title {
+    font-size: 1.9em;
+    text-transform: none;
+  }
+  .author, .institute {
+    margin: 0.15em 0;
+  }
+  h1.title::after {
+    content: "";
+    display: block;
+    width: 100%;
+    margin: 0.3em 0 0.5em;
+    border-bottom: 2px solid $mLightBrown;
+  }
+}
+
+// Numbered lists line up with the bullets.
+.reveal ol {
+  margin-left: 0;
+  padding-left: 1.4em;
+}
+
+// Circle bullets with an orange marker.
+.reveal ul {
+  margin-left: 0;
+  padding-left: 1.1em;
+  list-style: disc;
+  li::marker {
+    color: $mLightBrown;
+  }
+}
+
+// Orange progress bar and muted footer.
+.reveal .progress {
+  height: 3px;
+  color: $mLightBrown;
+}
+.reveal .slide-number {
+  background: transparent;
+  color: lighten($mDarkTeal, 25%);
+  font-size: 0.5em;
+}
+.reveal .footer {
+  color: lighten($mDarkTeal, 25%);
+  font-size: 0.5em;
+  text-align: left !important;
+  left: 3em !important;
+  right: auto !important;
+  width: auto !important;
+  p {
+    text-align: left !important;
+  }
+}
+
+// Small citations pinned to the bottom of a slide, above the footer.
+.reveal .refs {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 1.2em;
+  font-size: 0.4em;
+  color: lighten($mDarkTeal, 25%);
+  text-align: left;
+  p {
+    margin: 0.2em 0;
+  }
+  a {
+    color: inherit;
+  }
+}
+
+// Columns: centre the text against the picture.
+.reveal .columns {
+  align-items: center;
+}
+
+// Boxed pseudocode.
+.reveal .algo {
+  border: 2px solid $mDarkTeal;
+  border-radius: 6px;
+  padding: 0.4em 0.7em;
+  font-size: 0.65em;
+  line-height: 1.3;
+  background: #fff;
+  ol, ul {
+    margin: 0.1em 0;
+  }
+  li {
+    margin: 0.02em 0;
+  }
+  p {
+    margin: 0.1em 0 0.3em;
+  }
+}
+
+.reveal .small {
+  font-size: 0.68em;
+}
