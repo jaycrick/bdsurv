@@ -21,7 +21,7 @@ execute:
 ## Simulation is important for understanding population models
 
 :::: {.columns}
-::: {.column width="50%" style="align-self: center;"}
+::: {.column style="width: 50%; align-self: center;"}
 ::: {.photo-stack}
 ::: {.photo-row}
 ![](images/frog.jpg){fig-alt="A Growling Grass Frog on a log" width="340px"}
@@ -47,7 +47,7 @@ Photos: Ammresh
 :::
 :::
 
-::: {.column width="50%" style="align-self: center;"}
+::: {.column style="width: 50%; align-self: center;"}
 - Models help us understand the behaviour of populations over time.
 - **Declining populations** of particular interest.
 - **Simulation** lets us test, validate, and calibrate inference methods.
@@ -235,11 +235,11 @@ but backwards in time relative to the depth-first search.
 ## Parent--child relationships can be exchanged
 
 ::::: {.columns style="align-items: center;"}
-::: {.column width="50%" style="align-self: center;"}
+::: {.column style="width: 50%; align-self: center;"}
 ![](figures/birth_exchange_1.svg){.nostretch fig-alt="An unlabelled tree" style="width: 100%; height: auto; max-height: none; max-width: 100%; margin: 0;"}
 :::
 
-::: {.column width="50%" style="align-self: center;"}
+::: {.column style="width: 50%; align-self: center;"}
 ![](figures/birth_exchange_2.svg){.nostretch .fragment fig-alt="The tree and its birth-exchanged tree, linked by the birth exchange" style="height: 540px; width: auto; max-height: none; max-width: 100%; margin: 0;"}
 :::
 :::::

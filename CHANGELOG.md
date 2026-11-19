@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-19
+
 ### Added
 
 - `log_mean_cumulative_individuals(birth_rate, death_rate, t, terminal_time=None)` is exported from `bdsurv` (it lives in `bdsurv.survival`) and returns the log of the expected number of individuals ever born by `t`, the root included, for the process not conditioned on survival.
@@ -20,6 +22,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - `scipy` is now a runtime dependency (it was a development dependency).
+- Splitting records clones dropped by the `n_particles` cap, and the merged draw counts report `capped_levels` and `dropped_by_cap`.
+- The repository is public; install with `bdsurv @ git+https://github.com/jaycrick/bdsurv@v0.6.0`.
+- Dependencies upgraded (`uv lock --upgrade`).
+
+### Added (repository)
+
+- The contour workshop talk, `talks/contour_workshop/` (build with `talks/contour_workshop/build.sh`).
 
 ## [0.5.0] - 2026-11-16
 

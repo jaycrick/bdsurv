@@ -1,6 +1,6 @@
 [project]
 name = "bdsurv"
-version = "0.5.0"
+version = "0.6.0"
 description = "Simulation of birth-death processes, focused on survival-conditioned subcritical processes: exact contour-process reconstruction, multilevel (RESTART) splitting, and forward simulators for time-varying rates."
 readme = "README.md"
 requires-python = ">=3.13"
