@@ -540,6 +540,7 @@ It is at least 1, and compared between the two methods with a chi-squared test o
 ```{python}
 #| label: spine-peak
 SPINE_AGES = (0.7, 1.9, 2.6)  # valleys b = 2.3, 1.1, 0.4
+N_PEAK = 10_000  # draws per method; more than N, as the crossing counts are discrete
 
 
 def spine_peak(case: str, age: float, seed: int, prefer_top: bool) -> tuple[float, int]:
@@ -557,9 +558,9 @@ def spine_peak(case: str, age: float, seed: int, prefer_top: bool) -> tuple[floa
 peak_frames, peak_rows, cross_rows = [], [], []
 for k, case in enumerate(CASES):
     for j, age in enumerate(SPINE_AGES):
-        seed0 = 11 * 10**7 + 10**6 * (3 * k + j)
-        top_draws = [spine_peak(case, age, seed0 + i, True) for i in range(N)]
-        bottom_draws = [spine_peak(case, age, seed0 + 10**5 + i, False) for i in range(N)]
+        seed0 = 11 * 10**7 + 10**6 * (3 * k + j)  # N_PEAK < 10**5, so seeds stay disjoint
+        top_draws = [spine_peak(case, age, seed0 + i, True) for i in range(N_PEAK)]
+        bottom_draws = [spine_peak(case, age, seed0 + 10**5 + i, False) for i in range(N_PEAK)]
         top = [d[0] for d in top_draws]
         bottom = [d[0] for d in bottom_draws]
         pooled = lambda draws: np.bincount(np.minimum([d[1] for d in draws], 4), minlength=5)[1:]  # noqa: E731
