@@ -207,43 +207,105 @@ def _graded_edges(edges: list[float], singular: set[float]) -> list[float]:
     return sorted(out)
 
 
-def _log_integral_generic(
-    weight: ResolvedRate,
-    birth: ResolvedRate,
-    death: ResolvedRate,
-    t: float,
-    *,
-    sign: float,
-) -> float:
-    """:func:`log_integral` when a rate is a hazard.
-
-    The edges are ``0``, ``t`` and the breakpoints of the three rates, with
-    geometric grading to the right of each singular point; each edge interval is
-    split into ``ceil((dLambda + dM) / _PANEL_EXPONENT)`` panels, which bounds the
-    change of the exponent within a panel even when ``lambda - mu`` changes sign.
-    """
-    rates = (weight, birth, death)
-    edges = {0.0, t}.union(*(_edges_of(r, t) for r in rates))
-    singular = {p for r in rates for p in _singular_of(r) if 0.0 <= p < t}
-    grid = np.asarray(_graded_edges(sorted(edges), singular), dtype=np.float64)
-    lows, highs = grid[:-1], grid[1:]
-    n_panels = np.ceil(
-        (_between(birth, lows, highs) + _between(death, lows, highs)) / _PANEL_EXPONENT
-    )
+def _split_panels(
+    lows: _Array, highs: _Array, n_panels: _Array
+) -> tuple[_Array, _Array]:
+    """Split each edge interval into its panels; return the panel ends ``(lo, hi)``."""
     panel_lo: list[_Array] = []
     panel_hi: list[_Array] = []
     for a, b, n in zip(lows, highs, n_panels, strict=True):
         sub: _Array = np.linspace(float(a), float(b), int(max(n, 1.0)) + 1)
         panel_lo.append(sub[:-1])
         panel_hi.append(sub[1:])
-    lo, hi = np.concatenate(panel_lo), np.concatenate(panel_hi)
+    return np.concatenate(panel_lo), np.concatenate(panel_hi)
+
+
+def _hazard_panels(
+    birth: ResolvedRate,
+    death: ResolvedRate,
+    edges: set[float],
+    singular: set[float],
+) -> tuple[_Array, _Array]:
+    """Panels of the generic (hazard) path for the edge set ``edges``.
+
+    The edges are graded geometrically to the right of each singular point; each
+    edge interval is split into ``ceil((dLambda + dM) / _PANEL_EXPONENT)`` panels,
+    which bounds the change of the exponent within a panel even when
+    ``lambda - mu`` changes sign.
+    """
+    grid = np.asarray(_graded_edges(sorted(edges), singular), dtype=np.float64)
+    lows, highs = grid[:-1], grid[1:]
+    n_panels = np.ceil(
+        (_between(birth, lows, highs) + _between(death, lows, highs)) / _PANEL_EXPONENT
+    )
+    return _split_panels(lows, highs, n_panels)
+
+
+def _rate_panels(
+    birth: Rate, death: Rate, edges: _Array, *, sign: float
+) -> tuple[_Array, _Array]:
+    """Panels of the :class:`Rate` path for the sorted unique ``edges``.
+
+    Each edge interval gets ``ceil(max |sign (lambda - mu)| at its ends * width /
+    _PANEL_EXPONENT)`` panels, the rates being read ``PANEL_EDGE_OFFSET`` inside.
+    """
+    lows, highs = edges[:-1], edges[1:]
+
+    def rate_at(x: _Array) -> _Array:
+        return sign * (value(birth, x) - value(death, x))
+
+    d_lo, d_hi = (
+        np.abs(rate_at(lows + PANEL_EDGE_OFFSET)),
+        np.abs(rate_at(highs - PANEL_EDGE_OFFSET)),
+    )
+    n_panels = np.ceil(np.maximum(d_lo, d_hi) * (highs - lows) / _PANEL_EXPONENT)
+    return _split_panels(lows, highs, n_panels)
+
+
+def _panel_log_f(
+    weight: ResolvedRate,
+    birth: ResolvedRate,
+    death: ResolvedRate,
+    lo: _Array,
+    hi: _Array,
+    *,
+    sign: float,
+) -> _Array:
+    """Log of the weighted quadrature terms, shape ``(n_panels, n_nodes)``."""
     half = 0.5 * (hi - lo)
     x = (0.5 * (lo + hi))[:, None] + half[:, None] * _NODES
     exponent = sign * (cumulative(birth, x) - cumulative(death, x))
     with np.errstate(divide="ignore"):
         log_w = np.log(value(weight, x))
-    log_f = log_w + exponent + np.log(half[:, None] * _WEIGHTS)
-    return float(np.logaddexp.reduce(log_f.ravel()))
+    return log_w + exponent + np.log(half[:, None] * _WEIGHTS)
+
+
+def _panels(
+    weight: ResolvedRate,
+    birth: ResolvedRate,
+    death: ResolvedRate,
+    horizon: float,
+    points: list[float],
+    *,
+    sign: float,
+) -> tuple[_Array, _Array]:
+    """Panel ends covering ``[0, horizon]`` with ``points`` (and ``0``) as edges."""
+    rates = (weight, birth, death)
+    if all(isinstance(r, Rate) for r in rates):
+        edges = np.unique(
+            np.concatenate(
+                [
+                    [0.0, *points],
+                    *(r.ends[r.ends < horizon] for r in rates if isinstance(r, Rate)),
+                ]
+            )
+        )
+        assert isinstance(birth, Rate)
+        assert isinstance(death, Rate)
+        return _rate_panels(birth, death, edges, sign=sign)
+    edge_set = {0.0, *points}.union(*(_edges_of(r, horizon) for r in rates))
+    singular = {p for r in rates for p in _singular_of(r) if 0.0 <= p < horizon}
+    return _hazard_panels(birth, death, edge_set, singular)
 
 
 def log_integral(
@@ -264,47 +326,45 @@ def log_integral(
     (``docs/splitting.md``, sections "Linear (time-varying) rates" and "Closed
     form and the mean number born").
     The panels are described in the module docstring.
-    If any of the three is a :class:`~bdsurv.hazards.Hazard`, the generic
-    quadrature :func:`_log_integral_generic` is used instead.
+    If any of the three is a :class:`~bdsurv.hazards.Hazard`, the edges are graded
+    towards singular points (:func:`_hazard_panels`) instead.
     """
     if t <= 0.0:
         return -math.inf
-    if not (
-        isinstance(weight, Rate) and isinstance(birth, Rate) and isinstance(death, Rate)
-    ):
-        return _log_integral_generic(weight, birth, death, t, sign=sign)
-    edges = np.unique(
-        np.concatenate(
-            [
-                [0.0, t],
-                *(r.ends[r.ends < t] for r in (weight, birth, death)),
-            ]
-        )
-    )
-    lows, highs = edges[:-1], edges[1:]
-
-    def rate_at(x: _Array) -> _Array:
-        return sign * (value(birth, x) - value(death, x))
-
-    d_lo, d_hi = (
-        np.abs(rate_at(lows + PANEL_EDGE_OFFSET)),
-        np.abs(rate_at(highs - PANEL_EDGE_OFFSET)),
-    )
-    n_panels = np.ceil(np.maximum(d_lo, d_hi) * (highs - lows) / _PANEL_EXPONENT)
-    panel_lo: list[_Array] = []
-    panel_hi: list[_Array] = []
-    for a, b, n in zip(lows, highs, n_panels, strict=True):
-        grid: _Array = np.linspace(float(a), float(b), int(max(n, 1.0)) + 1)
-        panel_lo.append(grid[:-1])
-        panel_hi.append(grid[1:])
-    lo, hi = np.concatenate(panel_lo), np.concatenate(panel_hi)
-    half = 0.5 * (hi - lo)
-    x = (0.5 * (lo + hi))[:, None] + half[:, None] * _NODES
-    exponent = sign * (cumulative(birth, x) - cumulative(death, x))
-    with np.errstate(divide="ignore"):
-        log_w = np.log(value(weight, x))
-    log_f = log_w + exponent + np.log(half[:, None] * _WEIGHTS)
+    lo, hi = _panels(weight, birth, death, t, [t], sign=sign)
+    log_f = _panel_log_f(weight, birth, death, lo, hi, sign=sign)
     return float(np.logaddexp.reduce(log_f.ravel()))
+
+
+def log_integral_curve(
+    weight: ResolvedRate,
+    birth: ResolvedRate,
+    death: ResolvedRate,
+    times: _Array,
+    *,
+    sign: float,
+) -> _Array:
+    r"""Return $\ln \int_0^t w e^{\mathrm{sign}\,\Gamma}$ at every ``t`` in ``times``.
+
+    ``times`` is a sorted, unique, one-dimensional array.
+    The panels cover ``[0, max(times)]`` once, with every positive time an edge;
+    the running log-sum over panels is read at the panel ending at each time, so
+    the cost is that of a single :func:`log_integral` at ``max(times)`` and each
+    value agrees with it to rounding.
+    The value is ``-inf`` for ``t <= 0``.
+    """
+    out = np.full(times.shape, -np.inf)
+    positive = times > 0.0
+    if not positive.any():
+        return out
+    t_pos = times[positive]
+    lo, hi = _panels(
+        weight, birth, death, float(t_pos[-1]), [float(x) for x in t_pos], sign=sign
+    )
+    log_f = _panel_log_f(weight, birth, death, lo, hi, sign=sign)
+    running = np.logaddexp.accumulate(np.logaddexp.reduce(log_f, axis=1))
+    out[positive] = running[np.searchsorted(hi, t_pos)]
+    return out
 
 
 def log_survival_probability_constant(
@@ -410,6 +470,17 @@ def log_mean_cumulative_individuals(
     if t <= 0.0:
         return 0.0
     return float(np.logaddexp(0.0, log_integral(birth, birth, death, t, sign=1.0)))
+
+
+def log_mean_cumulative_individuals_curve(
+    birth: ResolvedRate, death: ResolvedRate, times: _Array
+) -> _Array:
+    r"""Return $\ln\left(1 + \int_0^t \lambda e^{\Gamma}\right)$ at each ``t``.
+
+    Equal to :func:`log_mean_cumulative_individuals` at each time (and exactly 0
+    at ``t = 0``), from one panelled pass (:func:`log_integral_curve`).
+    """
+    return np.logaddexp(0.0, log_integral_curve(birth, birth, death, times, sign=1.0))
 
 
 def mean_cumulative_individuals(

@@ -1,6 +1,7 @@
 """Test the public survival probability against analytic and numerical values."""
 
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -8,9 +9,11 @@ from scipy import integrate
 
 import bdsurv
 from bdsurv import (
+    GompertzHazard,
     PiecewiseConstant,
     PiecewiseLinear,
     log_mean_cumulative_individuals,
+    log_mean_cumulative_individuals_curve,
     log_survival_probability,
 )
 
@@ -227,3 +230,94 @@ class TestMeanCumulativeIndividuals:
     def test_is_exported_from_the_top_level_package(self) -> None:
         assert bdsurv.log_mean_cumulative_individuals is log_mean_cumulative_individuals
         assert "log_mean_cumulative_individuals" in bdsurv.__all__, "not in __all__"
+
+
+class TestLogMeanCumulativeIndividualsCurve:
+    """Test the vectorised curve against the scalar function."""
+
+    @staticmethod
+    def _assert_matches_scalar(
+        birth: object, death: object, times: list[float], terminal_time: float | None
+    ) -> None:
+        curve = log_mean_cumulative_individuals_curve(
+            birth,  # pyright: ignore[reportArgumentType]
+            death,  # pyright: ignore[reportArgumentType]
+            times,
+            terminal_time,
+        )
+        expected = [
+            log_mean_cumulative_individuals(
+                birth,  # pyright: ignore[reportArgumentType]
+                death,  # pyright: ignore[reportArgumentType]
+                t,
+                terminal_time,
+            )
+            for t in times
+        ]
+        np.testing.assert_allclose(curve, expected, rtol=1e-10, atol=1e-12)
+
+    def test_constant_floats_match_the_scalar(self) -> None:
+        times = [0.0, 0.3, 1.0, 2.5, 7.0, 10.0]
+        self._assert_matches_scalar(1.3, 0.4, times, 10.0)
+        self._assert_matches_scalar(0.5, 1.2, times, 10.0)
+
+    def test_piecewise_constant_matches_the_scalar(self) -> None:
+        birth = PiecewiseConstant([1.0, 0.4], [3.0, 8.0])
+        death = PiecewiseConstant([0.2, 0.9], [4.0, 8.0])
+        self._assert_matches_scalar(
+            birth, death, [0.0, 1.0, 3.0, 3.5, 4.0, 6.0, 8.0], None
+        )
+
+    def test_piecewise_linear_with_zero_birth_segment_matches_the_scalar(self) -> None:
+        birth = PiecewiseLinear([1.0, 0.0, 0.0], [0.5, 0.0, 0.6], [2.0, 5.0, 8.0])
+        death = PiecewiseLinear([0.3], [1.1], [8.0])
+        self._assert_matches_scalar(
+            birth, death, [0.0, 0.7, 2.0, 3.5, 5.0, 6.5, 8.0], None
+        )
+
+    def test_hazard_matches_the_scalar(self) -> None:
+        death = GompertzHazard(0.01, 0.05)
+        self._assert_matches_scalar(0.4, death, [0.0, 1.0, 4.5, 7.0, 10.0], 10.0)
+
+    def test_unsorted_and_duplicate_times_keep_their_order(self) -> None:
+        times = [5.0, 1.0, 5.0, 0.0, 3.0, 1.0]
+        curve = log_mean_cumulative_individuals_curve(1.1, 0.6, times, 5.0)
+        assert curve.shape == (6,)
+        for value, t in zip(curve, times, strict=True):
+            assert value == pytest.approx(
+                log_mean_cumulative_individuals(1.1, 0.6, t, 5.0), rel=1e-10, abs=1e-12
+            )
+
+    def test_t_zero_gives_exactly_zero(self) -> None:
+        curve = log_mean_cumulative_individuals_curve(1.0, 1.5, [0.0, 0.0])
+        assert curve.tolist() == [0.0, 0.0]
+
+    def test_zero_birth_gives_all_zeros(self) -> None:
+        curve = log_mean_cumulative_individuals_curve(0.0, 0.7, [0.0, 1.0, 3.0])
+        assert curve.tolist() == [0.0, 0.0, 0.0]
+
+    def test_large_t_is_finite_without_warnings(self) -> None:
+        times = np.linspace(0.0, 600.0, 13)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            curve = log_mean_cumulative_individuals_curve(0.5, 0.0, times)
+        assert np.isfinite(curve).all()
+        expected = 0.5 * times  # log(1 + (e^{0.5 t} - 1)) = 0.5 t
+        np.testing.assert_allclose(curve[1:], expected[1:], rtol=1e-6)
+
+    @pytest.mark.parametrize("times", [[0.5, -0.1], [1.0, math.nan], [math.inf], []])
+    def test_bad_times_raise(self, times: list[float]) -> None:
+        with pytest.raises(ValueError, match="times must"):
+            log_mean_cumulative_individuals_curve(1.0, 1.5, times, 5.0)
+
+    def test_t_beyond_the_horizon_raises(self) -> None:
+        rate = PiecewiseConstant([1.0], [3.0])
+        with pytest.raises(ValueError, match="t must lie in"):
+            log_mean_cumulative_individuals_curve(rate, rate, [1.0, 3.5])
+
+    def test_is_exported_from_the_top_level_package(self) -> None:
+        assert (
+            bdsurv.log_mean_cumulative_individuals_curve
+            is log_mean_cumulative_individuals_curve
+        )
+        assert "log_mean_cumulative_individuals_curve" in bdsurv.__all__

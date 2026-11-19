@@ -7,7 +7,7 @@ abstract: >-
 authors:
   - family-names: "Cumming"
     given-names: "Jacob"
-version: "0.1.0"
+version: "0.7.0"
 license: MIT
 repository-code: "https://github.com/jaycrick/bdsurv"
-date-released: "2026-09-03"
+date-released: "2026-11-20"

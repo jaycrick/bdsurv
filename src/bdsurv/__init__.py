@@ -50,7 +50,8 @@ Era-conditioned sampling for multi-epoch processes (see
 ``log_survival_probability`` is the probability that a process started from one
 individual is not extinct at a given time.
 ``log_mean_cumulative_individuals`` is the log of the expected number of
-individuals ever born by a given time, the root included.
+individuals ever born by a given time, the root included;
+``log_mean_cumulative_individuals_curve`` evaluates it at many times in one pass.
 ``count_draws`` counts the random draws a block of code makes.
 
 The methods rest on published work; see ``docs/references.md``.
@@ -127,6 +128,7 @@ from bdsurv.splitting import (  # noqa: E402
 )
 from bdsurv.survival import (  # noqa: E402
     log_mean_cumulative_individuals,
+    log_mean_cumulative_individuals_curve,
     log_survival_probability,
 )
 from bdsurv.tree import SimulatedTree  # noqa: E402
@@ -163,6 +165,7 @@ __all__ = [
     "count_draws",
     "default_max_restarts",
     "log_mean_cumulative_individuals",
+    "log_mean_cumulative_individuals_curve",
     "log_survival_probability",
     "sample_conditioned_survival_per_posterior",
     "sample_conditioned_survival_process",

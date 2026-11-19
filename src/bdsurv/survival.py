@@ -9,13 +9,23 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+from numpy.typing import ArrayLike, NDArray
+
 from bdsurv._hazard import (
     log_mean_cumulative_individuals as _log_mean_cumulative_individuals,
+)
+from bdsurv._hazard import (
+    log_mean_cumulative_individuals_curve as _log_mean_cumulative_individuals_curve,
 )
 from bdsurv._hazard import log_survival_probability as _log_survival_probability
 from bdsurv.rates import RateInput, ResolvedRate, resolve_rates
 
-__all__ = ["log_mean_cumulative_individuals", "log_survival_probability"]
+__all__ = [
+    "log_mean_cumulative_individuals",
+    "log_mean_cumulative_individuals_curve",
+    "log_survival_probability",
+]
 
 
 def _resolve(
@@ -154,3 +164,65 @@ def log_mean_cumulative_individuals(
     """
     birth, death = _resolve(birth_rate, death_rate, t, terminal_time)
     return _log_mean_cumulative_individuals(birth, death, t)
+
+
+def log_mean_cumulative_individuals_curve(
+    birth_rate: RateInput,
+    death_rate: RateInput,
+    times: ArrayLike,
+    terminal_time: float | None = None,
+) -> NDArray[np.float64]:
+    r"""Return :func:`log_mean_cumulative_individuals` at every time in ``times``.
+
+    The process starts from one individual at time 0, with per-individual birth
+    rate $\lambda$ and death rate $\mu$, and is not conditioned on survival.
+    Element $i$ is the log of
+
+    $$
+    1 + \int_0^{t_i} \lambda(s) e^{\Gamma(s)} ds, \quad
+    \Gamma(s) = \int_0^s (\lambda - \mu),
+    $$
+
+    derived in ``docs/splitting.md``, section "Closed form and the mean number
+    born".
+    The panels of the quadrature are built once over ``[0, max(times)]`` with
+    every time an edge, so the whole curve costs about one scalar call at the
+    largest time; each element agrees with the scalar function to rounding.
+
+    Parameters
+    ----------
+    birth_rate, death_rate
+        Per-individual rates, as in :func:`log_mean_cumulative_individuals`.
+    times
+        One-dimensional array-like of finite, non-negative times, each at most
+        ``T``, in any order; duplicates are allowed.
+    terminal_time
+        The horizon ``T``.
+        When both rates are floats it defaults to ``max(times)``; otherwise it
+        must be ``None`` or equal to the end time of the rate-likes.
+
+    Returns
+    -------
+    numpy.ndarray
+        Float array aligned with ``times``; each entry is at least 0, and
+        exactly 0 at ``t = 0`` or when the birth rate is zero.
+
+    Raises
+    ------
+    ValueError
+        If ``times`` is empty or not one-dimensional, any time is negative, not
+        finite or beyond ``T``, a rate is invalid, the rate-likes differ in end
+        time, or ``terminal_time`` is invalid or does not match the rates.
+
+    """
+    t = np.asarray(times, dtype=np.float64)
+    if t.ndim != 1 or t.size == 0:
+        msg = f"times must be a non-empty 1-D array, got shape {t.shape}"
+        raise ValueError(msg)
+    if not np.isfinite(t).all() or (t < 0.0).any():
+        msg = "times must be finite and non-negative (t must lie in [0, T])"
+        raise ValueError(msg)
+    birth, death = _resolve(birth_rate, death_rate, float(t.max()), terminal_time)
+    unique, inverse = np.unique(t, return_inverse=True)
+    curve = _log_mean_cumulative_individuals_curve(birth, death, unique)
+    return curve[inverse]

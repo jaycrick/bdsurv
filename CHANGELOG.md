@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-20
+
+### Added
+
+- `log_mean_cumulative_individuals_curve(birth_rate, death_rate, times, terminal_time=None)` is exported from `bdsurv` (it lives in `bdsurv.survival`) and returns `log_mean_cumulative_individuals` at every time in `times` (any order, duplicates allowed, output aligned with the input) from one panelled quadrature pass over `[0, max(times)]` with each time an edge, instead of one integral per time.
+  Each element agrees with the scalar function to rounding; it accepts the same rates, including a `Hazard`.
+
 ## [0.6.0] - 2026-11-19
 
 ### Added
