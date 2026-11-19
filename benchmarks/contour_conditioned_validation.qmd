@@ -43,7 +43,9 @@ from bdsurv import (
     simulate_contour_given_population,
 )
 from bdsurv import _hazard as lm
-from bdsurv.contour_conditioned import _log_spine_weights, _log_survival_pair
+from bdsurv._seeding import root_rng
+from bdsurv.contour import Walker
+from bdsurv.contour_conditioned import _log_spine_weights, _log_survival_pair, _spine_piece
 from bdsurv.rates import Rate, as_rate
 
 
@@ -520,6 +522,83 @@ The rows are: (a) ALG1 with $n = 1$; (b) ALG1 with $n = 3$; (c) ALG2 with ages 1
 ```{python}
 #| label: direction-table
 show(pd.DataFrame(dir_rows))
+```
+
+## The peak before the spine's valley
+
+The spine piece ends $(\dots, p, b, T)$, where $b = T - a$ is the valley of the spine survivor.
+The third-last entry, the peak $p$ just before $b$, is a continuous value in $(b, T)$.
+With the same rates and the same $b$, the direct start from $(T, b)$ and the cut at the last down-crossing of $b$
+must give $p$ the same distribution.
+Here `_spine_piece` is called directly, so nothing else (spine choice, other excursions) enters.
+
+The same pieces give a second, discrete check: the number of times the piece steps down through the level $b$
+(a down-step from a peak above $b$ to a valley at or below $b$, so the final step to $b$ counts).
+It is at least 1, and compared between the two methods with a chi-squared test on the counts
+(counts of 4 or more are pooled).
+
+```{python}
+#| label: spine-peak
+SPINE_AGES = (0.7, 1.9, 2.6)  # valleys b = 2.3, 1.1, 0.4
+N_PEAK = 10_000  # draws per method; more than N, as the crossing counts are discrete
+
+
+def spine_peak(case: str, age: float, seed: int, prefer_top: bool) -> tuple[float, int]:
+    birth, death = rate_pair(case)
+    walker = Walker(birth, death, T, root_rng(seed, "contour"))
+    piece = _spine_piece(walker, T - age, prefer_top=prefer_top)
+    assert piece[-1] == T and math.isclose(piece[-2], T - age)  # noqa: S101
+    level = piece[-2]
+    crossings = sum(
+        piece[j] > level >= piece[j + 1] for j in range(1, len(piece) - 1, 2)
+    )
+    return piece[-3], crossings
+
+
+peak_frames, peak_rows, cross_rows = [], [], []
+for k, case in enumerate(CASES):
+    for j, age in enumerate(SPINE_AGES):
+        seed0 = 11 * 10**7 + 10**6 * (3 * k + j)  # N_PEAK < 10**5, so seeds stay disjoint
+        top_draws = [spine_peak(case, age, seed0 + i, True) for i in range(N_PEAK)]
+        bottom_draws = [spine_peak(case, age, seed0 + 10**5 + i, False) for i in range(N_PEAK)]
+        top = [d[0] for d in top_draws]
+        bottom = [d[0] for d in bottom_draws]
+        pooled = lambda draws: np.bincount(np.minimum([d[1] for d in draws], 4), minlength=5)[1:]  # noqa: E731
+        table = np.array([pooled(top_draws), pooled(bottom_draws)])
+        table = table[:, table.sum(axis=0) > 0]
+        p_cross = record(
+            "Spine piece, crossings of b", case, f"age {age}", stats.chi2_contingency(table).pvalue
+        )
+        cross_rows.append({"Case": case, "Spine age": age,
+                           "Counts 1, 2, 3, 4+ (top)": " ".join(map(str, table[0])),
+                           "Counts 1, 2, 3, 4+ (bottom)": " ".join(map(str, table[1])),
+                           "Chi-squared p-value": p_cross})
+        p = record(
+            "Spine piece, peak before valley", case, f"age {age}", stats.ks_2samp(top, bottom).pvalue
+        )
+        peak_rows.append({"Case": case, "Spine age": age, "Valley b": T - age,
+                          "Mean peak, top": np.mean(top), "Mean peak, bottom": np.mean(bottom),
+                          "KS p-value": p})
+        peak_frames.append(ecdf(top, source=TOP, case=case, age=f"age {age}"))
+        peak_frames.append(ecdf(bottom, source=BOTTOM, case=case, age=f"age {age}"))
+
+figure = ecdf_chart(pd.concat(peak_frames), "Peak before the spine's valley", "age")
+save_fig(figure, "spine_peak_top_bottom")
+figure
+```
+
+The solid line is the direct start from the top and the dashed line the cut from the bottom.
+
+```{python}
+#| label: spine-peak-table
+show(pd.DataFrame(peak_rows))
+```
+
+The numbers of crossings of $b$:
+
+```{python}
+#| label: spine-crossings-table
+show(pd.DataFrame(cross_rows))
 ```
 
 ## Composition of the two simulators
