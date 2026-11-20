@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-20
+
 ### Added
 
 - `CubicHazard(a, b, c, d)` in `bdsurv.hazards` (exported from `bdsurv`): hazard $a + bt + ct^2 + dt^3$, inverted by Brent's method, with exact non-negativity checks.
