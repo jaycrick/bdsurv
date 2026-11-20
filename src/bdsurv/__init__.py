@@ -10,7 +10,8 @@ rate-like that is piecewise constant (:class:`PiecewiseConstant`,
 :class:`ConstantRateLike`) or piecewise linear (:class:`PiecewiseLinear`,
 :class:`LinearRateLike`) in time over ``[0, T]``, or a :class:`Hazard` object:
 :class:`PowerHazard` (Weibull, Rayleigh), :class:`GompertzHazard`,
-:class:`LogLogisticHazard`, :class:`LomaxHazard`, :class:`QuadraticHazard`, or a
+:class:`LogLogisticHazard`, :class:`LomaxHazard`, :class:`QuadraticHazard`,
+:class:`CubicHazard`, or a
 :class:`PiecewiseHazard` that composes them over epochs (see ``docs/hazards.md``).
 Rates are finite and non-negative.
 ``terminal_time`` is required unless a rate fixes the end time: a
@@ -94,6 +95,7 @@ from bdsurv.era_conditioning import (  # noqa: E402
 )
 from bdsurv.forward import simulate_birth_death  # noqa: E402
 from bdsurv.hazards import (  # noqa: E402
+    CubicHazard,
     GompertzHazard,
     Hazard,
     HazardInversionError,
@@ -140,6 +142,7 @@ __all__ = [
     "ConditionedSurvivalResult",
     "ConditionedTrajectory",
     "ConstantRateLike",
+    "CubicHazard",
     "DrawCounts",
     "EraConditioningDiagnostic",
     "GompertzHazard",

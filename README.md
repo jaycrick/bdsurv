@@ -25,7 +25,7 @@ Rate objects must share one end time, which is the terminal time `T`, so
 `terminal_time` is required when both rates are floats and otherwise may be
 omitted.
 A rate can also be a `Hazard`: `PowerHazard` (with `PowerHazard.weibull` and `PowerHazard.rayleigh`),
-`GompertzHazard`, `LogLogisticHazard`, `LomaxHazard`, `QuadraticHazard`, or a `PiecewiseHazard`
+`GompertzHazard`, `LogLogisticHazard`, `LomaxHazard`, `QuadraticHazard`, `CubicHazard`, or a `PiecewiseHazard`
 that composes them over epochs in local time.
 Event times are drawn by exact left-truncated inversion of the cumulative hazard, in closed form where
 one exists and by Brent's method otherwise (`docs/hazards.md`).

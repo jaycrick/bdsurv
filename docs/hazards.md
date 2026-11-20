@@ -60,6 +60,7 @@ The array methods accept array-likes and return `float64` arrays; the scalar met
 | `LogLogisticHazard(shape, scale)` | $\dfrac{(k/\eta)(t/\eta)^{k-1}}{1 + (t/\eta)^k}$ | $\mathrm{log1p}((t/\eta)^k)$ | `shape` $k$, `scale` $\eta$ positive | direct | $0$ if $k < 1$ | no |
 | `LomaxHazard(shape, scale)` | $k/(\eta + t)$ | $k\,\mathrm{log1p}(t/\eta)$ | `shape` $k$, `scale` $\eta$ positive | direct | none | no |
 | `QuadraticHazard(a, b, c)` | $a + b t + c t^2$ | $a t + b t^2/2 + c t^3/3$ | $a \ge 0$, $b$, $c$ finite | Brent | none | no |
+| `CubicHazard(a, b, c, d)` | $a + b t + c t^2 + d t^3$ | $a t + b t^2/2 + c t^3/3 + d t^4/4$ | $a \ge 0$, $b$, $c$, $d$ finite | Brent | none | no |
 | `PiecewiseHazard(pieces, epoch_end_times)` | piece $k$ in local time | sum over epochs | one `Hazard` per epoch; ends positive, strictly increasing | direct iff every piece is | the pieces', shifted | no |
 
 Parameters are validated at construction (`ValueError`, messages of the form "`name` must be positive and finite").
@@ -98,7 +99,7 @@ The offset is clipped to $[0, x]$.
 
 ## Brent fallback
 
-A hazard without a direct sampler (`QuadraticHazard`, or a user subclass) inverts with `scipy.optimize.brentq` (`bdsurv._invert`).
+A hazard without a direct sampler (`QuadraticHazard`, `CubicHazard`, or a user subclass) inverts with `scipy.optimize.brentq` (`bdsurv._invert`).
 The solved function is $g(r) = H(t_0 + r) - H(t_0) - e$, evaluated through `cumulative_between` so that the stable form is used.
 
 Forward:
@@ -142,10 +143,17 @@ The backward walk is the mirror image.
 Past the last epoch the forward walk finds no event.
 `hazard` and `cumulative_hazard` clip $t$ to $[0, \tau_{\mathrm{last}}]$.
 
+`PiecewiseHazard.from_polynomials(coefficients, epoch_end_times)` builds piecewise-polynomial hazards.
+Row $k$ gives $(a, b, c, d)$ in increasing power order, in the local time $u = t - \tau_{k-1}$.
+A row may have one to four entries.
+A row with $d = 0$ becomes a `QuadraticHazard`; otherwise a `CubicHazard`.
+This is how a spline rate is passed to the simulators.
+
 ## Non-negativity
 
 `check_nonnegative(end_time)` is called by `resolve_rates` (with $T$) and by `sample_residual_lifetimes` (when `end_time` is finite).
 `QuadraticHazard` checks $h(0)$, $h(T)$ and the vertex $-b/(2c)$ if it lies in $(0, T)$, with a small relative tolerance.
+`CubicHazard` checks $h(0)$, $h(T)$ and the real roots of $h'$ that lie in $(0, T)$, with the same tolerance.
 Standalone and uncapped it needs $h \ge 0$ on $[0, \infty)$.
 The other families are non-negative by their parameter constraints.
 

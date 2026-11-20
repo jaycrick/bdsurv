@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `CubicHazard(a, b, c, d)` in `bdsurv.hazards` (exported from `bdsurv`): hazard $a + bt + ct^2 + dt^3$, inverted by Brent's method, with exact non-negativity checks.
+- `PiecewiseHazard.from_polynomials(coefficients, epoch_end_times)` builds a piecewise hazard from local-time polynomial coefficients (one to four per epoch), using `QuadraticHazard` or `CubicHazard` pieces.
+
 ## [0.7.0] - 2026-11-20
 
 ### Added

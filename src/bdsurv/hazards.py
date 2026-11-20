@@ -13,7 +13,8 @@ Subclasses with a closed-form inverse override them and set
 Families with a direct (closed-form) sampler:
 :class:`PowerHazard` (with ``weibull`` and ``rayleigh``),
 :class:`GompertzHazard`, :class:`LogLogisticHazard` and :class:`LomaxHazard`.
-Families that invert by Brent's method: :class:`QuadraticHazard`.
+Families that invert by Brent's method: :class:`QuadraticHazard` and
+:class:`CubicHazard`.
 :class:`PiecewiseHazard` walks its epochs and uses each piece's own method, so it
 is direct only if every piece is.
 
@@ -41,6 +42,7 @@ from bdsurv._seeding import root_rng
 from bdsurv.rates import check_epoch_ends
 
 __all__ = [
+    "CubicHazard",
     "GompertzHazard",
     "Hazard",
     "HazardInversionError",
@@ -623,6 +625,140 @@ class QuadraticHazard(Hazard):
         return f"QuadraticHazard(a={self.a!r}, b={self.b!r}, c={self.c!r})"
 
 
+@dataclass(frozen=True)
+class CubicHazard(Hazard):
+    r"""Cubic hazard $h(t) = a + b\,t + c\,t^2 + d\,t^3$, with $a \ge 0$.
+
+    The cumulative hazard is $H(t) = a\,t + b\,t^2/2 + c\,t^3/3 + d\,t^4/4$.
+    There is no direct sampler: the inversion is by Brent's method.
+
+    As for :class:`QuadraticHazard`, the hazard need only be non-negative on
+    the window that is used (:meth:`check_nonnegative`).
+    The uncapped :meth:`forward_offsets` needs non-negativity on
+    $[0, \infty)$ (:attr:`nonnegative_on_half_line`).
+
+    Parameters
+    ----------
+    a
+        Hazard at time 0; finite and non-negative.
+    b
+        Linear coefficient; finite.
+    c
+        Quadratic coefficient; finite.
+    d
+        Cubic coefficient; finite.
+    """
+
+    a: float
+    b: float
+    c: float
+    d: float
+
+    has_direct_sampler: ClassVar[bool] = False
+
+    def __post_init__(self) -> None:
+        """Validate the parameters."""
+        if not all(math.isfinite(v) for v in (self.a, self.b, self.c, self.d)):
+            msg = "a, b, c and d must be finite"
+            raise ValueError(msg)
+        if self.a < 0.0:
+            msg = "a must be non-negative"
+            raise ValueError(msg)
+
+    def _critical_points(self) -> list[float]:
+        """Real roots of ``h'(t) = b + 2 c t + 3 d t^2``."""
+        b, c, d = self.b, self.c, self.d
+        if d == 0.0:
+            return [] if c == 0.0 else [-b / (2.0 * c)]
+        disc = c * c - 3.0 * d * b
+        if disc < 0.0:
+            return []
+        root = math.sqrt(disc)
+        # Avoid cancellation: q carries the sign of -c.
+        q = -(c + math.copysign(root, c)) if c != 0.0 else -root
+        points = [q / (3.0 * d)]
+        if q != 0.0:
+            points.append(b / q)
+        else:
+            points.append(-q / (3.0 * d))
+        return points
+
+    @property
+    def nonnegative_on_half_line(self) -> bool:
+        """Whether ``h >= 0`` on ``[0, inf)``."""
+        if self.d < 0.0:
+            return False
+        if self.d == 0.0 and self.c < 0.0:
+            return False
+        points = [t for t in self._critical_points() if t > 0.0]
+        scale = abs(self.a) + sum(
+            abs(v) * t**k for t in points for k, v in ((1, self.b), (2, self.c))
+        )
+        if self.d == 0.0 and self.c == 0.0:
+            return self.b >= 0.0
+        return all(float(self.hazard(t)) >= -1e-12 * scale for t in points)
+
+    def check_nonnegative(self, end_time: float) -> None:
+        """Raise ``ValueError`` if ``h < 0`` somewhere on ``[0, end_time]``."""
+        times = [0.0, end_time]
+        times.extend(t for t in self._critical_points() if 0.0 < t < end_time)
+        scale = (
+            abs(self.a)
+            + abs(self.b) * end_time
+            + abs(self.c) * end_time**2
+            + abs(self.d) * end_time**3
+        )
+        for t in times:
+            value = float(self.hazard(t))
+            if value < -1e-12 * scale:
+                msg = f"{self!r} is negative on [0, end_time]: h({t!r}) = {value!r}"
+                raise ValueError(msg)
+
+    def hazard(self, t: ArrayLike) -> _Array:
+        """Hazard ``a + b t + c t^2 + d t^3``."""
+        tt = _arr(t)
+        return self.a + tt * (self.b + tt * (self.c + self.d * tt))
+
+    def cumulative_hazard(self, t: ArrayLike) -> _Array:
+        """Cumulative hazard ``a t + b t^2 / 2 + c t^3 / 3 + d t^4 / 4``."""
+        tt = _arr(t)
+        return tt * (
+            self.a + tt * (self.b / 2.0 + tt * (self.c / 3.0 + self.d * tt / 4.0))
+        )
+
+    def cumulative_between(self, s: ArrayLike, e: ArrayLike) -> _Array:
+        """``H(e) - H(s)`` as ``(e - s)`` times a mean of ``h``."""
+        ss, ee = np.broadcast_arrays(_arr(s), _arr(e))
+        mean = (
+            self.a
+            + self.b * (ee + ss) / 2.0
+            + self.c * (ee * ee + ee * ss + ss * ss) / 3.0
+            + self.d * (ee + ss) * (ee * ee + ss * ss) / 4.0
+        )
+        return (ee - ss) * mean
+
+    def forward_offsets(self, t0: ArrayLike, e: ArrayLike) -> _Array:
+        """Offsets ``R`` by Brent; needs ``h >= 0`` on ``[0, inf)``."""
+        if not self.nonnegative_on_half_line:
+            msg = (
+                f"{self!r} is not non-negative on [0, inf); "
+                "use a capped forward_time or an end_time"
+            )
+            raise ValueError(msg)
+        return self.forward_offsets_numerical(t0, e)
+
+    def backward_offsets(self, x: ArrayLike, e: ArrayLike) -> _Array:
+        """Offsets ``D`` by Brent; needs ``h >= 0`` on ``[0, max(x)]``."""
+        xx = _arr(x)
+        if xx.size:
+            self.check_nonnegative(float(np.max(xx)))
+        return self.backward_offsets_numerical(x, e)
+
+    def __repr__(self) -> str:
+        """Return ``Name(param=value, ...)``."""
+        return f"CubicHazard(a={self.a!r}, b={self.b!r}, c={self.c!r}, d={self.d!r})"
+
+
 class PiecewiseHazard(Hazard):
     r"""A hazard made of one :class:`Hazard` per epoch, in local time.
 
@@ -678,6 +814,44 @@ class PiecewiseHazard(Hazard):
         self._py_ends = [float(v) for v in ends]
         self._py_starts = [float(v) for v in starts]
         self._py_lengths = [float(v) for v in lengths]
+
+    @classmethod
+    def from_polynomials(
+        cls,
+        coefficients: Sequence[Sequence[float]],
+        epoch_end_times: ArrayLike,
+    ) -> PiecewiseHazard:
+        r"""Build a piecewise-polynomial hazard from local-time coefficients.
+
+        Row $k$ holds $(a, b, c, d)$ in increasing power order, so piece $k$ is
+        $a + b u + c u^2 + d u^3$ at the local time $u = t - \tau_{k-1}$.
+        A row may be shorter (length 1 to 4); missing coefficients are zero.
+        The simplest valid piece class is used: a :class:`QuadraticHazard` if
+        the cubic coefficient is zero, otherwise a :class:`CubicHazard`.
+
+        Parameters
+        ----------
+        coefficients
+            One row of one to four coefficients per epoch.
+        epoch_end_times
+            Epoch end times, as for :class:`PiecewiseHazard`.
+        """
+        ends = np.atleast_1d(np.asarray(epoch_end_times, dtype=np.float64))
+        rows = [np.asarray(r, dtype=np.float64) for r in coefficients]
+        if len(rows) != ends.size:
+            msg = "coefficients must have one row per epoch end time"
+            raise ValueError(msg)
+        pieces: list[Hazard] = []
+        for k, row in enumerate(rows):
+            if row.ndim != 1 or not 1 <= row.size <= 4:
+                msg = f"coefficients row {k} must have between 1 and 4 entries"
+                raise ValueError(msg)
+            a, b, c, d = (*row.tolist(), 0.0, 0.0, 0.0)[:4]
+            if d == 0.0:
+                pieces.append(QuadraticHazard(a, b, c))
+            else:
+                pieces.append(CubicHazard(a, b, c, d))
+        return cls(pieces, ends)
 
     @property
     def pieces(self) -> tuple[Hazard, ...]:
