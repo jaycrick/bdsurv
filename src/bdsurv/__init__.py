@@ -11,7 +11,7 @@ rate-like that is piecewise constant (:class:`PiecewiseConstant`,
 :class:`LinearRateLike`) in time over ``[0, T]``, or a :class:`Hazard` object:
 :class:`PowerHazard` (Weibull, Rayleigh), :class:`GompertzHazard`,
 :class:`LogLogisticHazard`, :class:`LomaxHazard`, :class:`QuadraticHazard`,
-:class:`CubicHazard`, or a
+:class:`CubicHazard`, :class:`LogisticHazard`, :class:`SumHazard`, or a
 :class:`PiecewiseHazard` that composes them over epochs (see ``docs/hazards.md``).
 Rates are finite and non-negative.
 ``terminal_time`` is required unless a rate fixes the end time: a
@@ -99,11 +99,13 @@ from bdsurv.hazards import (  # noqa: E402
     GompertzHazard,
     Hazard,
     HazardInversionError,
+    LogisticHazard,
     LogLogisticHazard,
     LomaxHazard,
     PiecewiseHazard,
     PowerHazard,
     QuadraticHazard,
+    SumHazard,
     sample_residual_lifetimes,
 )
 from bdsurv.lifespans import (  # noqa: E402
@@ -152,6 +154,7 @@ __all__ = [
     "LifespanSimulationArrays",
     "LinearRateLike",
     "LogLogisticHazard",
+    "LogisticHazard",
     "LomaxHazard",
     "MatchedSurvivalSample",
     "PiecewiseConstant",
@@ -163,6 +166,7 @@ __all__ = [
     "SimulatedTree",
     "SplittingConfig",
     "SplittingSimulationResult",
+    "SumHazard",
     "build_target_ranges",
     "compute_level_replicates",
     "count_draws",

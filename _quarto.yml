@@ -5,6 +5,7 @@ project:
     - benchmarks/method_comparison.qmd
     - benchmarks/arley_comparison.qmd
     - benchmarks/simulator_speed.qmd
+    - benchmarks/hazard_families.qmd
     - benchmarks/contour_conditioned_validation.qmd
     - docs/*.md
 
@@ -24,6 +25,8 @@ website:
             file: benchmarks/arley_comparison.qmd
           - text: "Simulator speed"
             file: benchmarks/simulator_speed.qmd
+          - text: "Hazard families: sampling cost"
+            file: benchmarks/hazard_families.qmd
           - text: "Conditioned contour simulators: validation"
             file: benchmarks/contour_conditioned_validation.qmd
       - text: "Methods"

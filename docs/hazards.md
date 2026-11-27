@@ -41,7 +41,9 @@ The array methods accept array-likes and return `float64` arrays; the scalar met
 | `breakpoints` | times where $h$ is not smooth; default `()` |
 | `singular_points` | times where $h = \infty$; default `()` |
 | `end_time` | the end of the domain; `None` for parametric families, the last epoch end for `PiecewiseHazard` |
-| `has_direct_sampler` | class variable: `True` if the offsets are closed forms |
+| `has_direct_sampler` | `True` if the single-`E` offsets are closed forms (a class variable; a property for `PiecewiseHazard`) |
+| `n_draws` | number of $\mathrm{Exp}(1)$ draws per event in the split samplers; 1 except for `SumHazard` |
+| `forward_time_split(start, es, cap)`, `backward_time_split(start, es)`, `forward_offsets_split(t0, E)` | the same inversions taking `n_draws` exponentials (`E` has shape `(n_draws, *t0.shape)`); the default uses `es[0]` only; see "Superposition" |
 | `check_nonnegative(end_time)` | raises `ValueError` if $h < 0$ somewhere on $[0, \text{end\_time}]$; the default does nothing |
 | `forward_offsets(t0, e)` | $R$ with $H(t_0 + R) - H(t_0) = e$; `inf` if defective |
 | `backward_offsets(x, e)` | $D \in [0, x]$ with $H(x) - H(x - D) = e$; $x$ if $H(x) \le e$ |
@@ -59,8 +61,9 @@ The array methods accept array-likes and return `float64` arrays; the scalar met
 | `GompertzHazard(a, b)` | $a\,e^{bt}$ | $a\,t\,\varphi(bt)$, $\varphi(x) = \mathrm{expm1}(x)/x$ | $a > 0$, $b$ real | direct | none | yes if $b < 0$, $H(\infty) = -a/b$ |
 | `LogLogisticHazard(shape, scale)` | $\dfrac{(k/\eta)(t/\eta)^{k-1}}{1 + (t/\eta)^k}$ | $\mathrm{log1p}((t/\eta)^k)$ | `shape` $k$, `scale` $\eta$ positive | direct | $0$ if $k < 1$ | no |
 | `LomaxHazard(shape, scale)` | $k/(\eta + t)$ | $k\,\mathrm{log1p}(t/\eta)$ | `shape` $k$, `scale` $\eta$ positive | direct | none | no |
-| `QuadraticHazard(a, b, c)` | $a + b t + c t^2$ | $a t + b t^2/2 + c t^3/3$ | $a \ge 0$, $b$, $c$ finite | Brent | none | no |
-| `CubicHazard(a, b, c, d)` | $a + b t + c t^2 + d t^3$ | $a t + b t^2/2 + c t^3/3 + d t^4/4$ | $a \ge 0$, $b$, $c$, $d$ finite | Brent | none | no |
+| `QuadraticHazard(a, b, c)` | $a + b t + c t^2$ | $a t + b t^2/2 + c t^3/3$ | $a \ge 0$, $b$, $c$ finite | closed form + Newton (Brent fallback) | none | no |
+| `CubicHazard(a, b, c, d)` | $a + b t + c t^2 + d t^3$ | $a t + b t^2/2 + c t^3/3 + d t^4/4$ | $a \ge 0$, $b$, $c$, $d$ finite | closed form + Newton (Brent fallback) | none | no |
+| `LogisticHazard(L, k, c)` | $L\,\sigma(k(t - c))$ | $(L/k)\,[\mathrm{softplus}(k(t - c)) - \mathrm{softplus}(-kc)]$ | $L > 0$, $k \ne 0$, $c$ finite | direct | none | yes if $k < 0$, $H(\infty) = (L/\lvert k\rvert)\,\mathrm{softplus}(\lvert k\rvert c)$ |
 | `PiecewiseHazard(pieces, epoch_end_times)` | piece $k$ in local time | sum over epochs | one `Hazard` per epoch; ends positive, strictly increasing | direct iff every piece is | the pieces', shifted | no |
 
 Parameters are validated at construction (`ValueError`, messages of the form "`name` must be positive and finite").
@@ -97,9 +100,25 @@ The offset is clipped to $[0, x]$.
 - backward: $D = \min\big((\eta + x)(-\mathrm{expm1}(-e/k)),\, x\big)$;
 - between: $k\,\mathrm{log1p}((t - s)/(\eta + s))$.
 
+`LogisticHazard`, with $\mathrm{softplus}(x) = \log(1 + e^x)$, $\mathrm{sd}(x_0, d) = \mathrm{softplus}(x_0 + d) - \mathrm{softplus}(x_0)$ and $u = kE/L$:
+
+- $\mathrm{sd}(x_0, d) = \mathrm{log1p}(\sigma(x_0)\,\mathrm{expm1}(d))$ with $\sigma(x_0) = e^{-\mathrm{softplus}(-x_0)}$, and for $d > 30$ the log-space form $\mathrm{softplus}(\log\mathrm{expm1}(d) - \mathrm{softplus}(-x_0))$;
+- between: $(L/k)\,\mathrm{sd}(k(s - c), k(t - s))$, and $H(t) = (L/k)\,\mathrm{sd}(-kc, kt)$;
+- forward, with $x = k(t_0 - c)$: $R = \mathrm{softplus}(\log\mathrm{expm1}(u) + \mathrm{softplus}(-x))/k$, and $R = 0$ if $e = 0$;
+- backward, with $z = k(x_t - c)$ and $w = \log\mathrm{expm1}(u) - z$: $D = \min((u - \log(-\mathrm{expm1}(w)))/k,\, x_t)$, and $D = x_t$ if $w \ge 0$ (also $D = 0$ if $e = 0$ or $x_t = 0$).
+
+For $k < 0$ the same `between` and $H$ formulas hold unchanged, $u = kE/L < 0$, and $H(\infty) = -(L/k)\,\mathrm{softplus}(-kc)$ (checked against quadrature).
+With $\mathrm{l1m}(v) = \log(-\mathrm{expm1}(v))$ for $v < 0$:
+
+- forward, with $x = k(t_0 - c)$ and $w = -x + \log\mathrm{expm1}(-u)$: $R = (u + \mathrm{l1m}(w))/k$, and $R = \infty$ if $w \ge 0$ (the draw exceeds the defect, $-u \ge \mathrm{softplus}(x)$).
+  The shorter form $\log\mathrm{1p}((1 + e^{-x})\mathrm{expm1}(u))/k$ rounds its argument to $-1$ when $\lvert u\rvert$ is large, so $w$ is built from $e^u(1 - e^{-x}\mathrm{expm1}(-u))$ instead;
+- backward, with $z = k(x_t - c)$: $D = \min(\mathrm{softplus}(\log\mathrm{expm1}(-u) + \mathrm{softplus}(-z))/\lvert k\rvert,\, x_t)$. It is never exhausted except by reaching 0.
+
 ## Brent fallback
 
-A hazard without a direct sampler (`QuadraticHazard`, `CubicHazard`, or a user subclass) inverts with `scipy.optimize.brentq` (`bdsurv._invert`).
+`QuadraticHazard` and `CubicHazard` invert by a gated closed form (`bdsurv._polyroots`): Newton from the linear-hazard offset where the nonlinear part is small, the algebraic cubic or quartic root polished by Newton otherwise, and Brent only for elements that fail a residual or conditioning check. They still report `has_direct_sampler = False`, because an uncapped call can raise for a hazard valid only on $[0, T]$; with a finite `end_time` the simulators use the vectorised capped closed form.
+
+A hazard without a direct sampler (`SumHazard` (single `E`), or a user subclass) inverts with `scipy.optimize.brentq` (`bdsurv._invert`).
 The solved function is $g(r) = H(t_0 + r) - H(t_0) - e$, evaluated through `cumulative_between` so that the stable form is used.
 
 Forward:
@@ -121,7 +140,7 @@ Errors:
 
 - `HazardInversionError` (a `RuntimeError`) if $g$ is not finite, no bracket is found after the expansion limit, or `brentq` does not converge.
   It is distinct from the `ValueError` for invalid parameters, a negative or non-finite $e$, or a hazard that is negative where it is used.
-- `QuadraticHazard.forward_offsets` without a cap needs $h \ge 0$ on $[0, \infty)$ and raises `ValueError` otherwise; `backward_offsets` checks $[0, \max x]$.
+- `QuadraticHazard`/`CubicHazard` `forward_offsets` without a cap needs $h \ge 0$ on $[0, \infty)$ and raises `ValueError` otherwise; `backward_offsets` checks $[0, \max x]$.
 
 ## No-event conventions
 
@@ -179,6 +198,23 @@ The original merged-segment path draws one exponential and one uniform.
 The totals from `count_draws` are therefore not comparable between a run with a `Hazard` and a run with constant or linear rates.
 Seeded output of the original path is unchanged.
 
+## Superposition (floors and sums)
+
+If $h = h_1 + \dots + h_m$ and part $i$ has its own independent $E_i \sim \mathrm{Exp}(1)$, then $R = \min_i R_i(E_i)$ (forward) and $x - \max_i (x - D_i)$ (backward, floored at 0, an exhausted part giving 0) are exact in distribution for $h$: this is the competing-risks argument that `simulate_birth_death` already uses for birth against death.
+Each part keeps its closed form, so a floor plus a closed-form family is closed form, at the cost of $m$ draws per event instead of 1.
+The law is exact but the coupling to a single $E$ differs, so `forward_offsets(t0, e)` of a `SumHazard` (which must satisfy $H(t_0 + R) - H(t_0) = e$ exactly) still uses Brent.
+Only samplers that draw their own exponentials use the split methods: `sample_residual_lifetimes`, the generic forward path and the contour up/down steps.
+
+`SumHazard(parts)` takes at least two hazards (nested sums are flattened; no `PiecewiseHazard`, no part with an `end_time`).
+`SumHazard.with_floor(floor, hazard)` adds a constant (`GompertzHazard(floor, 0.0)`) and returns `hazard` unchanged if `floor == 0`.
+`LogisticHazard.with_floor(floor, L, k, c)` is the common case: a rising step ($k > 0$) or a falling step ($k < 0$, from $\text{floor} + L\sigma(-kc)$ down to `floor`).
+A tanh step is a floor plus a logistic, through $\tanh z = 2\sigma(2z) - 1$.
+For $b \ne 0$, $a \ge \lvert b\rvert$, $k > 0$, the hazard $a + b\tanh(k(t - c))$ equals `LogisticHazard.with_floor(a - abs(b), 2 * abs(b), 2 * sign(b) * k, c)`, and `LogisticHazard(2 * b, 2 * k, c)` when $a = b > 0$.
+(For $b < 0$ the logistic is falling, $k_{\text{logistic}} = -2k$.)
+
+Draw counts: a hazard with `n_draws > 1` draws that many exponentials per event as one vector (`size=m`), before any following draw; hazards with `n_draws == 1` draw exactly as before, so seeded output of existing hazards and rates is unchanged.
+The totals from `count_draws` therefore grow with the number of parts.
+
 ## Usage
 
 ```python
@@ -199,7 +235,9 @@ death = GompertzHazard(a=0.05, b=0.1)
 tree = simulate_contour_given_survival(birth, death, terminal_time=20.0, random_seed=0)
 
 # A piecewise hazard fixes the end time, so terminal_time can be omitted.
-piecewise = PiecewiseHazard([PowerHazard.rayleigh(0.02), GompertzHazard(0.1, -0.05)], [5.0, 10.0])
+piecewise = PiecewiseHazard(
+    [PowerHazard.rayleigh(0.02), GompertzHazard(0.1, -0.05)], [5.0, 10.0]
+)
 process = simulate_birth_death(0.5, piecewise, random_seed=0)
 
 # Residual lifetimes from several start times, left-truncated.

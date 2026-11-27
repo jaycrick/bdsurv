@@ -179,6 +179,29 @@ def backward_hazard_time(rate: ResolvedRate, start: float, e: float) -> float:
     return 0.0
 
 
+def draw_count(rate: ResolvedRate) -> int:
+    """Return the exponential draws per event of ``rate`` (1 for a ``Rate``)."""
+    return 1 if isinstance(rate, Rate) else rate.n_draws
+
+
+def forward_hazard_time_split(
+    rate: ResolvedRate, start: float, es: list[float], cap: float
+) -> float:
+    """:func:`forward_hazard_time` with ``draw_count(rate)`` exponentials ``es``."""
+    if isinstance(rate, Rate):
+        return forward_hazard_time(rate, start, es[0], cap)
+    return rate.forward_time_split(start, es, cap)
+
+
+def backward_hazard_time_split(
+    rate: ResolvedRate, start: float, es: list[float]
+) -> float:
+    """:func:`backward_hazard_time` with ``draw_count(rate)`` exponentials ``es``."""
+    if isinstance(rate, Rate):
+        return backward_hazard_time(rate, start, es[0])
+    return rate.backward_time_split(start, es)
+
+
 def _edges_of(rate: ResolvedRate, t: float) -> list[float]:
     """Breakpoints of ``rate`` strictly inside ``(0, t)``."""
     points = rate.py_ends[:-1] if isinstance(rate, Rate) else rate.breakpoints

@@ -12,9 +12,12 @@ Subclasses with a closed-form inverse override them and set
 
 Families with a direct (closed-form) sampler:
 :class:`PowerHazard` (with ``weibull`` and ``rayleigh``),
-:class:`GompertzHazard`, :class:`LogLogisticHazard` and :class:`LomaxHazard`.
-Families that invert by Brent's method: :class:`QuadraticHazard` and
-:class:`CubicHazard`.
+:class:`GompertzHazard`, :class:`LogLogisticHazard`, :class:`LomaxHazard` and
+:class:`LogisticHazard` (rising or falling).
+Families that invert by closed form and Newton, with Brent only as a fallback
+(:mod:`bdsurv._polyroots`): :class:`QuadraticHazard`, :class:`CubicHazard`.
+:class:`SumHazard` adds hazards and samples each part with its own exponential
+draw (superposition).
 :class:`PiecewiseHazard` walks its epochs and uses each piece's own method, so it
 is direct only if every piece is.
 
@@ -38,6 +41,10 @@ from bdsurv._invert import (
     backward_offset,
     forward_offset,
 )
+from bdsurv._polyroots import backward_offsets as _poly_backward
+from bdsurv._polyroots import backward_time as _poly_backward_time
+from bdsurv._polyroots import forward_offsets as _poly_forward
+from bdsurv._polyroots import forward_time as _poly_forward_time
 from bdsurv._seeding import root_rng
 from bdsurv.rates import check_epoch_ends
 
@@ -47,10 +54,12 @@ __all__ = [
     "Hazard",
     "HazardInversionError",
     "LogLogisticHazard",
+    "LogisticHazard",
     "LomaxHazard",
     "PiecewiseHazard",
     "PowerHazard",
     "QuadraticHazard",
+    "SumHazard",
     "sample_residual_lifetimes",
 ]
 
@@ -131,6 +140,48 @@ class Hazard(ABC):
         """Return ``max(start - D, 0)`` for the offset ``D`` of ``e`` back."""
         return max(start - float(self.backward_offsets(start, e)), 0.0)
 
+    def _forward_offsets_capped(
+        self, t0: _Array, e: _Array, cap: float
+    ) -> _Array | None:
+        """Vectorised offsets for a finite ``cap``, or ``None`` if there is none.
+
+        Where there is no event before ``cap`` the element is ``cap - t0``
+        (or more); the hazard is never evaluated beyond ``cap``.
+        """
+        del t0, e, cap
+        return None
+
+    @property
+    def n_draws(self) -> int:
+        """Number of ``Exp(1)`` draws the split samplers use per event."""
+        return 1
+
+    @property
+    def has_direct_split(self) -> bool:
+        """Whether :meth:`forward_offsets_split` is vectorised and never uses Brent.
+
+        True if every hazard that the split path inverts has a direct sampler,
+        so a finite ``end_time`` needs no per-element loop.
+        """
+        return self.has_direct_sampler
+
+    def forward_time_split(
+        self, start: float, es: Sequence[float], cap: float = math.inf
+    ) -> float:
+        """Like :meth:`forward_time`, taking ``n_draws`` exponentials ``es``.
+
+        The default uses ``es[0]`` only.
+        """
+        return self.forward_time(start, float(es[0]), cap)
+
+    def backward_time_split(self, start: float, es: Sequence[float]) -> float:
+        """Like :meth:`backward_time`, taking ``n_draws`` exponentials ``es``."""
+        return self.backward_time(start, float(es[0]))
+
+    def forward_offsets_split(self, t0: ArrayLike, e: ArrayLike) -> _Array:
+        """Like :meth:`forward_offsets`; ``e`` has shape ``(n_draws, *t0.shape)``."""
+        return self.forward_offsets(t0, np.asarray(e, dtype=np.float64)[0])
+
     def forward_offsets_numerical(self, t0: ArrayLike, e: ArrayLike) -> _Array:
         """:meth:`forward_offsets` by Brent's method, whatever the subclass."""
         a, b = np.broadcast_arrays(
@@ -168,6 +219,75 @@ def _check_positive(name: str, value: float) -> None:
     if not (math.isfinite(value) and value > 0.0):
         msg = f"{name} must be positive and finite"
         raise ValueError(msg)
+
+
+def _softplus(x: ArrayLike) -> _Array:
+    """``log(1 + exp(x))`` without overflow."""
+    return np.logaddexp(0.0, _arr(x))
+
+
+def _log_expm1(u: ArrayLike) -> _Array:
+    """``log(expm1(u))`` for ``u > 0``, stable for small and large ``u``."""
+    uu = _arr(u)
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        return np.where(uu > 30.0, uu + np.log(-np.expm1(-uu)), np.log(np.expm1(uu)))
+
+
+def _log1mexp(u: ArrayLike) -> _Array:
+    """``log(1 - exp(u))`` for ``u <= 0``, stable for small and large ``|u|``."""
+    uu = _arr(u)
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        return np.where(
+            uu > -math.log(2.0), np.log(-np.expm1(uu)), np.log1p(-np.exp(uu))
+        )
+
+
+def _softplus_diff(x0: ArrayLike, dx: ArrayLike) -> _Array:
+    """``softplus(x0 + dx) - softplus(x0)`` without cancellation.
+
+    For ``dx <= -0.5`` it is ``logaddexp(-softplus(x0), dx - softplus(-x0))``.
+    """
+    xx, dd = np.broadcast_arrays(_arr(x0), _arr(dx))
+    big = dd > 30.0
+    neg_dx = dd <= -0.5
+    safe = np.where(big | neg_dx, 1.0, dd)
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        neg = _softplus(-xx)
+        small = np.log1p(np.exp(-neg) * np.expm1(safe))
+        large = _softplus(_log_expm1(np.where(big, dd, 40.0)) - neg)
+        back = np.logaddexp(-_softplus(xx), dd - neg)
+    return np.where(big, large, np.where(neg_dx, back, small))
+
+
+_EXP_MAX = 709.0
+
+
+def _exp_s(x: float) -> float:
+    """``exp(x)`` that returns ``inf`` instead of raising on overflow."""
+    return math.inf if x > _EXP_MAX else math.exp(x)
+
+
+def _softplus_s(x: float) -> float:
+    """Scalar ``log(1 + exp(x))`` without overflow."""
+    return max(x, 0.0) + math.log1p(math.exp(-abs(x)))
+
+
+def _log_expm1_s(u: float) -> float:
+    """Scalar ``log(expm1(u))`` for ``u >= 0``; ``-inf`` at 0, ``inf`` at ``inf``."""
+    if u > 30.0:
+        return u + math.log1p(-math.exp(-u))
+    if u <= 0.0:
+        return -math.inf
+    return math.log(math.expm1(u))
+
+
+def _log1mexp_s(u: float) -> float:
+    """Scalar ``log(1 - exp(u))`` for ``u <= 0``; ``-inf`` at 0."""
+    if u > -math.log(2.0):
+        if u >= 0.0:
+            return -math.inf
+        return math.log(-math.expm1(u))
+    return math.log1p(-math.exp(u))
 
 
 @dataclass(frozen=True)
@@ -371,6 +491,34 @@ class GompertzHazard(Hazard):
         d = np.where(dead, xx, np.minimum(d, xx))
         return np.where(ee == 0.0, 0.0, d)
 
+    def forward_time(self, start: float, e: float, cap: float = math.inf) -> float:
+        """Scalar ``min(start + R, cap)`` using only ``math``.
+
+        Mirrors :meth:`forward_offsets`; ``e`` must be finite and ``>= 0``,
+        as the simulators always pass.
+        """
+        if e == 0.0:
+            return min(start, cap)
+        if self.b == 0.0:
+            return min(start + e / self.a, cap)
+        z = self.b * e * _exp_s(-self.b * start) / self.a
+        if z <= -1.0:
+            return cap
+        return min(start + math.log1p(z) / self.b, cap)
+
+    def backward_time(self, start: float, e: float) -> float:
+        """Scalar ``max(start - D, 0)`` with only ``math``; see :meth:`forward_time`."""
+        if e == 0.0:
+            return start
+        if start <= 0.0:
+            return 0.0
+        if self.b == 0.0:
+            return max(start - e / self.a, 0.0)
+        w = -self.b * e * _exp_s(-self.b * start) / self.a
+        if w <= -1.0:
+            return 0.0
+        return max(start + math.log1p(w) / self.b, 0.0)
+
     def __repr__(self) -> str:
         """Return ``Name(param=value, ...)``."""
         return f"GompertzHazard(a={self.a!r}, b={self.b!r})"
@@ -527,7 +675,10 @@ class QuadraticHazard(Hazard):
     r"""Quadratic hazard $h(t) = a + b\,t + c\,t^2$, with $a \ge 0$.
 
     The cumulative hazard is $H(t) = a\,t + b\,t^2/2 + c\,t^3/3$.
-    There is no direct sampler: the inversion is by Brent's method.
+    There is no direct sampler, but the inversion is by closed form: a Newton
+    step from the linear-hazard offset where that is accurate, the algebraic
+    root polished by Newton otherwise, and Brent's method only for the rare
+    elements that a check flags (see :mod:`bdsurv._polyroots`).
 
     The hazard need only be non-negative on the window that is used,
     so $c < 0$ is valid on $[0, T]$ if :meth:`check_nonnegative` passes.
@@ -576,12 +727,16 @@ class QuadraticHazard(Hazard):
             vertex = -self.b / (2.0 * self.c)
             if 0.0 < vertex < end_time:
                 times.append(vertex)
-        scale = abs(self.a) + abs(self.b) * end_time + abs(self.c) * end_time**2
+        scale = abs(self.a) + abs(self.b) * end_time + abs(self.c) * end_time * end_time
         for t in times:
-            value = float(self.hazard(t))
+            value = self._h(t)
             if value < -1e-12 * scale:
                 msg = f"{self!r} is negative on [0, end_time]: h({t!r}) = {value!r}"
                 raise ValueError(msg)
+
+    def _h(self, t: float) -> float:
+        """Hazard at a Python float, without numpy."""
+        return self.a + t * (self.b + self.c * t)
 
     def hazard(self, t: ArrayLike) -> _Array:
         """Hazard ``a + b t + c t^2``."""
@@ -604,21 +759,49 @@ class QuadraticHazard(Hazard):
         return (ee - ss) * mean
 
     def forward_offsets(self, t0: ArrayLike, e: ArrayLike) -> _Array:
-        """Offsets ``R`` by Brent; needs ``h >= 0`` on ``[0, inf)``."""
+        """Offsets ``R`` by closed form and Newton, Brent where flagged.
+
+        Needs ``h >= 0`` on ``[0, inf)``; see :mod:`bdsurv._polyroots`.
+        """
         if not self.nonnegative_on_half_line:
             msg = (
                 f"{self!r} is not non-negative on [0, inf); "
                 "use a capped forward_time or an end_time"
             )
             raise ValueError(msg)
-        return self.forward_offsets_numerical(t0, e)
+        return _poly_forward(self, self._coefficients(), t0, e)
 
     def backward_offsets(self, x: ArrayLike, e: ArrayLike) -> _Array:
-        """Offsets ``D`` by Brent; needs ``h >= 0`` on ``[0, max(x)]``."""
+        """Offsets ``D`` by closed form and Newton; needs ``h >= 0`` on ``[0, x]``."""
         xx = _arr(x)
         if xx.size:
             self.check_nonnegative(float(np.max(xx)))
-        return self.backward_offsets_numerical(x, e)
+        return _poly_backward(self, self._coefficients(), x, e)
+
+    def _coefficients(self) -> tuple[float, float, float, float]:
+        return (
+            self.a,
+            self.b,
+            self.c,
+            0.0,
+        )
+
+    def forward_time(self, start: float, e: float, cap: float = math.inf) -> float:
+        """Return ``min(start + R, cap)`` by closed form and Newton, in scalar ``math``.
+
+        The hazard is never evaluated beyond ``cap``.
+        """
+        return _poly_forward_time(self, self._coefficients(), start, e, cap)
+
+    def backward_time(self, start: float, e: float) -> float:
+        """Return ``max(start - D, 0)``; needs ``h >= 0`` on ``[0, start]``."""
+        self.check_nonnegative(start)
+        return _poly_backward_time(self, self._coefficients(), start, e)
+
+    def _forward_offsets_capped(
+        self, t0: _Array, e: _Array, cap: float
+    ) -> _Array | None:
+        return _poly_forward(self, self._coefficients(), t0, e, cap)
 
     def __repr__(self) -> str:
         """Return ``Name(param=value, ...)``."""
@@ -630,7 +813,10 @@ class CubicHazard(Hazard):
     r"""Cubic hazard $h(t) = a + b\,t + c\,t^2 + d\,t^3$, with $a \ge 0$.
 
     The cumulative hazard is $H(t) = a\,t + b\,t^2/2 + c\,t^3/3 + d\,t^4/4$.
-    There is no direct sampler: the inversion is by Brent's method.
+    There is no direct sampler, but the inversion is by closed form: a Newton
+    step from the linear-hazard offset where that is accurate, the algebraic
+    root polished by Newton otherwise, and Brent's method only for the rare
+    elements that a check flags (see :mod:`bdsurv._polyroots`).
 
     As for :class:`QuadraticHazard`, the hazard need only be non-negative on
     the window that is used (:meth:`check_nonnegative`).
@@ -705,14 +891,18 @@ class CubicHazard(Hazard):
         scale = (
             abs(self.a)
             + abs(self.b) * end_time
-            + abs(self.c) * end_time**2
-            + abs(self.d) * end_time**3
+            + abs(self.c) * end_time * end_time
+            + abs(self.d) * end_time * end_time * end_time
         )
         for t in times:
-            value = float(self.hazard(t))
+            value = self._h(t)
             if value < -1e-12 * scale:
                 msg = f"{self!r} is negative on [0, end_time]: h({t!r}) = {value!r}"
                 raise ValueError(msg)
+
+    def _h(self, t: float) -> float:
+        """Hazard at a Python float, without numpy."""
+        return self.a + t * (self.b + t * (self.c + self.d * t))
 
     def hazard(self, t: ArrayLike) -> _Array:
         """Hazard ``a + b t + c t^2 + d t^3``."""
@@ -738,25 +928,333 @@ class CubicHazard(Hazard):
         return (ee - ss) * mean
 
     def forward_offsets(self, t0: ArrayLike, e: ArrayLike) -> _Array:
-        """Offsets ``R`` by Brent; needs ``h >= 0`` on ``[0, inf)``."""
+        """Offsets ``R`` by closed form and Newton, Brent where flagged.
+
+        Needs ``h >= 0`` on ``[0, inf)``; see :mod:`bdsurv._polyroots`.
+        """
         if not self.nonnegative_on_half_line:
             msg = (
                 f"{self!r} is not non-negative on [0, inf); "
                 "use a capped forward_time or an end_time"
             )
             raise ValueError(msg)
-        return self.forward_offsets_numerical(t0, e)
+        return _poly_forward(self, self._coefficients(), t0, e)
 
     def backward_offsets(self, x: ArrayLike, e: ArrayLike) -> _Array:
-        """Offsets ``D`` by Brent; needs ``h >= 0`` on ``[0, max(x)]``."""
+        """Offsets ``D`` by closed form and Newton; needs ``h >= 0`` on ``[0, x]``."""
         xx = _arr(x)
         if xx.size:
             self.check_nonnegative(float(np.max(xx)))
-        return self.backward_offsets_numerical(x, e)
+        return _poly_backward(self, self._coefficients(), x, e)
+
+    def _coefficients(self) -> tuple[float, float, float, float]:
+        return (
+            self.a,
+            self.b,
+            self.c,
+            self.d,
+        )
+
+    def forward_time(self, start: float, e: float, cap: float = math.inf) -> float:
+        """Return ``min(start + R, cap)`` by closed form and Newton, in scalar ``math``.
+
+        The hazard is never evaluated beyond ``cap``.
+        """
+        return _poly_forward_time(self, self._coefficients(), start, e, cap)
+
+    def backward_time(self, start: float, e: float) -> float:
+        """Return ``max(start - D, 0)``; needs ``h >= 0`` on ``[0, start]``."""
+        self.check_nonnegative(start)
+        return _poly_backward_time(self, self._coefficients(), start, e)
+
+    def _forward_offsets_capped(
+        self, t0: _Array, e: _Array, cap: float
+    ) -> _Array | None:
+        return _poly_forward(self, self._coefficients(), t0, e, cap)
 
     def __repr__(self) -> str:
         """Return ``Name(param=value, ...)``."""
         return f"CubicHazard(a={self.a!r}, b={self.b!r}, c={self.c!r}, d={self.d!r})"
+
+
+@dataclass(frozen=True)
+class LogisticHazard(Hazard):
+    r"""Logistic hazard $h(t) = L\,\sigma(k(t - c))$, with $L > 0$ and $k \ne 0$.
+
+    Here $\sigma$ is the logistic function; $L$ is the asymptote, $c$ the
+    midpoint and $k$ the steepness.
+    For $k > 0$ the hazard rises to $L$; for $k < 0$ it falls from
+    $L\sigma(-kc)$ to 0 and is defective, with
+    $H(\infty) = (L/|k|)\,\mathrm{softplus}(|k| c)$.
+    The cumulative hazard is $H(t) = (L/k)\,[\mathrm{softplus}(k(t - c)) -
+    \mathrm{softplus}(-k c)]$, computed as a difference without cancellation.
+    With $x = k(t_0 - c)$ and $u = kE/L$, for $k > 0$ the forward offset is
+    $R = \mathrm{softplus}(\log\mathrm{expm1}(u) + \mathrm{softplus}(-x))/k$.
+    With $z = k(x_t - c)$ and $w = \log\mathrm{expm1}(u) - z$ the backward offset
+    is $D = (u - \log(-\mathrm{expm1}(w)))/k$, capped at $x_t$;
+    it is $x_t$ if $w \ge 0$.
+    For $k < 0$ (so $u < 0$) the forward offset is
+    $R = (u + \log(-\mathrm{expm1}(w)))/k$ with $w = -x + \log\mathrm{expm1}(-u)$,
+    and $R = \infty$ if $w \ge 0$ (the draw exceeds the defect); the backward
+    offset is
+    $D = \mathrm{softplus}(\log\mathrm{expm1}(|u|) +
+    \mathrm{softplus}(-z))/|k|$, capped at $x_t$.
+    The sampler is direct (closed form).
+
+    Parameters
+    ----------
+    L
+        Asymptote; positive and finite.
+    k
+        Steepness; non-zero and finite, of either sign.
+    c
+        Midpoint; finite.
+    """
+
+    L: float
+    k: float
+    c: float
+
+    has_direct_sampler: ClassVar[bool] = True
+
+    def __post_init__(self) -> None:
+        """Validate the parameters."""
+        _check_positive("L", self.L)
+        if not (math.isfinite(self.k) and self.k != 0.0):
+            msg = "k must be non-zero and finite"
+            raise ValueError(msg)
+        if not math.isfinite(self.c):
+            msg = "c must be finite"
+            raise ValueError(msg)
+
+    @classmethod
+    def with_floor(cls, floor: float, L: float, k: float, c: float) -> Hazard:
+        """Return the hazard ``floor + L sigma(k (t - c))`` as a superposition.
+
+        A rising step has ``k > 0``; ``k < 0`` gives a falling step from
+        ``floor + L sigma(-k c)`` down to ``floor``.
+        See :meth:`SumHazard.with_floor`.
+        """
+        return SumHazard.with_floor(floor, cls(L, k, c))
+
+    @property
+    def cumulative_limit(self) -> float:
+        """``(L / |k|) softplus(|k| c)`` if ``k < 0``, else ``inf``."""
+        if self.k < 0.0:
+            return float(self.L / -self.k * _softplus(-self.k * self.c))
+        return math.inf
+
+    def hazard(self, t: ArrayLike) -> _Array:
+        """Hazard ``L sigma(k (t - c))``."""
+        return self.L * np.exp(-_softplus(-self.k * (_arr(t) - self.c)))
+
+    def cumulative_hazard(self, t: ArrayLike) -> _Array:
+        """Cumulative hazard ``(L / k) (softplus(k (t - c)) - softplus(-k c))``."""
+        return (self.L / self.k) * _softplus_diff(-self.k * self.c, self.k * _arr(t))
+
+    def cumulative_between(self, s: ArrayLike, e: ArrayLike) -> _Array:
+        """``H(e) - H(s)`` as ``(L / k) softplus_diff(k (s - c), k (e - s))``."""
+        ss, ee = np.broadcast_arrays(_arr(s), _arr(e))
+        return (self.L / self.k) * _softplus_diff(
+            self.k * (ss - self.c), self.k * (ee - ss)
+        )
+
+    def forward_offsets(self, t0: ArrayLike, e: ArrayLike) -> _Array:
+        """Closed-form offsets ``R`` with ``H(t0 + R) - H(t0) = e``."""
+        tt, ee = np.broadcast_arrays(_arr(t0), _arr(e))
+        u = self.k * ee / self.L
+        x = self.k * (tt - self.c)
+        if self.k < 0.0:
+            with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+                w = -x + _log_expm1(-u)
+                dead = w >= 0.0
+                r = (u + _log1mexp(np.where(dead, -1.0, w))) / self.k
+            r = np.where(dead, np.inf, np.maximum(r, 0.0))
+            return np.where(ee == 0.0, 0.0, r)
+        with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+            r = _softplus(_log_expm1(u) + _softplus(-x)) / self.k
+        return np.where(ee == 0.0, 0.0, r)
+
+    def backward_offsets(self, x: ArrayLike, e: ArrayLike) -> _Array:
+        """Closed-form offsets ``D`` in ``[0, x]``; ``x`` if exhausted."""
+        xx, ee = np.broadcast_arrays(_arr(x), _arr(e))
+        u = self.k * ee / self.L
+        z = self.k * (xx - self.c)
+        if self.k < 0.0:
+            with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+                d = _softplus(_log_expm1(-u) + _softplus(-z)) / -self.k
+            d = np.minimum(d, xx)
+            return np.where((ee == 0.0) | (xx == 0.0), 0.0, d)
+        with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+            w = _log_expm1(u) - z
+            dead = w >= 0.0
+            d = (u - np.log(-np.expm1(np.where(dead, -1.0, w)))) / self.k
+        d = np.where(dead, xx, np.minimum(d, xx))
+        return np.where((ee == 0.0) | (xx == 0.0), 0.0, d)
+
+    def forward_time(self, start: float, e: float, cap: float = math.inf) -> float:
+        """Scalar ``min(start + R, cap)`` using only ``math``.
+
+        Mirrors :meth:`forward_offsets`; ``e`` must be finite and ``>= 0``,
+        as the simulators always pass.
+        """
+        if e == 0.0:
+            return min(start, cap)
+        k = self.k
+        u = k * e / self.L
+        x = k * (start - self.c)
+        if k < 0.0:
+            w = -x + _log_expm1_s(-u)
+            if w >= 0.0:
+                return cap
+            r = max((u + _log1mexp_s(w)) / k, 0.0)
+        else:
+            r = _softplus_s(_log_expm1_s(u) + _softplus_s(-x)) / k
+        return min(start + r, cap)
+
+    def backward_time(self, start: float, e: float) -> float:
+        """Scalar ``max(start - D, 0)`` with only ``math``; see :meth:`forward_time`."""
+        if e == 0.0 or start == 0.0:
+            return start
+        k = self.k
+        u = k * e / self.L
+        z = k * (start - self.c)
+        if k < 0.0:
+            d = _softplus_s(_log_expm1_s(-u) + _softplus_s(-z)) / -k
+        else:
+            w = _log_expm1_s(u) - z
+            if w >= 0.0:
+                return 0.0
+            d = (u - math.log(-math.expm1(w))) / k
+        return max(start - min(d, start), 0.0)
+
+    def __repr__(self) -> str:
+        """Return ``Name(param=value, ...)``."""
+        return f"LogisticHazard(L={self.L!r}, k={self.k!r}, c={self.c!r})"
+
+
+@dataclass(frozen=True)
+class SumHazard(Hazard):
+    r"""Sum of independent hazards, sampled by superposition.
+
+    If $h = h_1 + \dots + h_m$ and each part has its own $E_i \sim \mathrm{Exp}(1)$,
+    then $R = \min_i R_i(E_i)$ is exact in distribution for $h$, and the
+    previous event backward is $\max_i (x - D_i)$, floored at 0.
+    Each part keeps its closed form, at the cost of $m$ exponential draws per
+    event (:attr:`n_draws`); the split methods use them.
+    The single-``E`` offsets use Brent's method, as the sum has no closed
+    inverse.
+
+    Parameters
+    ----------
+    parts
+        At least two hazards with no ``end_time`` and no :class:`PiecewiseHazard`;
+        nested sums are flattened.
+    """
+
+    parts: tuple[Hazard, ...]
+
+    has_direct_sampler: ClassVar[bool] = False
+
+    def __post_init__(self) -> None:
+        """Validate and flatten the parts."""
+        flat: list[Hazard] = []
+        for p in self.parts:
+            if not isinstance(p, Hazard):  # pyright: ignore[reportUnnecessaryIsInstance]
+                msg = "parts must be Hazards"
+                raise TypeError(msg)
+            if isinstance(p, PiecewiseHazard) or p.end_time is not None:
+                msg = "parts must not be piecewise or have an end_time"
+                raise ValueError(msg)
+            flat.extend(p.parts if isinstance(p, SumHazard) else (p,))
+        if len(flat) < 2:
+            msg = "a SumHazard needs at least two parts"
+            raise ValueError(msg)
+        object.__setattr__(self, "parts", tuple(flat))
+
+    @classmethod
+    def with_floor(cls, floor: float, hazard: Hazard) -> Hazard:
+        """Return ``floor + hazard``; ``hazard`` itself if ``floor == 0``.
+
+        The floor is a constant :class:`GompertzHazard` (``b = 0``).
+        """
+        if not (math.isfinite(floor) and floor >= 0.0):
+            msg = "floor must be non-negative and finite"
+            raise ValueError(msg)
+        if floor == 0.0:
+            return hazard
+        return cls((GompertzHazard(floor, 0.0), hazard))
+
+    @property
+    def n_draws(self) -> int:
+        """The number of parts."""
+        return len(self.parts)
+
+    @property
+    def has_direct_split(self) -> bool:
+        """Whether every part has a direct sampler."""
+        return all(p.has_direct_sampler for p in self.parts)
+
+    @property
+    def cumulative_limit(self) -> float:
+        """The sum of the parts' limits."""
+        return sum(p.cumulative_limit for p in self.parts)
+
+    @property
+    def breakpoints(self) -> tuple[float, ...]:
+        """The union of the parts' breakpoints."""
+        return tuple(sorted({b for p in self.parts for b in p.breakpoints}))
+
+    @property
+    def singular_points(self) -> tuple[float, ...]:
+        """The union of the parts' singular points."""
+        return tuple(sorted({b for p in self.parts for b in p.singular_points}))
+
+    def check_nonnegative(self, end_time: float) -> None:
+        """Check every part."""
+        for p in self.parts:
+            p.check_nonnegative(end_time)
+
+    def hazard(self, t: ArrayLike) -> _Array:
+        """Return the sum of the parts' hazards."""
+        return sum((p.hazard(t) for p in self.parts), np.zeros(np.shape(t)))
+
+    def cumulative_hazard(self, t: ArrayLike) -> _Array:
+        """Return the sum of the parts' cumulative hazards."""
+        return sum((p.cumulative_hazard(t) for p in self.parts), np.zeros(np.shape(t)))
+
+    def cumulative_between(self, s: ArrayLike, e: ArrayLike) -> _Array:
+        """Return the sum of the parts' increments."""
+        shape = np.broadcast_shapes(np.shape(s), np.shape(e))
+        return sum((p.cumulative_between(s, e) for p in self.parts), np.zeros(shape))
+
+    def forward_time_split(
+        self, start: float, es: Sequence[float], cap: float = math.inf
+    ) -> float:
+        """``min_i`` of the parts' forward times, part ``i`` taking ``es[i]``."""
+        return min(
+            p.forward_time(start, float(d), cap)
+            for p, d in zip(self.parts, es, strict=True)
+        )
+
+    def backward_time_split(self, start: float, es: Sequence[float]) -> float:
+        """``max_i`` of the parts' backward times, part ``i`` taking ``es[i]``."""
+        return max(
+            p.backward_time(start, float(d))
+            for p, d in zip(self.parts, es, strict=True)
+        )
+
+    def forward_offsets_split(self, t0: ArrayLike, e: ArrayLike) -> _Array:
+        """Elementwise minimum of the parts' offsets; ``e[i]`` goes to part ``i``."""
+        ee = np.asarray(e, dtype=np.float64)
+        out = self.parts[0].forward_offsets(t0, ee[0])
+        for p, d in zip(self.parts[1:], ee[1:], strict=True):
+            out = np.minimum(out, p.forward_offsets(t0, d))
+        return out
+
+    def __repr__(self) -> str:
+        """Return ``Name(param=value, ...)``."""
+        return f"SumHazard(parts={self.parts!r})"
 
 
 class PiecewiseHazard(Hazard):
@@ -1005,7 +1503,7 @@ class PiecewiseHazard(Hazard):
         )
 
 
-def sample_residual_lifetimes(
+def sample_residual_lifetimes(  # noqa: C901
     hazard: Hazard,
     start_times: ArrayLike,
     *,
@@ -1066,8 +1564,30 @@ def sample_residual_lifetimes(
     finite = math.isfinite(end_time)
     if finite:
         hazard.check_nonnegative(end_time)
-    e = root_rng(random_seed, "dynamics").exponential(size=t0.shape)
+    m = hazard.n_draws
+    rng = root_rng(random_seed, "dynamics")
+    if m > 1:
+        es = rng.exponential(size=(m, *t0.shape))
+        if finite and not hazard.has_direct_split:
+            flat = es.reshape(m, -1)
+            times = np.array(
+                [
+                    hazard.forward_time_split(float(s), flat[:, i].tolist(), end_time)
+                    for i, s in enumerate(t0.flat)
+                ],
+                dtype=np.float64,
+            ).reshape(t0.shape)
+            return np.where(times >= end_time, np.inf, times - t0)
+        r = hazard.forward_offsets_split(t0, es)
+        return np.where(t0 + r > end_time, np.inf, r)
+    e = rng.exponential(size=t0.shape)
     if finite and not hazard.has_direct_sampler:
+        capped = hazard._forward_offsets_capped(  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+            t0, e, end_time
+        )
+        if capped is not None:
+            ends = np.minimum(t0 + capped, end_time)
+            return np.where(ends >= end_time, np.inf, ends - t0)
         times = np.array(
             [
                 hazard.forward_time(float(s), float(d), end_time)
