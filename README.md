@@ -97,13 +97,13 @@ constant-rate cases, `benchmarks/arley_comparison.qmd`.
 bdsurv is not on PyPI yet. Install a tagged release from GitHub:
 
 ```sh
-pip install "bdsurv @ git+https://github.com/jaycrick/bdsurv@v0.8.0"
+pip install "bdsurv @ git+https://github.com/jaycrick/bdsurv@v0.9.0"
 ```
 
 or, in a uv project, add it as a dependency pinned to the tag:
 
 ```sh
-uv add "bdsurv @ git+https://github.com/jaycrick/bdsurv" --tag v0.8.0
+uv add "bdsurv @ git+https://github.com/jaycrick/bdsurv" --tag v0.9.0
 ```
 
 For development:
