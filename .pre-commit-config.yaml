@@ -1,3 +1,7 @@
+# Install both hook types once after cloning: uv run pre-commit install
+default_install_hook_types: [pre-commit, commit-msg]
+default_stages: [pre-commit, pre-push, manual]
+
 repos:
   # Built-in hooks
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -13,7 +17,7 @@ repos:
 
   # Ruff linting
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.5
+    rev: v0.17.5
     hooks:
       - id: ruff-check
         args: [--fix]
@@ -39,3 +43,12 @@ repos:
       - id: toml-sort
         args: [--no-sort-tables, --sort-inline-arrays, --sort-inline-tables]
         files: '\.toml$'
+
+  # git3moji commit messages (https://robinpokorny.github.io/git3moji/)
+  - repo: local
+    hooks:
+      - id: git3moji
+        name: git3moji commit message
+        language: script
+        entry: .githooks/commit-msg
+        stages: [commit-msg]

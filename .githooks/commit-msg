@@ -1,0 +1,21 @@
+#!/bin/sh
+# Enforce git3moji commit messages: https://robinpokorny.github.io/git3moji/
+# Installed through pre-commit (see .pre-commit-config.yaml): run
+#   uv run pre-commit install
+# once after cloning.
+msg=$(head -n 1 "$1")
+
+case "$msg" in
+  Merge*|Revert*|fixup!*|squash!*|amend!*) exit 0 ;;
+  ":zap: "*|":bug: "*|":tv: "*|":cop: "*|":abc: "*) exit 0 ;;
+esac
+
+echo "COMMIT REJECTED: message must start with a git3moji and a space:" >&2
+echo "  :zap:  features / behaviour changes" >&2
+echo "  :bug:  bug fixes" >&2
+echo "  :tv:   CI, tooling, configuration, releases" >&2
+echo "  :cop:  tests and linting" >&2
+echo "  :abc:  documentation" >&2
+echo "See https://robinpokorny.github.io/git3moji/" >&2
+echo "Got: $msg" >&2
+exit 1

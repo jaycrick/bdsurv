@@ -112,6 +112,7 @@ For development:
 git clone https://github.com/jaycrick/bdsurv.git
 cd bdsurv
 uv sync --all-groups
+uv run pre-commit install  # lint/format hooks and the commit-message check
 ```
 
 ## Quick Start
@@ -187,6 +188,17 @@ uv run ruff check src tests scripts
 uv run ruff format --check src tests scripts
 uv run basedpyright src/
 ```
+
+Commit messages follow [git3moji](https://robinpokorny.github.io/git3moji/)
+(checked by `.githooks/commit-msg`, installed by `pre-commit install`):
+
+| Prefix  | Use for                               |
+| ------- | ------------------------------------- |
+| `:zap:` | features and behaviour changes        |
+| `:bug:` | bug fixes                             |
+| `:tv:`  | CI, tooling, configuration, releases  |
+| `:cop:` | tests and linting                     |
+| `:abc:` | documentation                         |
 
 Speed benchmarks of every simulator live in `benchmarks/simulator_speed.qmd`
 (see `benchmarks/README.md`).
