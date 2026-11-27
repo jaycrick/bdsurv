@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `LogisticHazard(L, k, c)` (hazard $L\,\sigma(k(t-c))$, closed-form forward and backward inversion) in `bdsurv.hazards`, exported from `bdsurv`.
+  Cumulative hazards use stable forms (`softplus` differences).
+- `LogisticHazard` accepts `k < 0` (a falling, defective logistic with `cumulative_limit` $(L/|k|)\,\mathrm{softplus}(|k|c)$ and closed-form forward and backward inversion).
+- `SumHazard(parts)`, with `SumHazard.with_floor(floor, hazard)` and `LogisticHazard.with_floor(floor, L, k, c)`: hazards added by superposition, sampled as the minimum (forward) or maximum (backward) of one closed-form draw per part, exact in law.
+  New `Hazard.n_draws` and split methods (`forward_time_split`, `backward_time_split`, `forward_offsets_split`).
+  Hazards with `n_draws > 1` draw several exponentials per event in `sample_residual_lifetimes`, `simulate_birth_death`-type forward runs and the contour steps; seeded output of every other hazard and rate is unchanged.
+- Scalar `math`-only `forward_time`/`backward_time` fast path for `LogisticHazard` and `GompertzHazard` (and so for `SumHazard` floors): faster simulator per-event sampling, same formulas as the vectorised offsets (agreement to round-off).
+  `QuadraticHazard`/`CubicHazard.check_nonnegative` now uses plain float arithmetic, with unchanged behaviour.
+
+### Changed
+
+- `QuadraticHazard` and `CubicHazard` now invert by closed form plus Newton (with a gated algebraic root and a Brent fallback for flagged elements) in `forward_offsets`, `backward_offsets`, `forward_time` and `backward_time`, instead of Brent throughout.
+  This is faster; the law is unchanged, but seeded results of these hazards (and of `PiecewiseHazard.from_polynomials`) change at round-off.
+  Rate-based streams are byte-identical.
+  Brent stays available through `forward_offsets_numerical` and `backward_offsets_numerical`.
+
 ## [0.8.0] - 2026-11-20
 
 ### Added

@@ -8,9 +8,11 @@ import numpy as np
 import pytest
 from scipy import integrate, stats
 
+from bdsurv._invert import BRENT_XTOL
 from bdsurv.hazards import (
     GompertzHazard,
     Hazard,
+    LogisticHazard,
     LogLogisticHazard,
     LomaxHazard,
     PowerHazard,
@@ -38,6 +40,10 @@ HAZARDS: dict[str, Hazard] = {
     "loglogistic0.6": LogLogisticHazard(0.6, 3.0),
     "loglogistic2": LogLogisticHazard(2.0, 3.0),
     "lomax": LomaxHazard(2.5, 4.0),
+    "logistic": LogisticHazard(1.0, 1.0, 5.0),
+    "logistic-steep": LogisticHazard(2.0, 8.0, 3.0),
+    "logistic-fall": LogisticHazard(1.2, -0.8, 2.0),
+    "logistic-fall-neg-c": LogisticHazard(0.8, -1.5, -1.0),
 }
 RATES: dict[str, Rate] = {
     "rate-constant": as_rate(
@@ -123,8 +129,10 @@ def test_backward_identity_and_exhaustion(name: str, x: float) -> None:
         s = h.backward_time(x, e)
         assert 0.0 <= s <= x
         if s > 0.0:
+            # Brent resolves s only to BRENT_XTOL, i.e. e to xtol times the hazard.
+            xtol_err = 2 * BRENT_XTOL * max(_hz(h, x), _hz(h, s))
             assert _cum(h, x) - _cum(h, s) == pytest.approx(
-                e, abs=1e-10 * e + 32 * EPS * (_cum(h, x) + x * _hz(h, x))
+                e, abs=1e-10 * e + 32 * EPS * (_cum(h, x) + x * _hz(h, x)) + xtol_err
             )
     assert h.backward_time(x, _cum(h, x) * 1.5 + 1.0) == 0.0
 
@@ -199,8 +207,9 @@ def test_t5_t6_distribution(name: str, t0: float) -> None:
     """Test t5 t6 distribution."""
     h = HAZARDS[name]
     seed = sorted(HAZARDS).index(name) * 7 + int(t0 * 10)
+    n = N
     rng = np.random.default_rng(seed)
-    r = h.forward_offsets(np.full(N, t0), rng.exponential(size=N))
+    r = h.forward_offsets(np.full(n, t0), rng.exponential(size=n))
     assert r.dtype == np.float64
     finite = np.isfinite(r)
     rem = h.cumulative_limit - float(h.cumulative_hazard(t0))
@@ -213,7 +222,7 @@ def test_t5_t6_distribution(name: str, t0: float) -> None:
     for rr in (0.1, 0.5, 1.0, 2.0, 4.0):
         surv = math.exp(-float(h.cumulative_between(t0, t0 + rr)))
         phat = float(np.mean(r > rr))
-        assert abs(phat - surv) <= 5 * math.sqrt(surv * (1 - surv) / N) + 1e-12
+        assert abs(phat - surv) <= 5 * math.sqrt(surv * (1 - surv) / n) + 1e-12
 
 
 @pytest.mark.parametrize("name", HAZARDS)

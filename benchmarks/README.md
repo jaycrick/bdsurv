@@ -17,7 +17,7 @@ Always use `uv run quarto`, since a bare `quarto` uses the system Python.
 ### Figures
 
 Executing a notebook also saves every Altair chart it displays as a PDF in the
-git-ignored `figures/benchmarks/` (stems start `mc_`, `arley_` and `ccv_`;
+git-ignored `figures/benchmarks/` (stems start `mc_`, `arley_`, `ccv_` and `hf_`;
 `simulator_speed.qmd` has no charts), through `scripts/figure_export.py`
 (the vl-convert engine, in the `bench` group).
 Each file is recorded in `figures/benchmarks/.figure_manifest/<notebook>.txt`, which is
@@ -37,6 +37,19 @@ Files in a directory with no manifest are only touched with `--include-unmanaged
 Times every `bdsurv` simulator once, on a laptop-sized workload.
 Exact-versus-theory validation of the simulated ages, and the timing of sampling
 directly from the age distributions, live in `bdpinf` (`qmd_scripts/validation/`).
+
+## `hazard_families.qmd`
+
+Shows the cost of sampling event times by inverting the cumulative hazard, for
+hazards of different shapes (constant, linear, piecewise-linear, logistic,
+floor-logistic, quadratic and cubic) along several code paths, one call per event and
+one vectorised call.
+It also compares the polynomial closed-form inversion with Brent against `n_alive`.
+Regenerate the data with `uv run python scripts/bench_hazard_families.py` (about one
+hour; `--quick` for a smoke run).
+Data: `benchmarks/data/hazard_families.csv` and `hazard_families_environment.json`;
+the notebook only reads them.
+Figure stem: `hf_`.
 
 ## `contour_conditioned_validation.qmd`
 

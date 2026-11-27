@@ -46,7 +46,11 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from bdsurv._hazard import forward_hazard_time, next_event_offset
+from bdsurv._hazard import (
+    draw_count,
+    forward_hazard_time_split,
+    next_event_offset,
+)
 from bdsurv._seeding import bump, root_rng, spawn
 from bdsurv.rates import Rate, ResolvedRate, merged_segments
 from bdsurv.tree import build_records
@@ -209,6 +213,13 @@ def _run_segment(
             on_event(state, event_time)
 
 
+def _draws(rng: np.random.Generator, m: int, n: int) -> list[float]:
+    """Draw ``m`` exponentials over ``n``; ``m == 1`` is the original scalar draw."""
+    if m == 1:
+        return [float(rng.exponential()) / n]
+    return (rng.exponential(size=m) / n).tolist()
+
+
 def _run_general(
     state: ForwardState,
     pair: RatePair,
@@ -220,10 +231,10 @@ def _run_general(
     while state.current_time < stop and state.alive_ids:
         n = len(state.alive_ids)
         t = state.current_time
-        e_birth = float(rng.exponential())
-        e_death = float(rng.exponential())
-        t_birth = forward_hazard_time(pair.birth, t, e_birth / n, stop)
-        t_death = forward_hazard_time(pair.death, t, e_death / n, stop)
+        e_birth = _draws(rng, draw_count(pair.birth), n)
+        e_death = _draws(rng, draw_count(pair.death), n)
+        t_birth = forward_hazard_time_split(pair.birth, t, e_birth, stop)
+        t_death = forward_hazard_time_split(pair.death, t, e_death, stop)
         event_time = min(t_birth, t_death)
         if event_time >= stop:  # the cap is returned when there is no event
             state.current_time = stop

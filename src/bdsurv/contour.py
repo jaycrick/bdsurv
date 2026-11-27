@@ -27,7 +27,13 @@ from typing import Literal
 
 import numpy as np
 
-from bdsurv._hazard import backward_hazard_time, close, cumulative, forward_hazard_time
+from bdsurv._hazard import (
+    backward_hazard_time_split,
+    close,
+    cumulative,
+    draw_count,
+    forward_hazard_time_split,
+)
 from bdsurv._seeding import bump, root_rng
 from bdsurv.hazards import Hazard
 from bdsurv.rates import (
@@ -66,12 +72,19 @@ class Walker:
     terminal_time: float
     rng: np.random.Generator
 
+    def _draws(self, rate: ResolvedRate) -> list[float]:
+        """Draw the ``Exp(1)`` values of one step (scalar draw if one part)."""
+        m = draw_count(rate)
+        if m == 1:
+            return [float(self.rng.exponential())]
+        return self.rng.exponential(size=m).tolist()
+
     def down(self, x: float) -> float:
         """Return the next level below ``x``, snapped to ``0`` when close."""
         # The level s < x with int_s^x lambda = E, E ~ Exp(1) (``docs/
         # contour_conditioned.md``, section "Steps").
         while True:
-            s = backward_hazard_time(self.birth, x, float(self.rng.exponential()))
+            s = backward_hazard_time_split(self.birth, x, self._draws(self.birth))
             if close(s, 0.0):
                 s = 0.0
             if s != x:
@@ -82,8 +95,8 @@ class Walker:
         # The level s > y with int_y^s mu = E, E ~ Exp(1) (``docs/
         # contour_conditioned.md``, section "Steps").
         while True:
-            s = forward_hazard_time(
-                self.death, y, float(self.rng.exponential()), self.terminal_time
+            s = forward_hazard_time_split(
+                self.death, y, self._draws(self.death), self.terminal_time
             )
             if close(s, self.terminal_time):
                 s = self.terminal_time
